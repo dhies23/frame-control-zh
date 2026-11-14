@@ -6,6 +6,7 @@
     "realFrameContacted": false,
     "releaseHoldCleared": false,
     "retryAdded": false,
+    "strictDescendantShutdownVerified": false,
     "timeoutsIncreased": false,
     "wornVrVerified": false
   },
@@ -16,8 +17,10 @@
     "firstRpcSeconds": 1.966494371,
     "forcedKill": false,
     "generatedHelperSha256": "0418d7e58cec0ce4c27617ba938db31b5aa3bf4a665b6e3b348d4a0cc5f8c854",
+    "genericConsoleCleanShutdownVerified": false,
     "loaderSha256": "e80d03e641d1766a33a817cb27ab8d2e0a4633685e5d27e4de948a6687526181",
-    "ownedCleanupVerified": true,
+    "ownedCleanupScope": "The runner records completed fixture cleanup and a parent-only loader stop returning zero without forced kill. This local diagnostic does not enumerate remaining descendants and is not a strict shutdown gate.",
+    "ownedFixtureCleanupRecorded": true,
     "parentOnlyStopExitZero": true,
     "pluginPids": [
       22,
@@ -27,7 +30,8 @@
     "rpcTimings": 15,
     "runtimeConsoleSha256": "8398ea0fe4c828706ddb872a8134c69b963fb13d6c9128c3745e45b9e4f9e543",
     "sourceBindings": 73,
-    "startupRecords": 22
+    "startupRecords": 22,
+    "strictDescendantShutdownVerified": false
   },
   "qualificationScope": "working-tree run; sourceSha256 binds every runtime input before commit",
   "rawEvidence": {
