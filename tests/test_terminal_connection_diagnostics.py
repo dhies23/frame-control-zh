@@ -117,7 +117,8 @@ class TerminalConnectionObservation(unittest.TestCase):
                 report = scope['observe_initial_timeout'](None, SimpleNamespace(poll=lambda: 0 if exited else None))
                 self.assertLessEqual(now[0]-1_000_000_000, 2_500_000_000)
                 self.assertEqual(report['stopReason'], 'parent-exited' if exited else 'observation-deadline')
-                self.assertEqual(sum(sleeps), 0 if exited else 2.5)
+                self.assertEqual(sum(round(seconds*1_000_000_000) for seconds in sleeps),
+                                 0 if exited else 2_500_000_000)
                 self.assertFalse(report['qualificationPassed'])
 
     def test_failure_observation_error_does_not_replace_or_retry_original_first_rpc_timeout(self):
