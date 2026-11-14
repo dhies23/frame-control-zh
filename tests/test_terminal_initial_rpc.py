@@ -81,9 +81,14 @@ class TerminalStartupObserver(unittest.TestCase):
                 async def original(value): raise error
                 observed = scope['wrap'](original, 'migration-started', 'migration-finished')
                 output = io.StringIO()
-                with redirect_stdout(output), self.assertRaises(type(error)) as caught:
-                    asyncio.run(observed('private fixture argument'))
-                self.assertIs(caught.exception, error)
+                async def check_propagation():
+                    # Python 3.9's Task.result() replaces cancellation errors.
+                    # Check the observer directly, before the runner boundary.
+                    with self.assertRaises(type(error)) as caught:
+                        await observed('private fixture argument')
+                    self.assertIs(caught.exception, error)
+                with redirect_stdout(output):
+                    asyncio.run(check_propagation())
                 self.assertNotIn('private fixture', output.getvalue())
                 event = json.loads(output.getvalue().splitlines()[-1].split('=', 1)[1])
                 self.assertEqual(event['phase'], 'migration-started-error')
