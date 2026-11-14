@@ -293,9 +293,11 @@ class PublishRelease(unittest.TestCase):
         cases += [{"omit_job": name} for name in (
             "signed-package (ubuntu-latest)", "signed-package (ubuntu-24.04-arm)",
             "signed-package (ubuntu-latest, browser HTTP)",
+            "signed-package (ubuntu-24.04-arm, browser HTTP)",
             "signed-package (ubuntu-latest, production parent HTTP)")]
-        cases += [{"bad_job": "signed-package (ubuntu-24.04-arm)",
-                   "bad_job_conclusion": conclusion}
+        cases += [{"bad_job": name, "bad_job_conclusion": conclusion}
+                  for name in ("signed-package (ubuntu-24.04-arm)",
+                               "signed-package (ubuntu-24.04-arm, browser HTTP)")
                   for conclusion in ("failure", "cancelled", "skipped")]
         cases += [{"prior_signed_run_conclusion": "failure"},
                   {"signed_attempts": 2, "signed_prior_bad_job": "signed-package (ubuntu-latest)",
@@ -308,6 +310,16 @@ class PublishRelease(unittest.TestCase):
                 self.assertRegex(p.stderr, 'syncthing-flatpak-package|signed-package')
                 self.assertIsNone(upload)
                 self.assertFalse(any("-X" in call for call in log))
+
+    def test_dry_run_also_requires_the_arm_signed_browser_job(self):
+        p, log, upload = self.run_script(
+            [draft()], "--dry-run", "v9.8.7",
+            gates={"omit_job": "signed-package (ubuntu-24.04-arm, browser HTTP)"})
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("missing jobs", p.stderr)
+        self.assertIn("signed-package (ubuntu-24.04-arm, browser HTTP)", p.stderr)
+        self.assertIsNone(upload)
+        self.assertFalse(any("-X" in call for call in log))
 
     def test_ownership_gates_stop_publication_before_any_mutation(self):
         cases = [{"ownership_missing": True}, {"ownership_sha": "c" * 40},
