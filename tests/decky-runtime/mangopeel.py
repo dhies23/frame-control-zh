@@ -15,6 +15,18 @@ def steam_profile(index):
             f'nis_steam_sharpness=10\npreset={index}')
 
 
+def write_steam_profile(profile, index):
+    # Keep the watched inode and expose the complete fixture preset in one
+    # unbuffered write. open('w') briefly exposes an empty file to the real
+    # callback, which can restore the previous preset during that interval.
+    data = steam_profile(index).encode()
+    with profile.open('r+b', buffering=0) as stream:
+        # Both exercised Steam presets are longer than their selected override.
+        # Refuse a changed fixture shape rather than truncate a watched file.
+        assert os.fstat(stream.fileno()).st_size <= len(data)
+        assert stream.write(data) == len(data)
+
+
 def start(env, log, processes):
     profile = Path.home()/'private-mangohud.conf'
     profile.write_text(steam_profile(1))
@@ -100,7 +112,7 @@ def exercise(current, rpc, backend, log, fixture, until_ready, *, regression=Fal
     assert until_ready(lambda: profile.read_text() == expected, 'selected profile write')
     configs = ['', custom, 'fps=1\nposition=top-right', '', '']
     assert current('SetOverwriteConfigs', configs) is True
-    profile.write_text(steam_profile(2))
+    write_steam_profile(profile, 2)
     expected_second = 'mangopeel_flag=2\nmangoapp_steam\n'+configs[2]
     assert until_ready(lambda: profile.read_text() == expected_second,
                        'actual inotify profile change')
@@ -123,7 +135,7 @@ def exercise(current, rpc, backend, log, fixture, until_ready, *, regression=Fal
         assert profile.read_bytes() == before
         assert process.poll() is None
     # The old plugin cannot rewrite after its replacement has loaded.
-    profile.write_text(steam_profile(3))
+    write_steam_profile(profile, 3)
     assert until_ready(lambda: current('get_steamIndex') == 3, 'replacement inotify watch')
     assert profile.read_text() == steam_profile(3)
     assert unrelated.read_text() == 'preserve unrelated configuration\n'
