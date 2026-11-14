@@ -143,8 +143,9 @@
   "failedRunAttemptsRetained": [
     1
   ],
+  "independentFixtureReviewSha256": "94f583f5b89c5de24937512bfccdc10775b99174e1b555a85fb92ab31339d86d",
   "rawEvidence": {
-    "decompressedSha256": "17199314ad342ec798bfe40124a6548cb18a2e9a144a92f14348005cb04b3761",
+    "decompressedSha256": "1df3727276d66f049285a13620d192742abca7f49d73202a8b79dc57c5f6eb6d",
     "path": "docs/evidence/framey-offline-bundle-fixture-2026-11-14.json.gz",
     "recordSha256": {
       "fixturePatch": "420f2cbb94d090531b01dedf52eecc1420177e9d398b28328e6f2cd6e0f3aab5",
@@ -155,6 +156,7 @@
       "hostedFailureLog132504030722": "47f46121f4527dfb5b561c39286d44a4fd55b89677e9c55afaa2f7eab9a2f772",
       "hostedFailureLog132504030759": "562ed4f9be214e00d1d6e54511a3674e67850f32d17019cc2d96da0e403bc923",
       "independentFailureAudit": "513a5089d98038006aa44dbea221e91400c3d044520095c2922ca8650ea5c2fd",
+      "independentFixtureReview": "94f583f5b89c5de24937512bfccdc10775b99174e1b555a85fb92ab31339d86d",
       "independentGiContainerGreen8": "f635c02f7887f8bed9f5e82f06dfb642955715e2ac8535efcf2473355d2ce6d0",
       "independentHostGreen110": "c4dc2ad1c95a0275ebc7179304dd846e96da4e1ea416a9a3c013efa544aef6a3",
       "independentHostGreen8": "c3bab533270f407ce3279b4b31eafc5f7349f1fb20fb275148691aa3c6796e1b",
@@ -163,7 +165,7 @@
       "repairedHostGreen8": "e81ca2c6a8ec824a7d6d5f1dc8dba3d0f3011c92149207ca1e7b87766c94ca17",
       "retainedFailedRun": "7dbe6605d2a675c1a6e8d336dd9045958eb4baf5a7bc66a326e993eae4040d1a"
     },
-    "sha256": "e10d193a3d813f39ef61794bf288d83411cec99c468bcbd7a9f07262c4238545"
+    "sha256": "8a9dfa6f6d05a3ff58dc0475f6bce32bcdc55bd8c387443439c2bc477fa4854c"
   },
   "recordedAt": "2026-11-14T16:18:13.801358+00:00",
   "scope": {
