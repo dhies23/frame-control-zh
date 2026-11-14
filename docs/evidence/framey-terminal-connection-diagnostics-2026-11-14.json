@@ -1,0 +1,123 @@
+{
+  "change": {
+    "afterFirstRpcTimeoutOnlyObservationSeconds": 2.5,
+    "argumentsResultsErrorsAndCancellationPreserved": true,
+    "childConnectionAcceptanceAndCloseObserved": true,
+    "childMessageReceiveAndHandledObserved": true,
+    "diagnosticOnly": true,
+    "eightSecondRpcDeadlineChanged": false,
+    "originalTimeoutRethrownUnchanged": true,
+    "outerDeadlinesChanged": false,
+    "parentLoaderOrProductionSourceChanged": false,
+    "postFailureObservationCanQualifyFailure": false,
+    "postFailureObservationIssuesNewRpc": false,
+    "privateArgumentsAndErrorBodiesOmitted": true,
+    "repeatInstallationDoesNotNestWrappers": true,
+    "startupPreparationOrAwaitConditionsChanged": false
+  },
+  "rawEvidence": {
+    "binaryRecords": {
+      "originalArmArtifactZipBase64": {
+        "decodedSha256": "a7e95474d8c11ddc45671be135c271ece82867b34e9918eed71b84418a2e0fbb",
+        "encoding": "base64"
+      },
+      "originalArmGuestPacketBase64": {
+        "decodedSha256": "efeb112a0d0bc5f4d01cd9fc2f8f489f6cb4ba07ae2aba92ff89433c5a830613",
+        "encoding": "base64"
+      }
+    },
+    "decompressedSha256": "d9e2679505be68caf804b0f908fa836a4b1fc6afda2540e0a2546048b8eeada6",
+    "path": "docs/evidence/framey-terminal-connection-diagnostics-2026-11-14.json.gz",
+    "recordSha256": {
+      "coordinatorDiagnosticSourceReview": "9b6f845971de0738342735b3a55b5693249c2fd7b4b017ac68f484b4b5cec9a2",
+      "coordinatorOfficialSocketSourceReview": "d1ec8534bfbca2abb9afd6f42583489919d0d39824146c21593bcbf75b95ae86",
+      "coordinatorTwelveControls": "9cf12c16c55683c1258a54fc89e0c24e40b6cd650812badfbcdae83fa91a9315",
+      "independentCorrectedLifecycleSource": "19e6f31a072968a0e6d00c8d82f210689e586e9d61876dfae9a735b7c4ead346",
+      "independentOriginalArmFailureReview": "e1a5b8251d89e904dd65455fb5239eb28c92ad3510d089d0e683f7bcf8e2feba",
+      "independentPostFailureControlLog": "037bfef97a1112e52ef091b23ade118eb427440654949be9c1ff0021ec7b39a2",
+      "independentPostFailureControlProof": "e44f583d803d3a43bd8600413513f7e764893a28024c9b94b4e8dc83375d8700",
+      "independentPostFailureControlScript": "05918fc39c9bc19e2ee2a274c3731489e49dfd2dc0efe2c69b4c63756c668b81",
+      "independentRealSocketComparison": "1cfb97b07686c6f866243830f47b520d0dd15c22067b3200aec4e232beb7382d",
+      "independentRealSocketComparisonLog": "ef5137664ee44588cceb1728b337ffaf0ae264f056453b16eb48357a556330fe",
+      "independentRealSocketComparisonScript": "133c0c4923c370c7e7820d2d58fcbdac0b0e3abb907c7187adbc5eb928bfd4c9",
+      "initialPreexistingMessageLabelFinding": "230f1eab73f0f8865a07d01bcd1265670e736dc96fa23833ef106316a43fd75e",
+      "initialRealSocketHarnessScript": "32b6b9e8f23ad46f5b217e6cc75702fb25398d8fdaecb883856428e0ee4642ec",
+      "originalArmArtifactZipBase64": "64967b986b38366342648f647e52103c7a3bf9c2ffd01d8703fecfc65d0caff1",
+      "originalArmConsole": "b79e53081e418fcdae0a88d5cb4636ea373e0db50fc2d08ce443bd90d9fe3adf",
+      "originalArmGuestPacketBase64": "3dee7a4f28dfbff3ab00cf11afd9f95a63111d63552eeab57a25df509cee5937",
+      "originalArmInputs": "d65941a7679ace2ea45e6b77dc65008c7a8c758fd251e5ea050d7258103fb124",
+      "originalArmJobLog": "226f124b6b4ab450fec319bf61eabbfb23e1aa68f9479548a6f32d9f92b8243f",
+      "originalArmMetadataAndZipAudit": "1d74d565d0f260de66f33d2e0b5427462b96a9507b2ce71297528ef2750ff13a",
+      "originalArmResult": "1ce752c9d98c091920b56f34f499d70d4786b7c2729ddace58cf605954897bf6",
+      "reviewedDiagnosticPatch": "edc8b8d1bbd4ac8b49dc7bbea1151a0aad9e4b5910d7f1d7aca0648fa689c9d2",
+      "sourceCommitReadback": "131598e5ff2cdfdb7f0c2595500339b3d676ceccc374f9d0e564c7f3128fe4e6",
+      "upstreamRetryWindowControlProof": "030fb0188f792a51e485249e739c3d96140fe6b52ad2e57dacb775eb06dff123",
+      "upstreamRetryWindowControlScript": "2ac40549da2eeaac0c5fa45577b633fab1ec3c3520299c3bb92c892d11a30b24",
+      "upstreamSandboxSource": "84a8fe7697c1abbe13531cc72cff34a462b614bb1b25b30bff2d858d5316bbb8",
+      "upstreamSandboxSourceProof": "5b391bb01c1d563c5d0f6cf3525b495a2f1cc8e2ca5dfb3b0605ddf2f99d0a89",
+      "upstreamSocketSource": "cbc62b1f142df0678de0996c00214c0e0fd9cce35cc032daaa40717e49710138",
+      "upstreamSocketSourceProof": "cfab393d70a453e938909e8cce194ca02c182e52ccb2a05bbd121f32e3af7c7e"
+    },
+    "sha256": "5d876c6275568940a3acc28e2754a0523f58d4ba62a727ce97c340bce76519b5"
+  },
+  "recordedAt": "2026-11-14T20:27:33.744404+00:00",
+  "retainedFailure": {
+    "artifact": 14130151149,
+    "attempt": 1,
+    "firstRpcElapsedSeconds": 8.0213244,
+    "firstRpcMethod": "get_terminals",
+    "head": "93090d4ffc4dee61cd4077ff0ac5debcd34a86e5",
+    "httpBrowserStageReached": false,
+    "job": 132570366671,
+    "moduleImportAfterFirstRpcSeconds": 6.947667424,
+    "ownedQemuAndUserManagerReaped": true,
+    "rerun": false,
+    "run": 43635201672,
+    "screenshots": 0,
+    "socketListeningAfterFirstRpcSeconds": 7.26028864,
+    "sourceBindingsVerified": 177,
+    "successfulRpcRecords": 0,
+    "zipSha256": "a7e95474d8c11ddc45671be135c271ece82867b34e9918eed71b84418a2e0fbb"
+  },
+  "scope": {
+    "freshHostedExactHeadQualificationRequired": true,
+    "historicalArmCauseEstablished": false,
+    "historicalArmConnectionAttemptsRetained": false,
+    "initialIndependentSocketHarnessCleanupOmissionRetained": true,
+    "initialLabelFindingCorrectedToMessageHandledObserved": true,
+    "loaderReceiptLifecycleFixIncluded": false,
+    "realFrameContacted": false,
+    "releaseHoldCleared": false,
+    "startupRepairEstablished": false,
+    "wornVrVerified": false
+  },
+  "sourceBeforeEvidenceCommit": "4b4e1b26b94108c2d20b87ad6630e326795bdcee",
+  "sourceSha256": {
+    ".github/workflows/decky-runtime.yml": "3751c42845f3774601d55dbf8455421c5a89c5a2abcb7b43d6c88337c91463d6",
+    "scripts/framey-test-terminal-browser.py": "d0211b167881e88de0f16f35c91ce5728d7cf36bc07ea72747c8a746fb0aec7d",
+    "tests/decky-runtime/check.py": "e80bbf38cb1918fcace756d9f237c89a0e4dad9ae35fd8f3c99e90b9c89225dd",
+    "tests/decky-runtime/guest_result.py": "c0c30f043a6d0af017ae8c42b5c60f36c65a7390ce314a311e3fbeb859fff86d",
+    "tests/decky-runtime/runtime_console.py": "46e4d53fab3cc3bae2640a2208d1091f9dbaffd0d1f6d54eed5fc68a470a9eab",
+    "tests/decky-runtime/terminal_candidate.py": "c88cc891b1ae84765eba03ccc59a911e2e3af1c9c7c5587609020ae582e60f01",
+    "tests/decky-runtime/terminal_lifecycle.py": "19e6f31a072968a0e6d00c8d82f210689e586e9d61876dfae9a735b7c4ead346",
+    "tests/decky-runtime/timer_lifecycle.py": "94424d68a18078b04032895f27cde3b62264b429d29677511a91f28c1f7c066c",
+    "tests/test_terminal_connection_diagnostics.py": "ba41dd55113058e0389c16baeb508ff2902d95d7a1a52085122e4bc5e17381a6",
+    "tests/test_terminal_initial_rpc.py": "c53e0d320bb0291d69e663dc80c647f6a498c2fcd7437f8e508e4bb351810307",
+    "ui/frame_decky.py": "81b934dfd0b2fe4374dc281f4646e793c1653c309943aaec255a9e566dad1ef7",
+    "ui/framey_panel.py": "1fe2afcdd7a8bc88322ebe8588aa0429a2b31fb26e1c178f3e5370a713161ad4"
+  },
+  "validation": {
+    "actualProbeFailureBranchExecutions": 2,
+    "allOriginalLifecycleAssertionsPreserved": true,
+    "focusedSkips": 0,
+    "focusedTests": 12,
+    "independentActualUpstreamMessageDispatchComparisonPassed": true,
+    "independentActualUpstreamUnixSocketComparisonPassed": true,
+    "independentPostFailureRealFileControls": 4,
+    "largeRealFrameComparedBytes": 1048628,
+    "lifecycleAstRestoredByRemovingOnlyDiagnostics": true,
+    "originalSevenObserverTestsByteIdentical": true,
+    "possibleRetryWindowReproducedWithOriginalEightSecondDeadline": true,
+    "unicodeAndNewlineValuesCompared": true
+  }
+}
