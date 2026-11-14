@@ -605,6 +605,8 @@ def main():
             assert len(discovered) == 1 and discovered[0]['name'] == record['name'], discovered
             assert discovered[0]['version'] == record['version'] and not discovered[0]['disabled'], discovered
             report['discovered'] = discovered
+            if case['probe'] == 'terminal-private-pty':
+                report['terminalDiscoveryMonotonicNs'] = time.monotonic_ns()
 
             def legacy(method, **kwargs):
                 response = rpc('loader/call_legacy_plugin_method', record['name'], method, kwargs)
@@ -637,7 +639,8 @@ def main():
                     'browser, actual Frame and worn/controller behavior unverified')
             elif case['probe'] == 'terminal-private-pty':
                 from terminal_lifecycle import probe
-                report['terminalLifecycle'] = probe(record['name'], home, backend, processes)
+                report['terminalLifecycle'] = probe(record['name'], home, backend, processes,
+                    discovery_ns=report['terminalDiscoveryMonotonicNs'])
                 if args.terminal_browser_candidate:
                     from terminal_browser import exercise
                     report['terminalBrowser'] = exercise(record['name'], home)
