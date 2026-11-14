@@ -1,7 +1,6 @@
 """Browser controls -> actual Decky RPC -> signed package, in the owned VM only."""
 import base64
 import hashlib
-import http.server
 import json
 import math
 import os
@@ -343,6 +342,9 @@ def final_browser_state(timeout=8):
 
 
 def exercise(legacy_rpc, runtime_identity, service):
+    # The bounded failure-only reader imports this module too. It makes only
+    # outbound CDP requests and must not initialize the VM's inbound server.
+    import http.server
     from syncthing_service import prop
     assert os.getuid() == 1100 and Path('/framey-owned-vm').read_text() == 'Frame Control Flatpak VM v1\n'
     assert not Path('/sys/class/net/eth0').exists()
