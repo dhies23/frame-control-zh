@@ -190,7 +190,7 @@ class BrowserReadyCandidate(unittest.TestCase):
         with patch.object(browser.frame_steam, 'Page', return_value=page), \
                 patch.object(browser.time, 'monotonic', side_effect=[10, 12, 13]):
             self.assertIsNone(browser.ready_page(report, clock_start=5))
-        self.assertEqual(report['lastReadinessAttempt'], dict(phase='panel-errors',
+        self.assertEqual(report['lastReadinessAttempt'], dict(phase='panel-errors', connectionReused=False,
                          outcome='not-ready', elapsedSeconds=2,
                          startedAfterSeconds=5, finishedAfterSeconds=8))
         page.sock.close.assert_called_once()
