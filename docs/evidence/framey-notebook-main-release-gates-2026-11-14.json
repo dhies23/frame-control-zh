@@ -32,12 +32,12 @@
       "localGreen52": "6e35669c8f941ce6045ef7019ec13da79d8fd534e509aa5edd4677e9de6ec7eb",
       "nativeBoth": "54cf444d4b0e1b481fb9f69c52d8cc2346fb81157edc8d0761dfa1074d415fab",
       "ownershipBoth": "b940064bda8d268ee7db5e1b7aa551213e143178ad34c6e4ee623105ceb4e41f",
-      "qualifiedPriorHeadAllAttempts": "796c86490f79b21676c4c5d000dc244c26d62c4402a7d0a47e0f95514d5c0751",
+      "qualifiedPriorHeadAllAttempts": "53f544da631fa3919eafb72bd2bd15a3a0ffdeff69f0566a45333b0c62a0150c",
       "sampleBrowser": "44cf141930ccb16ae7c39f458dd8775c9a72cb996246a984a2063ba9dbcf5006",
       "sampleRuntimeBoth": "7b878c7c9179f984d81dbfedfe2869c6fdeae7c858e1aa448bc264f7d82a5886",
       "strictNotebookBoth": "f752fb07da377e8543d6e6a182cfb7358e784586793b8424151c1d818cece076"
     },
-    "sha256": "cc6073fca28ce0fe450df3c3dd1ba500adb1ded058f20ef487f4a1c402b6a50f"
+    "sha256": "b008a6f552fd0b8863c9f9fd9e6d56da8ec8b3b76a357be4236916d66fea37e2"
   },
   "recordedAt": "2026-11-14T15:20:38.965683+00:00",
   "scope": {
