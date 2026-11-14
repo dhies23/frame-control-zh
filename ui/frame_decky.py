@@ -14,23 +14,28 @@ TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-.][A-Za-z0-9.-]+)?\Z")
 
 
 PLUGIN_SCAN = r'''
+def read_plugin_metadata(path):
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 16384:
+            return None
+        # The size snapshot cannot bound a file that grows before the read.
+        with path.open('rb') as source: data = source.read(16385)
+        if len(data) > 16384: return None
+        return json.loads(data.decode('utf-8'))
+    except (OSError, ValueError): return None
+
+
 def plugins(folder):
     found = []
     if folder.is_dir() and not folder.is_symlink():
         for child in sorted(folder.iterdir()):
             if child.is_symlink() or not child.is_dir(): continue
             info = child / 'plugin.json'
-            if info.is_symlink() or not info.is_file() or info.stat().st_size > 16384: continue
             try:
-                data = json.loads(info.read_text())
+                data = read_plugin_metadata(info)
                 if not isinstance(data, dict): continue
                 marker = child / '.frame-control-store.json'
-                try:
-                    # Match the panel's metadata limit before reading bytes.
-                    # An oversized receipt does not hide the plugin or peers.
-                    owned = json.loads(marker.read_text()) if (marker.is_file() and not marker.is_symlink()
-                                                              and marker.stat().st_size <= 16384) else {}
-                except (OSError, ValueError): owned = {}
+                owned = read_plugin_metadata(marker)
                 # Valid JSON can still be a list or scalar. A bad receipt
                 # cannot claim ownership or abort the remaining inventory.
                 if not isinstance(owned, dict): owned = {}
