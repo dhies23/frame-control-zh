@@ -175,8 +175,21 @@ builtins.__import__ = bounded_import
 '''
                 targets = json.dumps([{'title': 'SharedJSContext',
                                        'url': 'http://steamloopback.host/index.html'}]).encode()
-                for code, body, expected in ((200, targets, True), (200, b'[]', False),
-                                             (503, targets, False), (200, b'invalid json', False)):
+                cases = [(200, targets, True), (200, b'[]', False),
+                         (503, targets, False), (200, b'invalid json', False)]
+                # CEF errors and malformed target records must not hide local
+                # service/plugin status or grant a false CEF capability.
+                for value in (None, False, 7, 'targets', {'error': 'unavailable'},
+                              [None], [False], [7], ['target'], [[]], [{}],
+                              [{'title': 'SharedJSContext', 'url': None}],
+                              [{'title': 'SharedJSContext', 'url': 7}],
+                              [{'title': 'SharedJSContext', 'url': ['steamloopback.host']}],
+                              [{'title': 'SharedJSContext', 'url': {'steamloopback.host': True}}]):
+                    cases.append((200, json.dumps(value).encode(), False))
+                mixed = [None, False, 7, 'target', [], {},
+                         {'title': 'SharedJSContext', 'url': None}] + json.loads(targets)
+                cases.append((200, json.dumps(mixed).encode(), True))
+                for code, body, expected in cases:
                     with self.subTest(code=code, body=body):
                         replies.append((code, body))
                         result = subprocess.run([sys.executable, '-'], input=guard+probe,
@@ -194,7 +207,7 @@ builtins.__import__ = bounded_import
                         self.assertEqual(status['version'], 'v3.3.0')
                         self.assertEqual(status['plugins'][0]['name'], 'Example')
                         self.assertEqual({p: p.read_bytes() for p in before}, before)
-                self.assertEqual(requests, ['/json/list']*4)
+                self.assertEqual(requests, ['/json/list']*len(cases))
             finally:
                 server.shutdown()
                 server.server_close()
