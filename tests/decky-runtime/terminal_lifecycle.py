@@ -43,6 +43,28 @@ def startup_events(log):
     return report
 
 
+def observe_initial_timeout(log, backend):
+    """Observe only after the original failure; never issue or retry an RPC."""
+    started = time.monotonic_ns()
+    deadline = started + 2_500_000_000
+    reason = 'observation-deadline'
+    while time.monotonic_ns() < deadline:
+        if backend.poll() is not None:
+            reason = 'parent-exited'
+            break
+        observation = startup_events(log)
+        if any(event['phase'] == 'message-handled' for event in observation['events']):
+            reason = 'message-handled-observed'
+            break
+        remaining = (deadline-time.monotonic_ns()) / 1_000_000_000
+        if remaining > 0:
+            time.sleep(min(.1, remaining))
+    return dict(originalFailureRetained=True, qualificationPassed=False, newRpcIssued=False,
+                startedMonotonicNs=started, observationDeadlineMonotonicNs=deadline,
+                finishedMonotonicNs=time.monotonic_ns(), stopReason=reason,
+                startup=startup_events(log))
+
+
 async def timed_call(client, method, args, timings):
     entry = dict(method=method, requestId=client.sequence+1,
                  startedMonotonicNs=time.monotonic_ns(), outcome='pending')
@@ -115,12 +137,21 @@ def probe(name, home, backend, processes, *, discovery_ns=None):
 
     try:
         report = asyncio.run(exercise())
-    except Exception:
+    except Exception as error:
         print('FRAMEY_TERMINAL_RPC_FAILURE_JSON='+json.dumps(dict(
             discoveryMonotonicNs=discovery_ns, lastRequest=timings[-1] if timings else None,
             parentPid=backend.pid, parentAlive=backend.poll() is None,
             beforeFirstRpc=startup_before_first_rpc,
             atFailure=startup_events(home/'runtime.log'))), flush=True, file=sys.stderr)
+        if (isinstance(error, (TimeoutError, asyncio.TimeoutError)) and len(timings) == 1
+                and timings[0]['method'] == 'get_terminals' and not observed):
+            try:
+                late = observe_initial_timeout(home/'runtime.log', backend)
+            except Exception as observation_error:
+                late = dict(originalFailureRetained=True, qualificationPassed=False,
+                            newRpcIssued=False, unavailable=type(observation_error).__name__)
+            print('FRAMEY_TERMINAL_LATE_CONNECTION_JSON='+json.dumps(late),
+                  flush=True, file=sys.stderr)
         print('FRAMEY_TERMINAL_PROGRESS_JSON='+json.dumps(dict(
             calls=observed, transcript=transcript, success=False, realFrameContacted=False,
             privateContainerInputOnly=True)), flush=True, file=sys.stderr)

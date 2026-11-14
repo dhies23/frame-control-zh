@@ -55,6 +55,12 @@ def begin():
     socket = importlib.import_module('decky_loader.localplatform.localsocket').UnixSocket
     if not getattr(socket.setup_server, '_framey_startup_observer', False):
         socket.setup_server = wrap(socket.setup_server, 'socket-setup-started', 'socket-listening')
+    if not getattr(socket._listen_for_method_call, '_framey_startup_observer', False):
+        socket._listen_for_method_call = wrap(socket._listen_for_method_call,
+            'socket-connection-accepted', 'socket-connection-closed')
+    sandbox = importlib.import_module('decky_loader.plugin.sandboxed_plugin').SandboxedPlugin
+    if not getattr(sandbox.on_new_message, '_framey_startup_observer', False):
+        sandbox.on_new_message = wrap(sandbox.on_new_message, 'message-received', 'message-handled')
 
 def loaded(plugin):
     record('module-import-finished')
