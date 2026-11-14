@@ -2,6 +2,7 @@
 import ast
 import importlib.util
 import copy
+import http.server
 import io
 import json
 import sys
@@ -189,7 +190,7 @@ class BrowserReadyCandidate(unittest.TestCase):
         with patch.object(browser.frame_steam, 'Page', return_value=page), \
                 patch.object(browser.time, 'monotonic', side_effect=[10, 12, 13]):
             self.assertIsNone(browser.ready_page(report, clock_start=5))
-        self.assertEqual(report['lastReadinessAttempt'], dict(phase='panel-errors',
+        self.assertEqual(report['lastReadinessAttempt'], dict(phase='panel-errors', connectionReused=False,
                          outcome='not-ready', elapsedSeconds=2,
                          startedAfterSeconds=5, finishedAfterSeconds=8))
         page.sock.close.assert_called_once()
@@ -232,7 +233,7 @@ class BrowserParentProgress(unittest.TestCase):
         exercise = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name=='exercise')
         handler = next(n for n in exercise.body if isinstance(n, ast.ClassDef) and n.name=='Handler')
         report = {}; backend = Mock()
-        scope = dict(http=browser.http, json=json, time=Mock(monotonic=Mock(return_value=12)),
+        scope = dict(http=http, json=json, time=Mock(monotonic=Mock(return_value=12)),
                      calls_lock=browser.threading.Lock(), bridge_started=10,
                      parent_progress=report, record_startup_progress=browser.record_startup_progress,
                      legacy_rpc=backend)
@@ -350,6 +351,48 @@ class FinalBrowserEvidence(unittest.TestCase):
     def browser(self):
         return load('final_browser_evidence', ROOT/'tests/decky-runtime/syncthing_browser.py')
 
+    def test_reader_reaches_cdp_without_importing_the_vm_http_server(self):
+        import os
+        import threading
+        browser = self.browser()
+        class Targets(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Length', '2')
+                self.end_headers()
+                self.wfile.write(b'[]')
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Targets)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with tempfile.TemporaryDirectory() as temporary:
+            # A fresh interpreter must reach the CDP reader even when the
+            # inbound VM-server dependency is unavailable. No browser or
+            # backend is simulated by this empty owned target endpoint.
+            Path(temporary, 'sitecustomize.py').write_text('''
+import sys
+class NoVmServer:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'http.server':
+            raise ImportError('VM HTTP server is outside snapshot scope')
+sys.meta_path.insert(0, NoVmServer())
+''')
+            environment = temporary+os.pathsep+os.environ.get('PYTHONPATH', '')
+            with patch.dict(os.environ, {'PYTHONPATH': environment}), \
+                    patch.object(browser.frame_steam, 'CDP',
+                                 'http://127.0.0.1:'+str(server.server_port)+'/json'):
+                report = browser.final_browser_state()
+        self.assertFalse(report['timedOut'], report)
+        self.assertEqual(report['returnCode'], 0, report)
+        self.assertEqual(report['timeoutSeconds'], 8)
+        self.assertEqual(report['phases'],
+                         ['interpreter-started', 'module-imported', 'targets-read'])
+        self.assertEqual(report['snapshots'], [dict(target='parent', unavailable=True),
+                                              dict(target='iframe', unavailable=True)])
+
     def test_pending_parent_and_opaque_child_are_read_and_closed_without_advancing(self):
         from contextlib import redirect_stdout
         browser = self.browser()
@@ -430,7 +473,7 @@ class BrowserRpcTimings(unittest.TestCase):
             if fail:
                 raise RuntimeError('fixture backend unavailable')
             return 'fixture reply not copied into timings'
-        scope = dict(http=browser.http, json=json, time=Mock(monotonic=Mock(side_effect=[11,13,17,19])),
+        scope = dict(http=http, json=json, time=Mock(monotonic=Mock(side_effect=[11,13,17,19])),
                      calls=calls, calls_lock=browser.threading.Lock(), rpc_lock=browser.threading.Lock(),
                      bridge_started=10, legacy_rpc=backend)
         exec(compile(ast.Module(body=[handler], type_ignores=[]), 'actual-bridge-handler', 'exec'), scope)

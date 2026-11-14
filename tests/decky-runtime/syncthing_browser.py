@@ -1,7 +1,6 @@
 """Browser controls -> actual Decky RPC -> signed package, in the owned VM only."""
 import base64
 import hashlib
-import http.server
 import json
 import math
 import os
@@ -130,16 +129,17 @@ def screenshot(page):
             return response['result']['data']
 
 
-def ready_page(report, clock_start=None):
-    """Accept only a ready panel; close every rejected owned CDP candidate."""
+def ready_page(report, clock_start=None, pending=None):
+    """Accept only a ready panel, retaining at most one pending owned socket."""
     candidate = None
     accepted = False
     phase = 'page-connect'
     started = time.monotonic()
     outcome = 'not-ready'
     failure = None
+    reused = bool(pending)
     try:
-        candidate = frame_steam.Page('Owned Syncthing actual backend')
+        candidate = pending.pop() if reused else frame_steam.Page('Owned Syncthing actual backend')
         phase = 'panel-ready'
         accepted = bool(candidate.eval("typeof ready !== 'undefined' && ready"))
         if accepted:
@@ -160,8 +160,12 @@ def ready_page(report, clock_start=None):
         report['lastReadinessError'] = failure
     finally:
         if candidate is not None and not accepted:
-            candidate.sock.close()
+            if pending is not None and outcome == 'not-ready':
+                pending.append(candidate)
+            else:
+                candidate.sock.close()
         attempt = dict(phase=phase, outcome=outcome,
+                       connectionReused=reused,
                        elapsedSeconds=round(time.monotonic()-started, 3))
         if clock_start is not None:
             attempt.update(startedAfterSeconds=round(started-clock_start, 3),
@@ -343,6 +347,9 @@ def final_browser_state(timeout=8):
 
 
 def exercise(legacy_rpc, runtime_identity, service):
+    # The bounded failure-only reader imports this module too. It makes only
+    # outbound CDP requests and must not initialize the VM's inbound server.
+    import http.server
     from syncthing_service import prop
     assert os.getuid() == 1100 and Path('/framey-owned-vm').read_text() == 'Frame Control Flatpak VM v1\n'
     assert not Path('/sys/class/net/eth0').exists()
@@ -436,6 +443,7 @@ def exercise(legacy_rpc, runtime_identity, service):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     browser = page = None
+    pending_pages = []
     temporary = tempfile.TemporaryDirectory(prefix='framey-owned-browser-')
     report = {'success': False, 'syntheticInput': True, 'actualDeckyRpc': True,
               'installerEnabled': False, 'realFrameContacted': False,
@@ -465,13 +473,20 @@ def exercise(legacy_rpc, runtime_identity, service):
                 if port.is_file():
                     try:
                         frame_steam.CDP = 'http://127.0.0.1:'+port.read_text().splitlines()[0]+'/json'
-                        page = ready_page(report, bridge_started)
+                        page = ready_page(report, bridge_started, pending_pages)
                         if page is not None:
                             break
                     except (OSError, IndexError, frame_steam.Fail) as error:
                         report['lastReadinessError'] = str(error)[:1500]
                 time.sleep(.2)
-            clock['readinessFinishedAfterSeconds'] = round(time.monotonic()-bridge_started, 3)
+            while pending_pages:
+                pending_pages.pop().sock.close()
+            finished = time.monotonic()
+            clock['readinessFinishedAfterSeconds'] = round(finished-bridge_started, 3)
+            if page is not None and finished > deadline:
+                page.sock.close()
+                page = None
+                clock['lateReadyPageRejected'] = True
             clock['readinessPassed'] = page is not None
             assert page is not None, 'Browser CDP/panel readiness unavailable'
             first_pids = []
@@ -568,6 +583,8 @@ def exercise(legacy_rpc, runtime_identity, service):
     finally:
         report.update(stages=stages, calls=calls, actualPackagedProcessObservations=observations,
                       documentRequests=list(document_requests), parentStartupProgress=parent_progress)
+        while pending_pages:
+            pending_pages.pop().sock.close()
         if page:
             page.sock.close()
         if browser:

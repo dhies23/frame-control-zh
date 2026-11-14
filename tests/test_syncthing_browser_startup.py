@@ -149,6 +149,7 @@ addEventListener('message',event=>{
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, daemon=True).start()
         browser = page = None
+        pending_pages, readiness = [], {}
         with tempfile.TemporaryDirectory(prefix='framey-startup-test-') as scratch:
             try:
                 profile = Path(scratch) / 'profile'
@@ -168,8 +169,9 @@ addEventListener('message',event=>{
                             try:
                                 port = (profile / 'DevToolsActivePort').read_text().splitlines()[0]
                                 cdp.CDP = 'http://127.0.0.1:' + port + '/json'
-                                page = cdp.Page('Owned Syncthing actual backend')
-                            except (OSError, IndexError, cdp.Fail):
+                                receiver.frame_steam.CDP = cdp.CDP
+                                page = receiver.ready_page(readiness, started, pending_pages)
+                            except (OSError, IndexError, receiver.frame_steam.Fail):
                                 pass
                         if page is not None:
                             try:
@@ -182,6 +184,9 @@ addEventListener('message',event=>{
                                 break
                         time.sleep(.1)
                     self.assertTrue(ready, 'child seed request was lost during parent delivery')
+                    self.assertEqual(pending_pages, [])
+                    if delay:
+                        self.assertTrue(any(a['connectionReused'] for a in readiness['readinessAttempts']))
                     self.assertEqual(page.eval('window.startupErrors'), [])
                     state = page.eval('window.startupState')
                     self.assertTrue(state['parentInstalled'])
@@ -234,7 +239,10 @@ addEventListener('message',event=>{
                         self.assertNotIn('.syncthing-identicon', final['snapshots'][1]['state']['rootText'])
                     print('Framey final browser state proof: '+json.dumps(final, sort_keys=True))
                     print('Framey parent progress proof: '+json.dumps(progress, sort_keys=True))
+                    print('Framey readiness connection proof: '+json.dumps(readiness, sort_keys=True))
             finally:
+                while pending_pages:
+                    pending_pages.pop().sock.close()
                 if page is not None:
                     page.sock.close()
                 if browser is not None:
