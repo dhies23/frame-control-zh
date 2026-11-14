@@ -31,6 +31,7 @@ OWNERSHIP_JOBS = {"owned-watchdog (ubuntu-latest)", "owned-watchdog (ubuntu-24.0
 SIGNED_PACKAGE_JOBS = {
     "signed-package (ubuntu-latest)", "signed-package (ubuntu-24.04-arm)",
     "signed-package (ubuntu-latest, browser HTTP)",
+    "signed-package (ubuntu-24.04-arm, browser HTTP)",
     "signed-package (ubuntu-latest, production parent HTTP)",
 }
 
