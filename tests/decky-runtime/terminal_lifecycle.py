@@ -10,18 +10,70 @@ import time
 from timer_lifecycle import Client
 
 
-def probe(name, home, backend, processes):
+def startup_events(log):
+    """Read bounded phase records from this fixture's owned runtime log."""
+    report = dict(observedMonotonicNs=time.monotonic_ns(), events=[])
+    try:
+        with log.open('rb') as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(max(0, size-65536))
+            text = stream.read(65536).decode(errors='replace')
+        report['logTailTruncated'] = size > 65536
+        for line in text.splitlines():
+            marker = 'FRAMEY_TERMINAL_STARTUP_JSON='
+            if marker not in line:
+                continue
+            try:
+                event = json.loads(line.split(marker, 1)[1])
+                # Keep only timing/identity; no plugin output or arguments.
+                if (isinstance(event, dict) and type(event.get('pid')) is int and
+                        type(event.get('monotonicNs')) is int and isinstance(event.get('phase'), str)):
+                    clean = dict(pid=event['pid'], monotonicNs=event['monotonicNs'],
+                                 phase=event['phase'][:64])
+                    if isinstance(event.get('errorType'), str):
+                        clean['errorType'] = event['errorType'][:64]
+                    report['events'].append(clean)
+            except ValueError:
+                report['incompleteRecord'] = True
+        report['eventsTruncated'] = len(report['events']) > 16
+        report['events'] = report['events'][-16:]
+    except OSError as error:
+        report['unavailable'] = type(error).__name__
+    return report
+
+
+async def timed_call(client, method, args, timings):
+    entry = dict(method=method, requestId=client.sequence+1,
+                 startedMonotonicNs=time.monotonic_ns(), outcome='pending')
+    if len(timings) < 64:
+        timings.append(entry)
+    try:
+        result = await client.call(method, *args)
+    except BaseException as error:
+        entry.update(finishedMonotonicNs=time.monotonic_ns(), outcome='failed',
+                     errorType=type(error).__name__)
+        raise
+    entry.update(finishedMonotonicNs=time.monotonic_ns(), outcome='succeeded')
+    return result
+
+
+def probe(name, home, backend, processes, *, discovery_ns=None):
     assert os.getuid() == 1100 and home == Path('/home/tester')
     assert not Path('/sys/class/net/eth0').exists()
     marker = home/'framey-terminal-marker'
     assert not marker.exists()
     observed = []
     transcript = []
+    timings = []
+    startup_before_first_rpc = None
 
     async def exercise():
+        nonlocal startup_before_first_rpc
         async with Client(name, transcript) as client:
+            startup_before_first_rpc = startup_events(home/'runtime.log')
             async def call(method, *args):
-                result = await client.call(method, *args)
+                result = await timed_call(client, method, args, timings)
                 observed.append(dict(method=method, result=result))
                 return result
             assert await call('get_terminals') == []
@@ -64,6 +116,11 @@ def probe(name, home, backend, processes):
     try:
         report = asyncio.run(exercise())
     except Exception:
+        print('FRAMEY_TERMINAL_RPC_FAILURE_JSON='+json.dumps(dict(
+            discoveryMonotonicNs=discovery_ns, lastRequest=timings[-1] if timings else None,
+            parentPid=backend.pid, parentAlive=backend.poll() is None,
+            beforeFirstRpc=startup_before_first_rpc,
+            atFailure=startup_events(home/'runtime.log'))), flush=True, file=sys.stderr)
         print('FRAMEY_TERMINAL_PROGRESS_JSON='+json.dumps(dict(
             calls=observed, transcript=transcript, success=False, realFrameContacted=False,
             privateContainerInputOnly=True)), flush=True, file=sys.stderr)
@@ -103,5 +160,8 @@ def probe(name, home, backend, processes):
     report.update(calls=observed, transcript=transcript, privateInputOutput=True, resizeVerified=True,
                   explicitRemoveReaped=True, reloadReaped=True, unrelatedProcessPreserved=True,
                   configPersistedAcrossPluginReload=True, realFrameContacted=False,
-                  browserVerified=False, physicalControllerVerified=False)
+                  browserVerified=False, physicalControllerVerified=False,
+                  initialRpcDiagnostics=dict(discoveryMonotonicNs=discovery_ns,
+                      beforeFirstRpc=startup_before_first_rpc, requests=timings,
+                      afterReload=startup_events(home/'runtime.log')))
     return report
