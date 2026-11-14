@@ -1,8 +1,8 @@
 """Browser controls -> actual Decky RPC -> signed package, in the owned VM only."""
 import base64
 import hashlib
-import http.server
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.request
 
 sys.path.insert(0, '/input')
 import frame_steam
@@ -69,8 +70,18 @@ let ready=false;window.stage=null;window.startupErrors=[];
 window.startupState={parentInstalled:true,iframeLoads:0,cacheRequests:0,seedReplies:0,readyMessages:0};
 window.startupEvents=[];
 const startedAt=performance.now();
-const traceStartup=(type,method)=>{
- if(startupEvents.length<32)startupEvents.push({type,method,atMs:Math.round(performance.now()-startedAt)});
+let progressCount=0,progressFinished=false;
+const reportStartup=type=>{
+ if(progressFinished||(progressCount>=15&&type!=='panel-ready'))return;
+ progressCount++;
+ if(type==='panel-ready')progressFinished=true;
+ // Evidence only: never await this request or use it to decide readiness.
+ try{fetch('/startup',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({type,atMs:Math.round(performance.now()-startedAt),
+   documentState:document.readyState,state:{...startupState}})}).catch(()=>{});}catch(e){}
+};
+const traceStartup=(type,method,id)=>{
+ if(startupEvents.length<32)startupEvents.push({type,method,id,atMs:Math.round(performance.now()-startedAt)});
 };
 addEventListener('error',event=>startupErrors.push(event.message));
 addEventListener('unhandledrejection',event=>startupErrors.push(String(event.reason)));
@@ -79,26 +90,30 @@ addEventListener('message',async event=>{
  if(event.source!==panel())return;
  const req=event.data||{};
  traceStartup(String(req.type||'unknown').slice(0,64),
-   typeof req.method==='string'?req.method.slice(0,64):null);
+   typeof req.method==='string'?req.method.slice(0,64):null,req.id);
  if(req.type==='framey:cache:init'){
   startupState.cacheRequests++;
   panel().postMessage({type:'framey:cache:seed',session:req.session,entries:{}},'*');
-  startupState.seedReplies++;return;
+  startupState.seedReplies++;reportStartup('cache-seeded');return;
  }
- if(req.type==='framey:ready'){startupState.readyMessages++;ready=true;return;}
+ if(req.type==='framey:ready'){startupState.readyMessages++;ready=true;reportStartup('panel-ready');return;}
  if(req.type==='framey:error'){
   if(startupErrors.length<16)startupErrors.push(String(req.message||'Panel startup failed').slice(0,1000));
+  reportStartup('panel-error');
   return;
  }
  if(req.type==='test:stage'){window.stage=req;return;}
  if(req.type==='test:failure'){window.failure=req.error;return;}
  if(req.type!=='framey:call')return;
+ reportStartup('rpc-dispatched');
  try{
   const response=await fetch('/rpc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(req)});
   const result=await response.json();panel().postMessage({type:'framey:reply',id:req.id,result},'*');
-  traceStartup('rpc-reply',req.method);
- }catch(e){traceStartup('rpc-failure',req.method);window.failure='RPC bridge failed';}
+  traceStartup('rpc-reply',req.method,req.id);
+  reportStartup('rpc-replied');
+ }catch(e){traceStartup('rpc-failure',req.method,req.id);reportStartup('rpc-failed');window.failure='RPC bridge failed';}
 });
+reportStartup('parent-installed');
 window.advance=action=>{if(!ready)throw Error('Panel not ready');window.stage=null;
  panel().postMessage({type:'test:advance',action},'*');};
 '''
@@ -114,15 +129,17 @@ def screenshot(page):
             return response['result']['data']
 
 
-def ready_page(report):
-    """Accept only a ready panel; close every rejected owned CDP candidate."""
+def ready_page(report, clock_start=None, pending=None):
+    """Accept only a ready panel, retaining at most one pending owned socket."""
     candidate = None
     accepted = False
     phase = 'page-connect'
     started = time.monotonic()
     outcome = 'not-ready'
+    failure = None
+    reused = bool(pending)
     try:
-        candidate = frame_steam.Page('Owned Syncthing actual backend')
+        candidate = pending.pop() if reused else frame_steam.Page('Owned Syncthing actual backend')
         phase = 'panel-ready'
         accepted = bool(candidate.eval("typeof ready !== 'undefined' && ready"))
         if accepted:
@@ -139,12 +156,22 @@ def ready_page(report):
                                   ('state', 'documentState', 'iframeAssigned')}
     except (OSError, frame_steam.Fail) as error:
         outcome = 'failure'
-        report['lastReadinessError'] = str(error)[:1500]
+        failure = str(error)[:1500]
+        report['lastReadinessError'] = failure
     finally:
         if candidate is not None and not accepted:
-            candidate.sock.close()
+            if pending is not None and outcome == 'not-ready':
+                pending.append(candidate)
+            else:
+                candidate.sock.close()
         attempt = dict(phase=phase, outcome=outcome,
+                       connectionReused=reused,
                        elapsedSeconds=round(time.monotonic()-started, 3))
+        if clock_start is not None:
+            attempt.update(startedAfterSeconds=round(started-clock_start, 3),
+                           finishedAfterSeconds=round(time.monotonic()-clock_start, 3))
+        if failure is not None:
+            attempt['error'] = failure
         report['lastReadinessAttempt'] = attempt
         attempts = report.setdefault('readinessAttempts', [])
         if len(attempts) < 16:
@@ -152,6 +179,32 @@ def ready_page(report):
         else:
             report['readinessTraceOverflow'] = True
     return None
+
+
+def record_startup_progress(report, value, received_after):
+    """Keep bounded fixed-field evidence; never accept it as a readiness gate."""
+    if not isinstance(value, dict) or value.get('type') not in (
+            'parent-installed', 'cache-seeded', 'panel-ready', 'panel-error',
+            'rpc-dispatched', 'rpc-replied', 'rpc-failed'):
+        return False
+    at = value.get('atMs')
+    state = value.get('state')
+    if (type(at) not in (int, float) or not math.isfinite(at) or at < 0 or
+            value.get('documentState') not in ('loading', 'interactive', 'complete') or
+            not isinstance(state, dict) or type(state.get('parentInstalled')) is not bool):
+        return False
+    keys = ('iframeLoads', 'cacheRequests', 'seedReplies', 'readyMessages')
+    if any(type(state.get(key)) is not int or not 0 <= state[key] <= 128 for key in keys):
+        return False
+    record = dict(type=value['type'], atMs=at, documentState=value['documentState'],
+                  state={key: state[key] for key in ('parentInstalled',)+keys},
+                  receivedAfterSeconds=round(received_after, 3))
+    records = report.setdefault('records', [])
+    if len(records) == 16:
+        report['overflow'] = True
+        del records[0]
+    records.append(record)
+    return True
 
 
 def startup_diagnostics(browser, profile, log):
@@ -173,7 +226,7 @@ def startup_diagnostics(browser, profile, log):
         report['stderrUnavailable'] = True
     if report['devToolsPortFilePresent']:
         try:
-            with frame_steam.urllib.request.urlopen(frame_steam.CDP, timeout=2) as reply:
+            with urllib.request.urlopen(frame_steam.CDP, timeout=2) as reply:
                 encoded = reply.read(65537)
             if len(encoded) > 65536:
                 report['targetReportTooLarge'] = True
@@ -214,7 +267,89 @@ document.getElementById('panel').src = '/panel#fixture';
     return {'/': parent, '/panel': panel}
 
 
+def print_final_browser_state():
+    """Read only the two owned fixture targets; never promote them to ready."""
+    with urllib.request.urlopen(frame_steam.CDP, timeout=2) as response:
+        encoded = response.read(65537)
+    assert len(encoded) <= 65536, 'Owned target metadata exceeds diagnostic bound'
+    targets = json.loads(encoded)
+    print('{"phase":"targets-read"}', flush=True)
+    for kind in ('parent', 'iframe'):
+        target = next((item for item in targets if
+            str(item.get('url', '')).startswith('http://127.0.0.1:') and
+            (item.get('type') == 'page' and item.get('title') == 'Owned Syncthing actual backend'
+             if kind == 'parent' else item.get('type') == 'iframe' and
+             str(item.get('url', '')).endswith('/panel#fixture'))), None)
+        if target is None:
+            print(json.dumps(dict(target=kind, unavailable=True)), flush=True)
+            continue
+        page = None
+        try:
+            page = frame_steam.Page(target['title'])
+            print(json.dumps(dict(phase=kind+'-connected')), flush=True)
+            page.sock.settimeout(2)
+            common = """({documentState:document.readyState,atMs:Math.round(performance.now()),
+                rootText:(document.getElementById('framey-root')?.innerText||'').slice(0,1000),
+                errorText:(document.getElementById('framey-error')?.innerText||'').slice(0,1000),
+                probeInstalled:typeof dashboardReady==='function',
+                runtimeInstalled:typeof window.DFL==='object'})"""
+            if kind == 'parent':
+                common = """({documentState:document.readyState,atMs:Math.round(performance.now()),
+                    elapsedMs:typeof startedAt==='number'?Math.round(performance.now()-startedAt):null,
+                    ready:typeof ready!=='undefined'&&ready,state:window.startupState||null,
+                    failure:String(window.failure||'').slice(0,1000),
+                    errors:(window.startupErrors||[]).slice(0,4).map(x=>String(x).slice(0,256)),
+                    events:(window.startupEvents||[]).slice(-16)})"""
+            snapshot = dict(target=kind, state=page.eval(common))
+            line = json.dumps(snapshot)
+            print(line if len(line.encode()) <= 8192 else
+                  json.dumps(dict(target=kind, snapshotTooLarge=True)), flush=True)
+        except (OSError, frame_steam.Fail) as error:
+            print(json.dumps(dict(target=kind, errorType=type(error).__name__)), flush=True)
+        finally:
+            if page is not None:
+                page.sock.close()
+
+
+def final_browser_state(timeout=8):
+    """An isolated reader gives the complete final snapshot a hard wall bound."""
+    command = [sys.executable, '-c',
+        'print(\'{"phase":"interpreter-started"}\',flush=True); '
+        'import sys; sys.path[:0]=sys.argv[1:3]; import syncthing_browser as b; '
+        'print(\'{"phase":"module-imported"}\',flush=True); '
+        'b.frame_steam.CDP=sys.argv[3]; b.print_final_browser_state()',
+        str(Path(__file__).resolve().parent), str(Path(frame_steam.__file__).resolve().parent),
+        frame_steam.CDP]
+    report = dict(timeoutSeconds=timeout, timedOut=False)
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=timeout)
+        output = result.stdout
+        report['returnCode'] = result.returncode
+    except subprocess.TimeoutExpired as error:
+        output = error.stdout or b''
+        report['timedOut'] = True
+    except OSError as error:
+        report['errorType'] = type(error).__name__
+        output = b''
+    snapshots, phases = [], []
+    for line in output[:32768].splitlines():
+        try:
+            value = json.loads(line)
+            if 'phase' in value:
+                phases.append(value['phase'])
+            elif value.get('target') in ('parent', 'iframe'):
+                snapshots.append(value)
+        except (ValueError, UnicodeError):
+            report['incompleteSnapshot'] = True
+    report['snapshots'] = snapshots[:2]
+    report['phases'] = phases[:5]
+    return report
+
+
 def exercise(legacy_rpc, runtime_identity, service):
+    # The bounded failure-only reader imports this module too. It makes only
+    # outbound CDP requests and must not initialize the VM's inbound server.
+    import http.server
     from syncthing_service import prop
     assert os.getuid() == 1100 and Path('/framey-owned-vm').read_text() == 'Frame Control Flatpak VM v1\n'
     assert not Path('/sys/class/net/eth0').exists()
@@ -224,6 +359,9 @@ def exercise(legacy_rpc, runtime_identity, service):
     document_requests = []
     calls, stages, screenshots, observations = [], [], {}, []
     rpc_lock = threading.Lock()
+    calls_lock = threading.Lock()
+    bridge_started = time.monotonic()
+    parent_progress = {}
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -234,15 +372,34 @@ def exercise(legacy_rpc, runtime_identity, service):
                 self.send_error(404)
                 return
             data = documents[self.path].encode()
+            entry = dict(path=self.path, bytes=len(data),
+                         receivedAfterSeconds=round(time.monotonic()-bridge_started, 3))
             if len(document_requests) < 16:
-                document_requests.append(dict(path=self.path, bytes=len(data)))
+                document_requests.append(entry)
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            entry['responseWrittenAfterSeconds'] = round(time.monotonic()-bridge_started, 3)
 
         def do_POST(self):
+            if self.path == '/startup':
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 < length <= 2048:
+                    self.send_error(413)
+                    return
+                try:
+                    value = json.loads(self.rfile.read(length))
+                except ValueError:
+                    self.send_error(400)
+                    return
+                with calls_lock:
+                    accepted = record_startup_progress(parent_progress, value,
+                                                       time.monotonic()-bridge_started)
+                self.send_response(204 if accepted else 400)
+                self.end_headers()
+                return
             if self.path != '/rpc':
                 self.send_error(404)
                 return
@@ -254,29 +411,39 @@ def exercise(legacy_rpc, runtime_identity, service):
             assert method in ('get_settings_json', 'set_setting', 'framey_http_fetch')
             assert len(args) <= 1 and (not args or isinstance(args[0], dict))
             kwargs = args[0] if args else {}
-            entry = {'method': method}
+            entry = {'method': method, 'id': req.get('id'),
+                     'receivedAfterSeconds': round(time.monotonic()-bridge_started, 3)}
             if method == 'set_setting':
                 entry['setting'] = kwargs['setting']
             if method == 'framey_http_fetch':
                 entry.update(httpMethod=kwargs['method'], path=kwargs['path'])
-            with rpc_lock:
+            with calls_lock:
                 assert len(calls) < 300
-                value = legacy_rpc(method, **kwargs)
-                if method == 'framey_http_fetch':
-                    entry['status'] = value['status']
                 calls.append(entry)
+            try:
+                with rpc_lock:
+                    entry['backendStartedAfterSeconds'] = round(time.monotonic()-bridge_started, 3)
+                    value = legacy_rpc(method, **kwargs)
+                    entry['backendFinishedAfterSeconds'] = round(time.monotonic()-bridge_started, 3)
+                    if method == 'framey_http_fetch':
+                        entry['status'] = value['status']
+            except BaseException as error:
+                entry['failureType'] = type(error).__name__
+                raise
             data = json.dumps({'success': True, 'result': value}).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            entry['responseWrittenAfterSeconds'] = round(time.monotonic()-bridge_started, 3)
 
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     browser = page = None
+    pending_pages = []
     temporary = tempfile.TemporaryDirectory(prefix='framey-owned-browser-')
     report = {'success': False, 'syntheticInput': True, 'actualDeckyRpc': True,
               'installerEnabled': False, 'realFrameContacted': False,
@@ -285,6 +452,7 @@ def exercise(legacy_rpc, runtime_identity, service):
               'documentSha256': {path: hashlib.sha256(text.encode()).hexdigest()
                                  for path, text in documents.items()},
               'panelSha256': hashlib.sha256(Path('/input/browser-panel.html').read_bytes()).hexdigest()}
+    clock = report['startupClock'] = dict(origin='bridge-monotonic', readinessBudgetSeconds=60)
     try:
         profile = Path(temporary.name)
         command = ['/usr/bin/chromium', '--headless', '--disable-gpu', '--no-first-run',
@@ -293,8 +461,11 @@ def exercise(legacy_rpc, runtime_identity, service):
                    '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
                    'http://127.0.0.1:'+str(server.server_port)+'/']
         with (Path.home()/'browser.log').open('w+') as log:
+            clock['browserLaunchStartedAfterSeconds'] = round(time.monotonic()-bridge_started, 3)
             browser = subprocess.Popen(command, stdout=log, stderr=log, start_new_session=True)
+            clock['browserLaunchReturnedAfterSeconds'] = round(time.monotonic()-bridge_started, 3)
             deadline = time.monotonic()+60
+            clock['readinessDeadlineAfterSeconds'] = round(deadline-bridge_started, 3)
             while time.monotonic() < deadline:
                 if browser.poll() is not None:
                     raise RuntimeError('Sandboxed browser exited: '+str(browser.returncode))
@@ -302,12 +473,21 @@ def exercise(legacy_rpc, runtime_identity, service):
                 if port.is_file():
                     try:
                         frame_steam.CDP = 'http://127.0.0.1:'+port.read_text().splitlines()[0]+'/json'
-                        page = ready_page(report)
+                        page = ready_page(report, bridge_started, pending_pages)
                         if page is not None:
                             break
                     except (OSError, IndexError, frame_steam.Fail) as error:
                         report['lastReadinessError'] = str(error)[:1500]
                 time.sleep(.2)
+            while pending_pages:
+                pending_pages.pop().sock.close()
+            finished = time.monotonic()
+            clock['readinessFinishedAfterSeconds'] = round(finished-bridge_started, 3)
+            if page is not None and finished > deadline:
+                page.sock.close()
+                page = None
+                clock['lateReadyPageRejected'] = True
+            clock['readinessPassed'] = page is not None
             assert page is not None, 'Browser CDP/panel readiness unavailable'
             first_pids = []
             for label, action in [('running', 'setup'), ('stopped', 'stop'), ('restarted', 'start'), ('stopped', 'stop')]:
@@ -376,6 +556,7 @@ def exercise(legacy_rpc, runtime_identity, service):
     except BaseException:
         if browser:
             report['startupDiagnostics'] = startup_diagnostics(browser, profile, Path.home()/'browser.log')
+            report['finalBrowserState'] = final_browser_state()
         # GetUnit is read-only and does not load a collected inactive unit.
         lookup = subprocess.run(
             ['busctl', '--user', 'call', 'org.freedesktop.systemd1',
@@ -401,7 +582,9 @@ def exercise(legacy_rpc, runtime_identity, service):
         raise
     finally:
         report.update(stages=stages, calls=calls, actualPackagedProcessObservations=observations,
-                      documentRequests=list(document_requests))
+                      documentRequests=list(document_requests), parentStartupProgress=parent_progress)
+        while pending_pages:
+            pending_pages.pop().sock.close()
         if page:
             page.sock.close()
         if browser:

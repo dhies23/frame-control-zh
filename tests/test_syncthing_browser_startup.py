@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,6 +88,12 @@ addEventListener('message',event=>{
 
     def check_startup(self, cdp, documents, cut, delay, full_frontend=False):
         requests, rpc_calls = [], []
+        started = time.monotonic()
+        progress = {}
+        spec = importlib.util.spec_from_file_location('startup_progress_receiver',
+            ROOT / 'tests/decky-runtime/syncthing_browser.py')
+        receiver = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(receiver)
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_args):
@@ -111,6 +118,13 @@ addEventListener('message',event=>{
                     self.wfile.write(data)
 
             def do_POST(self):
+                if self.path == '/startup':
+                    length = int(self.headers.get('Content-Length', '0'))
+                    accepted = receiver.record_startup_progress(
+                        progress, json.loads(self.rfile.read(length)), time.monotonic()-started)
+                    self.send_response(204 if accepted else 400)
+                    self.end_headers()
+                    return
                 if self.path != '/rpc':
                     self.send_error(404)
                     return
@@ -135,6 +149,7 @@ addEventListener('message',event=>{
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, daemon=True).start()
         browser = page = None
+        pending_pages, readiness = [], {}
         with tempfile.TemporaryDirectory(prefix='framey-startup-test-') as scratch:
             try:
                 profile = Path(scratch) / 'profile'
@@ -154,25 +169,37 @@ addEventListener('message',event=>{
                             try:
                                 port = (profile / 'DevToolsActivePort').read_text().splitlines()[0]
                                 cdp.CDP = 'http://127.0.0.1:' + port + '/json'
-                                page = cdp.Page('Owned Syncthing actual backend')
-                            except (OSError, IndexError, cdp.Fail):
+                                receiver.frame_steam.CDP = cdp.CDP
+                                page = receiver.ready_page(readiness, started, pending_pages)
+                            except (OSError, IndexError, receiver.frame_steam.Fail):
                                 pass
                         if page is not None:
                             try:
                                 ready = page.eval("typeof ready !== 'undefined' && ready")
                             except cdp.Fail:
                                 ready = False
-                            if ready and (bool(rpc_calls) if full_frontend else
+                            progress_ready = any(v['type']=='panel-ready' for v in progress.get('records', []))
+                            if ready and progress_ready and (bool(rpc_calls) if full_frontend else
                                           page.eval('!!window.childSandbox')):
                                 break
                         time.sleep(.1)
                     self.assertTrue(ready, 'child seed request was lost during parent delivery')
+                    self.assertEqual(pending_pages, [])
+                    if delay:
+                        self.assertTrue(any(a['connectionReused'] for a in readiness['readinessAttempts']))
                     self.assertEqual(page.eval('window.startupErrors'), [])
                     state = page.eval('window.startupState')
                     self.assertTrue(state['parentInstalled'])
                     self.assertGreaterEqual(state['cacheRequests'], 1)
                     self.assertEqual(state['seedReplies'], state['cacheRequests'])
                     self.assertGreaterEqual(state['readyMessages'], 1)
+                    records = progress['records']
+                    self.assertLessEqual(len(records), 16)
+                    self.assertTrue(any(v['type']=='parent-installed' for v in records))
+                    self.assertTrue(any(v['type']=='cache-seeded' for v in records))
+                    self.assertTrue(any(v['type']=='panel-ready' and v['state']['readyMessages']>=1
+                                        for v in records))
+                    self.assertTrue(all(v['receivedAfterSeconds']>=0 and v['atMs']>=0 for v in records))
                     self.assertIn('/panel', requests)
                     self.assertNotIn('/forbidden', requests)
                     if full_frontend:
@@ -188,11 +215,34 @@ addEventListener('message',event=>{
                                      'allow-scripts')
                     # Large panel bytes never become target URLs returned by
                     # /json on every CDP readiness attempt.
-                    with cdp.urllib.request.urlopen(cdp.CDP, timeout=2) as response:
+                    with urllib.request.urlopen(cdp.CDP, timeout=2) as response:
                         targets = response.read(65537)
                     self.assertLessEqual(len(targets), 65536)
                     self.assertTrue(all(len(t['url']) < 256 for t in json.loads(targets)))
+                    # The failure-only reader must inspect the opaque child
+                    # directly without changing its sandbox or driving the UI.
+                    spec = importlib.util.spec_from_file_location('startup_final_reader',
+                        ROOT / 'tests/decky-runtime/syncthing_browser.py')
+                    reader = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(reader)
+                    reader.frame_steam.CDP = cdp.CDP
+                    final = reader.final_browser_state()
+                    self.assertFalse(final['timedOut'], final)
+                    self.assertEqual(final['returnCode'], 0, final)
+                    self.assertEqual(final['phases'], ['interpreter-started', 'module-imported',
+                                                      'targets-read', 'parent-connected', 'iframe-connected'])
+                    self.assertEqual([s['target'] for s in final['snapshots']], ['parent', 'iframe'])
+                    self.assertTrue(final['snapshots'][0]['state']['ready'], final)
+                    self.assertEqual(final['snapshots'][1]['state']['documentState'], 'complete')
+                    if full_frontend:
+                        self.assertIn('Start Setup', final['snapshots'][1]['state']['rootText'])
+                        self.assertNotIn('.syncthing-identicon', final['snapshots'][1]['state']['rootText'])
+                    print('Framey final browser state proof: '+json.dumps(final, sort_keys=True))
+                    print('Framey parent progress proof: '+json.dumps(progress, sort_keys=True))
+                    print('Framey readiness connection proof: '+json.dumps(readiness, sort_keys=True))
             finally:
+                while pending_pages:
+                    pending_pages.pop().sock.close()
                 if page is not None:
                     page.sock.close()
                 if browser is not None:
