@@ -1211,7 +1211,9 @@ def main():
                 log.seek(0)
                 lifecycle_log = log.read()
                 assert 'Unloaded DeckyParty File Manager' in lifecycle_log
-                assert lifecycle_log.count('Sending SIGKILL!') == int(regression)
+                # A negative may log multiple kill attempts for the same child.
+                forced_warnings = lifecycle_log.count('Sending SIGKILL!')
+                assert forced_warnings >= 1 if regression else forced_warnings == 0
                 report['independentState'] = {'privateDownload':True, 'privateUpload':True,
                     'privateDelete':True,
                     'anonymousAndWrongPasswordRefused':True, 'disabledChildReaped':True,
