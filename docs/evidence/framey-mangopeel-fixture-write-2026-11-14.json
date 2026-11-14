@@ -16,7 +16,7 @@
         "encoding": "base64"
       }
     },
-    "decompressedSha256": "9d8916e41ed36a14982dc387cd660bf669ff946529d3853f861766c755b30adc",
+    "decompressedSha256": "06a0b9d8cbe285305073424d6169126b358fd4f61107f729b9f125c0a04f75d2",
     "path": "docs/evidence/framey-mangopeel-fixture-write-2026-11-14.json.gz",
     "recordSha256": {
       "actualCandidateHelperProbeProof": "66aa5d03d3e28bde918dc1131455758fe041d79caaac8239b3876a60c66271a2",
@@ -35,10 +35,12 @@
       "failedOriginalRunJobsAndArtifactReadback": "a2a4788bc04a490e7ba63a4c16392a81c8a30d3466a18af4335e11bcba0b2f1e",
       "independentActualHelperInotifyProof": "66aa5d03d3e28bde918dc1131455758fe041d79caaac8239b3876a60c66271a2",
       "independentFailureAndStaticReview": "db861169d7e1daa512f404e112c81d63fbc68594c9763f52cd86d47e36de314b",
+      "independentFixtureShapeControls": "7213d873afcd801d93f436a39af9cb08284dc949ba81b52c20075e4c926e5ce0",
+      "independentNativeRuntimeReview": "f72727ecffd89834b40dccba0307c486b34eb5057b8d7a80b080da93dab7857a",
       "initialProbeExtractorScript": "78a1d75601fc000b5a1840964fe9915eb7cd49595048f42b98f2feb84890c616",
       "sourceCommitReadback": "11c3823350c1429feaeb7c5778a6ef1ef5df9afa8a1b2a3672aa384600a66f40"
     },
-    "sha256": "1069245760fa2f69553fee8e673e3333feeb9b3da03a0d77cfb282a925887dc9"
+    "sha256": "9f81d3f297eef4cf3ac6fc081aae7abf23b395c3ab3a4af9bf321d090659a6f8"
   },
   "recordedAt": "2026-11-14T19:40:28.893038+00:00",
   "retainedFailure": {
@@ -82,7 +84,9 @@
     "actualNativeArchitecture": "x86_64",
     "actualNativePrimaryPass": true,
     "existingRuntimeCoverageControls": 3,
+    "independentNativeRuntimeReviewPassed": true,
     "independentSourceAndControlledInotifyReviewPassed": true,
+    "independentTwoPortableControlsPassed": true,
     "negativeForcedKillSeconds": 5.237,
     "originalEofNegativeForcedKillPass": true,
     "portableFileControls": 2,
