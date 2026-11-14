@@ -26,7 +26,7 @@ class BrowserReadiness(unittest.TestCase):
             self.on_sleep()
         self.backend = SimpleNamespace(Fail=RuntimeError, Page=Mock())
         scope = dict(time=SimpleNamespace(monotonic=lambda: self.now, sleep=sleep),
-                     frame_steam=self.backend)
+                     frame_steam=self.backend, bridge_started=0, clock={})
         helpers = [n for n in tree.body
                    if isinstance(n, ast.FunctionDef) and n.name == 'ready_page']
         exec(compile(ast.fix_missing_locations(ast.Module(body=helpers+[wrapper], type_ignores=[])),
@@ -37,7 +37,7 @@ class BrowserReadiness(unittest.TestCase):
         self.profile = Path(self.temporary.name)
         self.port = self.profile/'DevToolsActivePort'
         self.browser = Mock(poll=lambda: None)
-        self.report = {}
+        self.report = {'startupClock': scope['clock']}
 
     def ready_page(self):
         page = Mock()
@@ -51,6 +51,8 @@ class BrowserReadiness(unittest.TestCase):
         self.on_sleep = lambda: self.port.write_text('12345\nfixture')
         self.assertIs(self.wait(self.browser, self.profile, self.report), page)
         self.assertGreater(self.now, 0)
+        self.assertEqual(self.report['startupClock']['readinessDeadlineAfterSeconds'], 60)
+        self.assertTrue(self.report['startupClock']['readinessPassed'])
         self.assertEqual(self.backend.CDP, 'http://127.0.0.1:12345/json')
         self.backend.Page.assert_called_once()
 
@@ -68,6 +70,9 @@ class BrowserReadiness(unittest.TestCase):
             self.wait(self.browser, self.profile, self.report)
         self.assertGreaterEqual(self.now, 60)
         self.assertLess(self.now, 61)
+        self.assertEqual(self.report['startupClock']['readinessDeadlineAfterSeconds'], 60)
+        self.assertFalse(self.report['startupClock']['readinessPassed'])
+        self.assertGreaterEqual(self.report['startupClock']['readinessFinishedAfterSeconds'], 60)
         self.backend.Page.assert_not_called()
 
     def test_exited_browser_keeps_distinct_failure(self):

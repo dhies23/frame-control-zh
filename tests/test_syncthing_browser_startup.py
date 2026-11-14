@@ -88,6 +88,12 @@ addEventListener('message',event=>{
 
     def check_startup(self, cdp, documents, cut, delay, full_frontend=False):
         requests, rpc_calls = [], []
+        started = time.monotonic()
+        progress = {}
+        spec = importlib.util.spec_from_file_location('startup_progress_receiver',
+            ROOT / 'tests/decky-runtime/syncthing_browser.py')
+        receiver = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(receiver)
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_args):
@@ -112,6 +118,13 @@ addEventListener('message',event=>{
                     self.wfile.write(data)
 
             def do_POST(self):
+                if self.path == '/startup':
+                    length = int(self.headers.get('Content-Length', '0'))
+                    accepted = receiver.record_startup_progress(
+                        progress, json.loads(self.rfile.read(length)), time.monotonic()-started)
+                    self.send_response(204 if accepted else 400)
+                    self.end_headers()
+                    return
                 if self.path != '/rpc':
                     self.send_error(404)
                     return
@@ -163,7 +176,8 @@ addEventListener('message',event=>{
                                 ready = page.eval("typeof ready !== 'undefined' && ready")
                             except cdp.Fail:
                                 ready = False
-                            if ready and (bool(rpc_calls) if full_frontend else
+                            progress_ready = any(v['type']=='panel-ready' for v in progress.get('records', []))
+                            if ready and progress_ready and (bool(rpc_calls) if full_frontend else
                                           page.eval('!!window.childSandbox')):
                                 break
                         time.sleep(.1)
@@ -174,6 +188,13 @@ addEventListener('message',event=>{
                     self.assertGreaterEqual(state['cacheRequests'], 1)
                     self.assertEqual(state['seedReplies'], state['cacheRequests'])
                     self.assertGreaterEqual(state['readyMessages'], 1)
+                    records = progress['records']
+                    self.assertLessEqual(len(records), 16)
+                    self.assertTrue(any(v['type']=='parent-installed' for v in records))
+                    self.assertTrue(any(v['type']=='cache-seeded' for v in records))
+                    self.assertTrue(any(v['type']=='panel-ready' and v['state']['readyMessages']>=1
+                                        for v in records))
+                    self.assertTrue(all(v['receivedAfterSeconds']>=0 and v['atMs']>=0 for v in records))
                     self.assertIn('/panel', requests)
                     self.assertNotIn('/forbidden', requests)
                     if full_frontend:
@@ -203,6 +224,8 @@ addEventListener('message',event=>{
                     final = reader.final_browser_state()
                     self.assertFalse(final['timedOut'], final)
                     self.assertEqual(final['returnCode'], 0, final)
+                    self.assertEqual(final['phases'], ['interpreter-started', 'module-imported',
+                                                      'targets-read', 'parent-connected', 'iframe-connected'])
                     self.assertEqual([s['target'] for s in final['snapshots']], ['parent', 'iframe'])
                     self.assertTrue(final['snapshots'][0]['state']['ready'], final)
                     self.assertEqual(final['snapshots'][1]['state']['documentState'], 'complete')
@@ -210,6 +233,7 @@ addEventListener('message',event=>{
                         self.assertIn('Start Setup', final['snapshots'][1]['state']['rootText'])
                         self.assertNotIn('.syncthing-identicon', final['snapshots'][1]['state']['rootText'])
                     print('Framey final browser state proof: '+json.dumps(final, sort_keys=True))
+                    print('Framey parent progress proof: '+json.dumps(progress, sort_keys=True))
             finally:
                 if page is not None:
                     page.sock.close()
