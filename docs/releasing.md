@@ -90,6 +90,15 @@ count. So a build reaches people only when you publish it, after testing it.
    signed-package evidence verifies the isolated candidate, not a managed installation or
    wearer-visible Syncthing controls.
 
+   Offline bundle preparation retains each command's elapsed time, waited-child
+   user/system CPU time and bounded failure output in `preparation.json` and
+   `FRAMEY_PREPARATION_COMMAND_JSON` log records. The CPU values describe
+   completed, waited children; they are not live progress or a success gate.
+   A command timeout still fails preparation after 600 seconds. Preserve the
+   partial report and failed attempt when investigating export failures;
+   these diagnostics do not qualify package installation or explain an older
+   timeout that did not record them.
+
    Supply the saved smoke result to the publisher. Both its dry run and publish
    command reject a result from another or dirty commit, incomplete title or
    cleanup steps, a skip or failure, or an unconfirmed headset lock release:
