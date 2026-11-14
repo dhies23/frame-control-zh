@@ -179,10 +179,12 @@ managed store. `panelCandidate` means the basic frontend entry and API version
 can be admitted to Framey's panel. Neither result proves that the published
 store digest matches this ZIP, Decky discovers its backend, or its UI works in
 VR. The [sample plugin](../examples/framey-settings/README.md#build) uses
-`scripts/framey-pack-sample.py` to package its three release files reproducibly
-and run this checker before replacing the destination ZIP. It packages an
-existing build; plugins with extra assets or chunks need their own packaging
-step before using the checker above.
+`scripts/framey-pack-sample.py` to package its four release files reproducibly:
+`plugin.json`, `main.py`, `py_modules/framey_decky_ipc.py`, and `dist/index.js`.
+The helper is required by the sample's [Decky child IPC repair](../examples/framey-settings/README.md#decky-330-child-ipc-lifetime);
+include it in renamed forks too. The packer runs this checker before replacing
+the destination ZIP. It packages an existing build; plugins with extra assets
+or chunks need their own packaging step before using the checker above.
 The checker reads every file through its ZIP checksum, including large assets
 and backend files, before accepting the archive. Corrupt DEFLATE streams also
 return a JSON `ok: false` result and a failing exit status without changing the
