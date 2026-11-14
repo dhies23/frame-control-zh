@@ -321,6 +321,59 @@ class PublishRelease(unittest.TestCase):
         self.assertIsNone(upload)
         self.assertFalse(any("-X" in call for call in log))
 
+    def test_missing_sample_workflows_stop_publish_and_dry_run_before_mutation(self):
+        for kind in ('sample_runtime', 'sample_browser'):
+            for args in (('v9.8.7',), ('--dry-run', 'v9.8.7')):
+                with self.subTest(kind=kind, args=args):
+                    p, log, upload = self.run_script([draft()], *args,
+                                                     gates={kind + '_missing': True})
+                    self.assertNotEqual(p.returncode, 0, p.stdout)
+                    self.assertIn('no exact framey-sample-', p.stderr)
+                    self.assertIsNone(upload)
+                    self.assertFalse(any('-X' in call for call in log))
+
+    def test_sample_jobs_runs_and_attempts_must_all_qualify_before_mutation(self):
+        kinds = {
+            'sample_runtime': ('sample-runtime (ubuntu-latest)', 'sample-runtime (ubuntu-24.04-arm)'),
+            'sample_browser': ('sample-browser',),
+        }
+        for kind, names in kinds.items():
+            cases = [{kind + '_sha': 'c' * 40}, {kind + '_branch': 'unrelated'},
+                     {kind + '_event': 'pull_request'}, {kind + '_status': 'in_progress'}]
+            cases += [{'omit_job': name} for name in names]
+            cases += [{'bad_job': names[-1], 'bad_job_conclusion': state}
+                      for state in ('failure', 'cancelled', 'skipped')]
+            cases += [{'prior_' + kind + '_run': True,
+                       'prior_' + kind + '_conclusion': state}
+                      for state in ('failure', 'cancelled', 'skipped')]
+            cases += [{'prior_' + kind + '_run': True,
+                       'prior_' + kind + '_status': 'in_progress',
+                       'prior_' + kind + '_conclusion': None},
+                      {kind + '_attempts': 2, kind + '_prior_bad_job': names[-1],
+                       kind + '_prior_bad_conclusion': 'cancelled'}]
+            for gates in cases:
+                with self.subTest(kind=kind, gates=gates):
+                    p, log, upload = self.run_script([draft()], 'v9.8.7', gates=gates)
+                    self.assertNotEqual(p.returncode, 0, p.stdout)
+                    self.assertIn('release gate failed', p.stderr)
+                    self.assertRegex(p.stderr, 'framey-sample-|sample-runtime|sample-browser|run (494|495|506|507)')
+                    self.assertIsNone(upload)
+                    self.assertFalse(any('-X' in call for call in log))
+
+    def test_sample_push_and_manual_runs_are_accepted_and_prior_successes_inspected(self):
+        for event in ('push', 'workflow_dispatch'):
+            with self.subTest(event=event):
+                p, log, upload = self.run_script(
+                    [draft()], '--dry-run', 'v9.8.7',
+                    gates={'sample_runtime_event': event, 'sample_browser_event': event,
+                           'prior_sample_runtime_run': True, 'prior_sample_browser_run': True})
+                self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+                for run in (494, 495, 506, 507):
+                    self.assertTrue(any(f'actions/runs/{run}/attempts/1/jobs' in arg
+                                        for call in log for arg in call), run)
+                self.assertIsNone(upload)
+                self.assertFalse(any('-X' in call for call in log))
+
     def test_ownership_gates_stop_publication_before_any_mutation(self):
         cases = [{"ownership_missing": True}, {"ownership_sha": "c" * 40},
                  {"ownership_branch": "unrelated"}, {"ownership_event": "pull_request"},
