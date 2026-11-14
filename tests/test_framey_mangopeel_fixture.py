@@ -28,7 +28,7 @@ class MangoPeelFixtureWrites(unittest.TestCase):
             for index, previous in ((2, 'mangopeel_flag=1\nmangoapp_steam\nfps=1'),
                                     (3, 'mangopeel_flag=2\nmangoapp_steam\nfps=1')):
                 with self.subTest(index=index):
-                    profile.write_text(previous)
+                    profile.write_bytes(previous.encode())
                     inode = profile.stat().st_ino
                     seen = []
                     def observe():
