@@ -257,3 +257,120 @@ class DeckyServiceScript(unittest.TestCase):
         self.assertFalse((self.base / 'PluginLoader').exists())
         self.assertFalse(receipt.exists())
         self.assertTrue((self.base / 'plugins').is_dir())
+
+    def test_non_object_loader_receipts_keep_status_inventory_visible(self):
+        installed = self.apply('install', arm_binary())
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        receipt = self.base / '.frame-control/receipt.json'
+        legacy = self.base / 'settings/release.json'
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        valid = receipt.read_bytes()
+        plugin = self.base / 'plugins/Neighbor/plugin.json'
+        plugin.parent.mkdir(parents=True)
+        plugin.write_text(json.dumps({'name': 'Neighbor', 'author': 'Fixture'}))
+        unavailable_cef = '''import http.client
+class UnavailableCEF:
+    def __init__(self, *args, **kwargs): pass
+    def request(self, *args, **kwargs): raise OSError('fixture CEF unavailable')
+    def close(self): pass
+http.client.HTTPConnection = UnavailableCEF
+'''
+        os_release = Path(self.tmp.name) / 'os-release'
+        os_release.write_text('VERSION_ID="13"\nVARIANT_ID="vr"\nBUILD_ID="private-fixture"\n')
+        # The remote script targets Linux; the test also runs on macOS.
+        self.assertEqual(frame_decky.PROBE.count("pathlib.Path('/etc/os-release')"), 1)
+        full_probe = frame_decky.PROBE.replace("pathlib.Path('/etc/os-release')",
+                                              'pathlib.Path('+repr(str(os_release))+')')
+        malformed = [json.dumps(value).encode() for value in ([], None, True, 42, 'fixture')]
+        malformed.extend((b'{', b'\xff'))
+        for location in ('receipt', 'legacy'):
+            for raw in malformed:
+                # An invalid current receipt takes precedence over valid legacy data.
+                if location == 'receipt':
+                    receipt.write_bytes(raw)
+                    legacy.write_bytes(valid)
+                else:
+                    receipt.unlink(missing_ok=True)
+                    legacy.write_bytes(raw)
+                for probe, prefix in ((frame_decky.PANEL_STATUS_PROBE, ''),
+                                      (full_probe, unavailable_cef)):
+                    with self.subTest(location=location, raw=raw, full=bool(prefix)):
+                        before = {p: p.read_bytes() for p in Path(self.tmp.name).rglob('*') if p.is_file()}
+                        result = subprocess.run([sys.executable, '-'], input=prefix+probe,
+                            capture_output=True, text=True, env=self.env, timeout=15)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        state = json.loads(result.stdout)
+                        self.assertFalse(state['managed'])
+                        self.assertIsNone(state['version'])
+                        self.assertTrue(state['running'])
+                        self.assertEqual([p['name'] for p in state['plugins']], ['Neighbor'])
+                        self.assertEqual({p: p.read_bytes() for p in before}, before)
+
+    def test_non_object_loader_receipts_refuse_mutations_without_changes(self):
+        first = arm_binary()
+        installed = self.apply('install', first)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        receipt = self.base / '.frame-control/receipt.json'
+        legacy = self.base / 'settings/release.json'
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        valid = receipt.read_bytes()
+        for location in ('receipt', 'legacy'):
+            for value in ([], None, True, 42, 'fixture'):
+                if location == 'receipt':
+                    receipt.write_text(json.dumps(value))
+                    legacy.write_bytes(valid)
+                else:
+                    receipt.unlink(missing_ok=True)
+                    legacy.write_text(json.dumps(value))
+                for action in ('update', 'remove'):
+                    with self.subTest(location=location, value=value, action=action):
+                        before = {p: p.read_bytes() for p in Path(self.tmp.name).rglob('*') if p.is_file()}
+                        result = self.apply(action, arm_binary(b'B') if action == 'update' else None)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('No Frame Control managed Decky install', result.stderr)
+                        self.assertEqual({p: p.read_bytes() for p in before}, before)
+
+    def test_update_preserves_unrecognized_legacy_receipts(self):
+        installed = self.apply('install', arm_binary())
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        legacy = self.base / 'settings/release.json'
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        plugin = self.base / 'plugins/Neighbor/state.txt'
+        plugin.parent.mkdir(parents=True)
+        plugin.write_bytes(b'neighbor settings canary\n')
+        unknown = [json.dumps(value).encode() for value in
+                   ([], None, True, 42, 'fixture', {'managedBy': 'another tool'})]
+        unknown.extend((b'{', b'\xff'))
+        for raw in unknown:
+            with self.subTest(raw=raw):
+                legacy.write_bytes(raw)
+                result = self.apply('update', arm_binary(b'B'), version='v3.3.1')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.base / 'PluginLoader').read_bytes(), arm_binary(b'B'))
+                self.assertEqual(json.loads((self.base / '.frame-control/receipt.json').read_text())['version'], 'v3.3.1')
+                self.assertEqual(legacy.read_bytes(), raw)
+                self.assertEqual(plugin.read_bytes(), b'neighbor settings canary\n')
+
+    def test_remove_preserves_unrecognized_legacy_receipts(self):
+        legacy = self.base / 'settings/release.json'
+        plugin = self.base / 'plugins/Neighbor/state.txt'
+        unknown = [json.dumps(value).encode() for value in
+                   ([], None, True, 42, 'fixture', {'managedBy': 'another tool'})]
+        unknown.extend((b'{', b'\xff'))
+        for raw in unknown:
+            with self.subTest(raw=raw):
+                # Remove only the prior iteration's private fixture before reinstalling.
+                legacy.unlink(missing_ok=True)
+                installed = self.apply('install', arm_binary())
+                self.assertEqual(installed.returncode, 0, installed.stderr)
+                legacy.parent.mkdir(parents=True, exist_ok=True)
+                legacy.write_bytes(raw)
+                plugin.parent.mkdir(parents=True, exist_ok=True)
+                plugin.write_bytes(b'neighbor settings canary\n')
+                result = self.apply('remove')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse((self.base / 'PluginLoader').exists())
+                self.assertFalse((self.base / '.frame-control/receipt.json').exists())
+                self.assertFalse((Path(self.tmp.name) / '.config/systemd/user/frame-control-decky.service').exists())
+                self.assertEqual(legacy.read_bytes(), raw)
+                self.assertEqual(plugin.read_bytes(), b'neighbor settings canary\n')

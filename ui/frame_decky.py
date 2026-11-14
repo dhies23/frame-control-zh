@@ -69,7 +69,7 @@ release = managed / '.frame-control/receipt.json'
 legacy = managed / 'settings/release.json'
 try:
     metadata = json.loads((release if release.exists() else legacy).read_text())
-    version = metadata.get('version') if metadata.get('managedBy') == 'Frame Control' else None
+    version = metadata.get('version') if isinstance(metadata, dict) and metadata.get('managedBy') == 'Frame Control' else None
 except (OSError, ValueError): version = None
 running = subprocess.run(['systemctl', '--user', 'is-active', 'frame-control-decky.service'],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2).returncode == 0
@@ -106,7 +106,7 @@ except (OSError, ValueError, http.client.HTTPException): cef = False
 finally: connection.close()
 try:
     metadata = json.loads((release if release.exists() else legacy).read_text())
-    version = metadata.get('version') if metadata.get('managedBy') == 'Frame Control' else None
+    version = metadata.get('version') if isinstance(metadata, dict) and metadata.get('managedBy') == 'Frame Control' else None
 except (OSError, ValueError): version = None
 print(json.dumps({'arch':os.uname().machine, 'frameOS':os_release.get('VERSION_ID'),
     'variant':os_release.get('VARIANT_ID'), 'build':os_release.get('BUILD_ID'), 'cef':cef,
@@ -130,9 +130,13 @@ transaction_lock = None
 def systemd(*args):
     p = subprocess.run(['systemctl','--user',*args], capture_output=True, text=True, timeout=20)
     if p.returncode: raise RuntimeError((p.stderr or p.stdout).strip() or 'systemd failed')
+def release_metadata(path):
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError): return {}
 def owned():
-    try: return json.loads((receipt if receipt.exists() else legacy).read_text()).get('managedBy') == 'Frame Control' and service.is_file()
-    except (OSError, ValueError): return False
+    return release_metadata(receipt if receipt.exists() else legacy).get('managedBy') == 'Frame Control' and service.is_file()
 try:
     # The desktop and headset servers are separate processes. Lock the shared
     # user-service transaction on the Frame before inspecting or changing it.
@@ -148,7 +152,7 @@ try:
         systemd('daemon-reload')
         binary.unlink(missing_ok=True)
         receipt.unlink(missing_ok=True)
-        if legacy.exists() and json.loads(legacy.read_text()).get('managedBy') == 'Frame Control': legacy.unlink()
+        if legacy.exists() and release_metadata(legacy).get('managedBy') == 'Frame Control': legacy.unlink()
         print(json.dumps({'message':'Removed Frame Control managed Decky service and binary. Plugin files were kept. Restart Steam or the headset to clear its menu.'}))
     else:
         if action not in ('install','update'): raise RuntimeError('Invalid Decky action')
@@ -194,7 +198,7 @@ try:
               '[Install]\nWantedBy=default.target\n')
             service.write_text(text)
             receipt.write_text(json.dumps({'managedBy':'Frame Control','version':version,'sha256':digest})+'\n')
-            if legacy.exists() and json.loads(legacy.read_text()).get('managedBy') == 'Frame Control': legacy.unlink()
+            if legacy.exists() and release_metadata(legacy).get('managedBy') == 'Frame Control': legacy.unlink()
             systemd('daemon-reload')
             systemd('enable','--now','frame-control-decky.service')
             systemd('is-active','frame-control-decky.service')
