@@ -49,7 +49,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path, help='destination ZIP; parent directory must exist')
     parser.add_argument('--source', type=Path, default=ROOT / 'examples/framey-settings',
-                        help='sample directory with plugin.json, main.py and built dist/index.js')
+                        help='sample directory containing ' + ', '.join(FILES) +
+                             '; build the frontend first')
     parser.add_argument('--name', default='Framey Settings Sample',
                         help='exact expected store name (default: Framey Settings Sample)')
     args = parser.parse_args(argv)
