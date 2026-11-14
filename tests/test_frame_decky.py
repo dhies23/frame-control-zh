@@ -275,6 +275,12 @@ class UnavailableCEF:
     def close(self): pass
 http.client.HTTPConnection = UnavailableCEF
 '''
+        os_release = Path(self.tmp.name) / 'os-release'
+        os_release.write_text('VERSION_ID="13"\nVARIANT_ID="vr"\nBUILD_ID="private-fixture"\n')
+        # The remote script targets Linux; the test also runs on macOS.
+        self.assertEqual(frame_decky.PROBE.count("pathlib.Path('/etc/os-release')"), 1)
+        full_probe = frame_decky.PROBE.replace("pathlib.Path('/etc/os-release')",
+                                              'pathlib.Path('+repr(str(os_release))+')')
         malformed = [json.dumps(value).encode() for value in ([], None, True, 42, 'fixture')]
         malformed.extend((b'{', b'\xff'))
         for location in ('receipt', 'legacy'):
@@ -287,7 +293,7 @@ http.client.HTTPConnection = UnavailableCEF
                     receipt.unlink(missing_ok=True)
                     legacy.write_bytes(raw)
                 for probe, prefix in ((frame_decky.PANEL_STATUS_PROBE, ''),
-                                      (frame_decky.PROBE, unavailable_cef)):
+                                      (full_probe, unavailable_cef)):
                     with self.subTest(location=location, raw=raw, full=bool(prefix)):
                         before = {p: p.read_bytes() for p in Path(self.tmp.name).rglob('*') if p.is_file()}
                         result = subprocess.run([sys.executable, '-'], input=prefix+probe,
