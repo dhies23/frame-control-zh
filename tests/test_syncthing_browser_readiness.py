@@ -82,6 +82,43 @@ class BrowserReadiness(unittest.TestCase):
             self.wait(self.browser, self.profile, self.report)
         self.assertEqual(self.now, 0)
 
+    def test_ready_probe_finishing_after_deadline_is_closed_and_rejected(self):
+        self.port.write_text('12345\nfixture')
+        page = self.ready_page()
+        def finish_late(_expression):
+            self.now = 60.5
+            return True
+        page.eval.side_effect = finish_late
+        with self.assertRaisesRegex(AssertionError, 'Browser CDP/panel readiness unavailable'):
+            self.wait(self.browser, self.profile, self.report)
+        page.sock.close.assert_called_once()
+        self.backend.Page.assert_called_once()
+        self.assertFalse(self.report['startupClock']['readinessPassed'])
+        self.assertEqual(self.report['startupClock']['readinessFinishedAfterSeconds'], 60.5)
+        self.assertTrue(self.report['startupClock']['lateReadyPageRejected'])
+
+    def test_ready_probe_finishing_at_deadline_is_accepted(self):
+        self.port.write_text('12345\nfixture')
+        page = self.ready_page()
+        def finish_at_deadline(_expression):
+            self.now = 60
+            return True
+        page.eval.side_effect = finish_at_deadline
+        self.assertIs(self.wait(self.browser, self.profile, self.report), page)
+        page.sock.close.assert_not_called()
+        self.assertTrue(self.report['startupClock']['readinessPassed'])
+
+    def test_ready_probe_finishing_before_deadline_is_accepted(self):
+        self.port.write_text('12345\nfixture')
+        page = self.ready_page()
+        def finish_before_deadline(_expression):
+            self.now = 59.9
+            return True
+        page.eval.side_effect = finish_before_deadline
+        self.assertIs(self.wait(self.browser, self.profile, self.report), page)
+        page.sock.close.assert_not_called()
+        self.assertTrue(self.report['startupClock']['readinessPassed'])
+
     def test_incomplete_page_is_closed_before_ready_page_is_accepted(self):
         self.port.write_text('12345\nfixture')
         pending, ready = Mock(), Mock()

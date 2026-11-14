@@ -471,7 +471,12 @@ def exercise(legacy_rpc, runtime_identity, service):
                     except (OSError, IndexError, frame_steam.Fail) as error:
                         report['lastReadinessError'] = str(error)[:1500]
                 time.sleep(.2)
-            clock['readinessFinishedAfterSeconds'] = round(time.monotonic()-bridge_started, 3)
+            finished = time.monotonic()
+            clock['readinessFinishedAfterSeconds'] = round(finished-bridge_started, 3)
+            if page is not None and finished > deadline:
+                page.sock.close()
+                page = None
+                clock['lateReadyPageRejected'] = True
             clock['readinessPassed'] = page is not None
             assert page is not None, 'Browser CDP/panel readiness unavailable'
             first_pids = []
