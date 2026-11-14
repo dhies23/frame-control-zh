@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import subprocess
 import sys
 import tempfile
@@ -174,11 +175,16 @@ class PreparationInput(unittest.TestCase):
             root = Path(temporary)
             (root/'payload/objects').mkdir(parents=True)
             failure = subprocess.TimeoutExpired(['ostree'], 600, output=b'partial')
-            with patch.object(self.module, 'public_key', return_value=b'pinned key'), \
+            # Initialization fails before OSTree.Repo is used. Keep this fixture
+            # independent of optional host OSTree GI bindings.
+            with patch.object(self.module.gi, 'require_version') as require_version, \
+                    patch.dict(sys.modules, {'gi.repository': SimpleNamespace(OSTree=object())}), \
+                    patch.object(self.module, 'public_key', return_value=b'pinned key'), \
                     patch.object(self.module.subprocess, 'run', side_effect=failure), \
                     contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(subprocess.TimeoutExpired):
                     self.module.bundle(root/'payload', root/'output', 'x86_64')
+            require_version.assert_called_once_with('OSTree', '1.0')
             report = json.loads((root/'output/preparation.json').read_text())
             self.assertFalse(report['payloadIntegrityVerified'])
             self.assertFalse(report['packageInstalled'])
