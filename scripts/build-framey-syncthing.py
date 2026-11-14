@@ -108,7 +108,8 @@ def main():
         lock = manifest.with_name('Cargo.lock').read_bytes()
         if args.fetch:
             subprocess.run(['cargo', 'fetch', '--locked', '--manifest-path', str(manifest)],
-                           env={**os.environ, 'CARGO_HOME':str(cache)}, check=True, timeout=180)
+                           env={**os.environ, 'CARGO_HOME':str(cache),
+                                'CARGO_NET_GIT_FETCH_WITH_CLI':'true'}, check=True, timeout=180)
         else:
             for name in ('registry', 'git'):
                 shutil.copytree(args.dependency_cache/name, cache/name)
