@@ -22,6 +22,13 @@ Save `plugin.json` as UTF-8 JSON without a byte-order mark. Unicode names and
 descriptions are supported, but UTF-16/32 and BOM-prefixed manifests are rejected
 before transfer and extraction: the installed loader cannot read them. The
 local archive checker enforces the same encoding rule.
+Keep `plugin.json` at or below 16 KiB of UTF-8 bytes, including whitespace.
+The managed installer rejects larger manifests before transfer and again
+before remote extraction, because installed inventory cannot read them to
+offer Update or Remove. The author checker enforces the same limit. Local
+transaction tests cover the exact byte boundary, inventory visibility,
+removal and rejection of an oversized update without changing the installed
+copy or stopping Decky. Existing oversized manifests are not rewritten.
 Test on ARM64. If you ship an ELF helper, build it for AArch64 (ELF machine
 183). Avoid root, `sudo`, Steam Deck TDP controls, fixed x86 binaries, and
 paths under `/etc`. Frame Control's managed loader is a normal user service;
