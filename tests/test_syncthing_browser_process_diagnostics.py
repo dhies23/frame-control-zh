@@ -35,7 +35,7 @@ class BrowserProcessDiagnostics(unittest.TestCase):
         path = self.root/str(pid)
         path.mkdir()
         (path/'stat').write_bytes(raw if raw is not None else stat_line(pid, **kwargs))
-        (path/'wchan').write_text('do_poll\n')
+        (path/'wchan').write_bytes(b'do_poll\n')
         return path
 
     def test_records_only_owned_session_with_exact_process_counters(self):
