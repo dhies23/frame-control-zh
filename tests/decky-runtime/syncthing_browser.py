@@ -170,7 +170,7 @@ def screenshot(page):
             return response['result']['data']
 
 
-def ready_page(report, clock_start=None, pending=None):
+def ready_page(report, clock_start=None, pending=None, deadline=None):
     """Accept only a ready panel, retaining at most one pending owned socket."""
     candidate = None
     accepted = False
@@ -182,13 +182,40 @@ def ready_page(report, clock_start=None, pending=None):
     try:
         candidate = pending.pop() if reused else frame_steam.Page('Owned Syncthing actual backend')
         phase = 'panel-snapshot'
-        # One CDP evaluation per probe: repeated diagnostic requests compete
-        # with the starting renderer under ARM64 QEMU emulation.
-        snapshot = candidate.eval("""({ready:typeof ready !== 'undefined' && ready,
-            errors:window.startupErrors||[],state:window.startupState||null,
-            documentState:document.readyState,
-            iframeAssigned:!!document.getElementById('panel')?.getAttribute('src'),
-            events:window.startupEvents||[]})""")
+        # Keep one browser-side wait on the owned connection. Repeated CDP
+        # snapshots need not compete with the renderer while it initializes.
+        expression = """(() => {
+            const snapshot=()=>({ready:typeof ready !== 'undefined' && ready,
+                errors:window.startupErrors||[],state:window.startupState||null,
+                documentState:document.readyState,
+                iframeAssigned:!!document.getElementById('panel')?.getAttribute('src'),
+                events:window.startupEvents||[]});
+            const initial=snapshot(),budget=WAIT_MILLISECONDS;
+            if(initial.ready||budget<=0)return initial;
+            return new Promise(resolve=>{
+                let timer,finished=false;
+                const finish=()=>{
+                    if(finished)return;finished=true;
+                    removeEventListener('message',onMessage);clearTimeout(timer);
+                    resolve(snapshot());
+                };
+                // A listener installed before the parent's own handler must
+                // inspect ready after all handlers for that message ran.
+                const onMessage=()=>queueMicrotask(()=>{if(snapshot().ready)finish();});
+                addEventListener('message',onMessage);
+                timer=setTimeout(finish,budget);
+            });
+        })()"""
+        wait_seconds = max(0, deadline-time.monotonic()) if deadline is not None else 0
+        expression = expression.replace('WAIT_MILLISECONDS', repr(wait_seconds*1000))
+        if deadline is not None:
+            original_timeout = candidate.sock.gettimeout()
+            candidate.sock.settimeout(max(.001, wait_seconds))
+        try:
+            snapshot = candidate.eval(expression)
+        finally:
+            if deadline is not None:
+                candidate.sock.settimeout(original_timeout)
         accepted = snapshot['ready'] is True
         if accepted:
             outcome = 'ready'
@@ -215,6 +242,8 @@ def ready_page(report, clock_start=None, pending=None):
                            finishedAfterSeconds=round(time.monotonic()-clock_start, 3))
         if failure is not None:
             attempt['error'] = failure
+        if deadline is not None and phase == 'panel-snapshot':
+            attempt['browserEventWaitBudgetSeconds'] = round(wait_seconds, 3)
         report['lastReadinessAttempt'] = attempt
         attempts = report.setdefault('readinessAttempts', [])
         if len(attempts) < 16:
@@ -516,7 +545,7 @@ def exercise(legacy_rpc, runtime_identity, service):
                 if port.is_file():
                     try:
                         frame_steam.CDP = 'http://127.0.0.1:'+port.read_text().splitlines()[0]+'/json'
-                        page = ready_page(report, bridge_started, pending_pages)
+                        page = ready_page(report, bridge_started, pending_pages, deadline)
                         if page is not None:
                             break
                     except (OSError, IndexError, frame_steam.Fail) as error:

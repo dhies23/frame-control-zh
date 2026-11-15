@@ -188,5 +188,109 @@ class BrowserReadiness(unittest.TestCase):
         self.assertTrue(self.report['lastReadinessAttempt']['connectionReused'])
 
 
+    def execute_snapshot_javascript(self, expression, *, initial_ready=False, event='ready'):
+        import json
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if node is None:
+            self.skipTest('Node is unavailable')
+        script = r"""
+const vm=require('node:vm');
+const handlers=new Set();
+const context={ready:INITIAL_READY,startupErrors:[],startupEvents:[],
+ startupState:{readyMessages:INITIAL_READY?1:0},
+ document:{readyState:'complete',getElementById:()=>({getAttribute:()=>'/panel'})},
+ setTimeout,clearTimeout,queueMicrotask,
+ addEventListener:(type,fn)=>{if(type==='message')handlers.add(fn);},
+ removeEventListener:(type,fn)=>{if(type==='message')handlers.delete(fn);}};
+context.window=context;
+const event=EVENT;
+const timer=event==='never'?null:setTimeout(()=>{
+ if(event==='ready'){context.ready=true;context.startupState.readyMessages++;}
+ for(const fn of handlers)fn({data:{type:'framey:ready'}});
+ if(event==='handler-after'){context.ready=true;context.startupState.readyMessages++;}
+},10);
+(async()=>{
+ const value=await vm.runInNewContext(EXPRESSION,context);
+ if(timer!==null)clearTimeout(timer);
+ console.log(JSON.stringify({value,remainingMessageListeners:handlers.size}));
+})().catch(error=>{console.error(error);process.exitCode=1;});
+""".replace('INITIAL_READY', json.dumps(initial_ready)).replace('EVENT', json.dumps(event)).replace('EXPRESSION', json.dumps(expression))
+        result = subprocess.run([node, '-e', script], capture_output=True, text=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        response = json.loads(result.stdout)
+        self.assertEqual(response['remainingMessageListeners'], 0)
+        return response['value']
+
+    def load_readiness_probe(self):
+        source = Path(__file__).parent/'decky-runtime/syncthing_browser.py'
+        node = next(n for n in ast.parse(source.read_text()).body
+                    if isinstance(n, ast.FunctionDef) and n.name == 'ready_page')
+        scope = dict(time=SimpleNamespace(monotonic=lambda: self.now), frame_steam=self.backend)
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), 'exec'), scope)
+        return scope['ready_page']
+
+    def test_async_ready_message_needs_only_one_cdp_evaluation(self):
+        self.port.write_text('12345\nfixture')
+        page = self.ready_page()
+        page.sock.gettimeout.return_value = 5
+        page.eval.side_effect = lambda expression: self.execute_snapshot_javascript(
+            expression, initial_ready=self.now >= .2)
+        self.assertIs(self.wait(self.browser, self.profile, self.report), page)
+        self.assertEqual(page.eval.call_count, 1,
+                         'asynchronous readiness must not require repeated CDP evaluations')
+        self.assertEqual(page.sock.settimeout.call_args_list[-1].args, (5,))
+        self.assertEqual(self.report['startupClock']['readinessDeadlineAfterSeconds'], 60)
+
+    def test_browser_wait_expires_without_promoting_an_unready_page(self):
+        page = self.ready_page()
+        page.sock.gettimeout.return_value = 5
+        page.eval.side_effect = lambda expression: self.execute_snapshot_javascript(expression, event='never')
+        report, pending = {}, []
+        probe = self.load_readiness_probe()
+        self.assertIsNone(probe(report, clock_start=0, pending=pending, deadline=.02))
+        self.assertEqual(pending, [page])
+        self.assertEqual(page.eval.call_count, 1)
+        self.assertFalse(report['startupState']['state']['readyMessages'])
+        self.assertEqual(page.sock.settimeout.call_args_list[0].args, (.02,))
+        self.assertEqual(page.sock.settimeout.call_args_list[-1].args, (5,))
+        page.sock.close.assert_not_called()
+
+    def test_message_without_ready_state_cannot_promote_a_page(self):
+        page = self.ready_page()
+        page.sock.gettimeout.return_value = 5
+        page.eval.side_effect = lambda expression: self.execute_snapshot_javascript(expression, event='progress-only')
+        report, pending = {}, []
+        self.assertIsNone(self.load_readiness_probe()(report, pending=pending, deadline=.02))
+        self.assertEqual(report['lastReadinessAttempt']['outcome'], 'not-ready')
+        self.assertEqual(report['startupState']['state']['readyMessages'], 0)
+        self.assertEqual(page.eval.call_count, 1)
+        self.assertEqual(pending, [page])
+
+
+    def test_ready_handler_running_after_wait_listener_is_observed_after_dispatch(self):
+        page = self.ready_page()
+        page.sock.gettimeout.return_value = 5
+        page.eval.side_effect = lambda expression: self.execute_snapshot_javascript(expression, event='handler-after')
+        report, pending = {}, []
+        self.assertIs(self.load_readiness_probe()(report, pending=pending, deadline=.1), page)
+        self.assertEqual(report['lastReadinessAttempt']['browserEventWaitBudgetSeconds'], .1)
+        self.assertEqual(page.eval.call_count, 1)
+        page.sock.close.assert_not_called()
+
+    def test_wait_transport_error_restores_timeout_and_closes_only_owned_candidate(self):
+        page = self.ready_page()
+        page.sock.gettimeout.return_value = 5
+        page.eval.side_effect = OSError('owned wait transport closed')
+        report, pending = {}, []
+        self.assertIsNone(self.load_readiness_probe()(report, pending=pending, deadline=.1))
+        self.assertEqual(report['lastReadinessAttempt']['outcome'], 'failure')
+        self.assertEqual(page.sock.settimeout.call_args_list[0].args, (.1,))
+        self.assertEqual(page.sock.settimeout.call_args_list[-1].args, (5,))
+        self.assertEqual(pending, [])
+        page.sock.close.assert_called_once()
+
+
 if __name__ == '__main__':
     unittest.main()
