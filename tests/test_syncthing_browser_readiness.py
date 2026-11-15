@@ -41,7 +41,7 @@ class BrowserReadiness(unittest.TestCase):
 
     def ready_page(self):
         page = Mock()
-        page.eval.return_value = True
+        page.eval.return_value = dict(ready=True)
         self.backend.Page.return_value = page
         return page
 
@@ -87,7 +87,7 @@ class BrowserReadiness(unittest.TestCase):
         page = self.ready_page()
         def finish_late(_expression):
             self.now = 60.5
-            return True
+            return dict(ready=True)
         page.eval.side_effect = finish_late
         with self.assertRaisesRegex(AssertionError, 'Browser CDP/panel readiness unavailable'):
             self.wait(self.browser, self.profile, self.report)
@@ -102,7 +102,7 @@ class BrowserReadiness(unittest.TestCase):
         page = self.ready_page()
         def finish_at_deadline(_expression):
             self.now = 60
-            return True
+            return dict(ready=True)
         page.eval.side_effect = finish_at_deadline
         self.assertIs(self.wait(self.browser, self.profile, self.report), page)
         page.sock.close.assert_not_called()
@@ -113,7 +113,7 @@ class BrowserReadiness(unittest.TestCase):
         page = self.ready_page()
         def finish_before_deadline(_expression):
             self.now = 59.9
-            return True
+            return dict(ready=True)
         page.eval.side_effect = finish_before_deadline
         self.assertIs(self.wait(self.browser, self.profile, self.report), page)
         page.sock.close.assert_not_called()
@@ -122,10 +122,10 @@ class BrowserReadiness(unittest.TestCase):
     def test_incomplete_page_is_closed_before_ready_page_is_accepted(self):
         self.port.write_text('12345\nfixture')
         pending, ready = Mock(), Mock()
-        pending.eval.side_effect = [False, dict(errors=['loading'], state=None,
+        pending.eval.side_effect = [dict(ready=False, errors=['loading'], state=None,
                                                documentState='loading', iframeAssigned=False),
                                     OSError('owned CDP connection closed')]
-        ready.eval.return_value = True
+        ready.eval.return_value = dict(ready=True)
         self.backend.Page.side_effect = [RuntimeError('page not listed yet'), pending, ready]
         self.assertIs(self.wait(self.browser, self.profile, self.report), ready)
         pending.sock.close.assert_called_once()
@@ -144,18 +144,21 @@ class BrowserReadiness(unittest.TestCase):
     def test_pending_connection_is_reused_until_its_page_becomes_ready(self):
         self.port.write_text('12345\nfixture')
         page = self.ready_page()
-        page.eval.side_effect = [False, dict(errors=[], state=None,
-            documentState='loading', iframeAssigned=False), True]
+        page.eval.side_effect = [dict(ready=False, errors=[], state=None,
+            documentState='loading', iframeAssigned=False), dict(ready=True)]
         self.assertIs(self.wait(self.browser, self.profile, self.report), page)
         self.backend.Page.assert_called_once()
         page.sock.close.assert_not_called()
+        # The first pending snapshot and the accepted snapshot each use one
+        # round trip; diagnostics must not add another startup evaluation.
+        self.assertEqual(page.eval.call_count, 2)
         self.assertEqual([a['connectionReused'] for a in self.report['readinessAttempts']],
                          [False, True])
 
     def test_pending_connection_is_closed_once_when_readiness_expires(self):
         self.port.write_text('12345\nfixture')
         page = self.ready_page()
-        page.eval.side_effect = lambda expression: False if expression.startswith('typeof ready') else dict(
+        page.eval.return_value = dict(ready=False,
             errors=[], state=None, documentState='loading', iframeAssigned=False)
         with self.assertRaisesRegex(AssertionError, 'Browser CDP/panel readiness unavailable'):
             self.wait(self.browser, self.profile, self.report)
@@ -169,13 +172,12 @@ class BrowserReadiness(unittest.TestCase):
         probes = 0
         def evaluate(expression):
             nonlocal probes
-            if expression.startswith('typeof ready'):
-                probes += 1
-                if probes == 1:
-                    return False
-                self.now = 60.5
-                return True
-            return dict(errors=[], state=None, documentState='loading', iframeAssigned=False)
+            probes += 1
+            if probes == 1:
+                return dict(ready=False, errors=[], state=None,
+                            documentState='loading', iframeAssigned=False)
+            self.now = 60.5
+            return dict(ready=True)
         page.eval.side_effect = evaluate
         with self.assertRaisesRegex(AssertionError, 'Browser CDP/panel readiness unavailable'):
             self.wait(self.browser, self.profile, self.report)
