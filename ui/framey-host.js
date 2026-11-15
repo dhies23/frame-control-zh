@@ -597,7 +597,7 @@
         onChange:e=>{if(!disabled)onChange?.(e.target.checked);}}), label,
       description != null && R.createElement('small', null, description),
       tooltip != null && R.createElement('small', null, tooltip));
-  const TextField = R.forwardRef(function TextField({label, description, tooltip, value, defaultValue, placeholder, disabled, bIsPassword,
+  const TextField = R.forwardRef(function TextField({label, requiredLabel, description, tooltip, value, defaultValue, placeholder, disabled, bIsPassword,
     mustBeNumeric, mustBeURL, mustBeEmail, 'aria-label':ariaLabel,
     rangeMin, rangeMax, maxLength, minLength, pattern, required,
     bShowClearAction, bAlwaysShowClearAction, focusOnMount, inlineControls, style,
@@ -620,7 +620,11 @@
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(node, '');
       node.dispatchEvent(new Event('input', {bubbles:true}));
     };
-    return R.createElement(Field, {label, description, style},
+    // Decky's requiredLabel is author-supplied React content, independent of
+    // native input validation. Keep it inside the same label as the input.
+    const annotatedLabel = requiredLabel == null || typeof requiredLabel==='boolean' ? label :
+      R.createElement(R.Fragment, null, label, ' ', R.createElement('span', null, requiredLabel));
+    return R.createElement(Field, {label:annotatedLabel, description, style},
       R.createElement('input', {type:bIsPassword?'password':mustBeNumeric?'number':mustBeURL?'url':mustBeEmail?'email':'text',
         ref:input, autoFocus:!!focusOnMount && !disabled,
         min:rangeMin, max:rangeMax, maxLength, minLength, pattern, required,
