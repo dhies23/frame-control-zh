@@ -417,7 +417,7 @@ def verify_browser(report, expected_panel):
         'success': True, 'actualDeckyRpc': True, 'syntheticInput': True,
         'browserSandboxDisabled': False, 'ownedBrowserReaped': True, 'bridgeStopped': True,
         'realFrameContacted': False, 'hostBusExposed': False, 'installerEnabled': False,
-        'setupCommitted': True, 'discoveredApiKeySaved': True, 'savedPort': 8384,
+        'setupCommitted': True, 'validatedApiKeySaved': True, 'savedPort': 8384,
         'panelSha256': expected_panel,
     }.items():
         if type(report.get(key)) is not type(expected) or report[key] != expected:
@@ -431,6 +431,11 @@ def verify_browser(report, expected_panel):
         raise ValueError('Missing visible browser lifecycle stages')
     if any(s.get('manualPortFallbackUsed') is not report['manualPortFallbackUsed'] for s in stages):
         raise ValueError('Inconsistent browser port path evidence')
+    if (type(report.get('manualApiKeyFallbackUsed')) is not bool or
+            type(report.get('discoveredApiKeySaved')) is not bool or
+            report['discoveredApiKeySaved'] is report['manualApiKeyFallbackUsed'] or
+            any(s.get('manualApiKeyFallbackUsed') is not report['manualApiKeyFallbackUsed'] for s in stages)):
+        raise ValueError('Inconsistent browser API key path evidence')
     observations = report.get('actualPackagedProcessObservations', [])
     if (len(observations) != 2
         or [o.get('stage') for o in observations] != ['running', 'restarted']
@@ -507,6 +512,10 @@ def verify_http_parent(report):
     if (type(report.get('manualPortFallbackUsed')) is not bool or
             any(v.get('manualPortFallbackUsed') is not report['manualPortFallbackUsed'] for v in stages)):
         raise ValueError('Missing production parent port path')
+    if (report.get('validatedApiKeySaved') is not True or
+            type(report.get('manualApiKeyFallbackUsed')) is not bool or
+            any(v.get('manualApiKeyFallbackUsed') is not report['manualApiKeyFallbackUsed'] for v in stages)):
+        raise ValueError('Missing production parent API key path')
     observations = report.get('actualPackagedProcessObservations', [])
     if (len(observations) != 2 or [v.get('stage') for v in observations] != ['running', 'restarted']
             or any(not v.get('pids') or any(type(p) is not int or p <= 0 for p in v['pids']) for v in observations)

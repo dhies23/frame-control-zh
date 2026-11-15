@@ -27,8 +27,8 @@ const dashboardReady=()=>text().includes('Running')&&text().includes('Private se
  text().includes('owned-peer')&&!text().split('\n').some(line=>line.trimStart().startsWith('Error:'));
 const wait=async read=>{const end=Date.now()+60000;while(Date.now()<end){if(read())return;
  await new Promise(resolve=>setTimeout(resolve,100));}throw Error('Browser DOM readiness timed out');};
-const stage=value=>parent.postMessage({type:'test:stage',stage:value,text:text().slice(0,3000),errors,manualPortFallbackUsed:window.manualPortFallbackUsed},'*');
-let busy=false;window.manualPortFallbackUsed=false;
+const stage=value=>parent.postMessage({type:'test:stage',stage:value,text:text().slice(0,3000),errors,manualPortFallbackUsed:window.manualPortFallbackUsed,manualApiKeyFallbackUsed:window.manualApiKeyFallbackUsed},'*');
+let busy=false;window.manualPortFallbackUsed=false;window.manualApiKeyFallbackUsed=false;
 addEventListener('message',async event=>{
  if(event.source!==parent||event.data?.type!=='test:advance'||busy)return;
  busy=true;
@@ -37,7 +37,8 @@ addEventListener('message',async event=>{
    await wait(()=>button('Start Setup'));button('Start Setup').click();
    await wait(()=>[...document.querySelectorAll('button')].some(b=>b.textContent.includes('"Syncthing GTK" Flatpak')));
    [...document.querySelectorAll('button')].find(b=>b.textContent.includes('"Syncthing GTK" Flatpak')).click();
-   await wait(()=>text().includes('Almost done!')||text().includes('Please enter the web UI port'));
+   await wait(()=>text().includes('Almost done!')||text().includes('Please enter the web UI port')||
+    text().includes('Please enter the currently configured API key'));
    if(text().includes('Please enter the web UI port')){
     // Enter only the known private fixture port, through the rendered input.
     const input=document.querySelector('input');
@@ -46,6 +47,17 @@ addEventListener('message',async event=>{
     input.dispatchEvent(new Event('change',{bubbles:true}));
     await new Promise(resolve=>setTimeout(resolve,50));
     window.manualPortFallbackUsed=true;button('Continue').click();
+   }
+   await wait(()=>text().includes('Almost done!')||text().includes('Please enter the currently configured API key'));
+   if(text().includes('Please enter the currently configured API key')){
+    if(typeof event.data.apiKey!=='string'||!event.data.apiKey)
+     throw Error('Missing private fixture API key for manual setup');
+    const input=document.querySelector('input');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,event.data.apiKey);
+    input.dispatchEvent(new Event('input',{bubbles:true}));
+    input.dispatchEvent(new Event('change',{bubbles:true}));
+    await new Promise(resolve=>setTimeout(resolve,50));
+    window.manualApiKeyFallbackUsed=true;button('Continue').click();
    }
    await wait(()=>text().includes('Almost done!'));
    button('Continue').click();await wait(()=>button('Get Started'));button('Get Started').click();
@@ -114,8 +126,8 @@ addEventListener('message',async event=>{
  }catch(e){traceStartup('rpc-failure',req.method,req.id);reportStartup('rpc-failed');window.failure='RPC bridge failed';}
 });
 reportStartup('parent-installed');
-window.advance=action=>{if(!ready)throw Error('Panel not ready');window.stage=null;
- panel().postMessage({type:'test:advance',action},'*');};
+window.advance=(action,apiKey)=>{if(!ready)throw Error('Panel not ready');window.stage=null;
+ panel().postMessage({type:'test:advance',action,apiKey},'*');};
 '''
 
 
@@ -418,13 +430,14 @@ def final_browser_state(timeout=8):
     return report
 
 
-def exercise(legacy_rpc, runtime_identity, service):
+def exercise(legacy_rpc, runtime_identity, service, expected_api_key):
     # The bounded failure-only reader imports this module too. It makes only
     # outbound CDP requests and must not initialize the VM's inbound server.
     import http.server
     from syncthing_service import prop
     assert os.getuid() == 1100 and Path('/framey-owned-vm').read_text() == 'Frame Control Flatpak VM v1\n'
     assert not Path('/sys/class/net/eth0').exists()
+    assert isinstance(expected_api_key, str) and expected_api_key
     initial = json.loads(legacy_rpc('get_settings_json'))
     assert initial['is_setup'] is False and not initial['api_key']
     documents = browser_documents(Path('/input/browser-panel.html').read_text())
@@ -563,7 +576,7 @@ def exercise(legacy_rpc, runtime_identity, service):
             assert page is not None, 'Browser CDP/panel readiness unavailable'
             first_pids = []
             for label, action in [('running', 'setup'), ('stopped', 'stop'), ('restarted', 'start'), ('stopped', 'stop')]:
-                page.eval('window.advance('+json.dumps(action)+')')
+                page.eval('window.advance('+json.dumps(action)+','+json.dumps(expected_api_key)+')')
                 deadline = time.monotonic()+120
                 stage = None
                 while time.monotonic() < deadline:
@@ -618,7 +631,9 @@ def exercise(legacy_rpc, runtime_identity, service):
             saved = json.loads(legacy_rpc('get_settings_json'))
             assert Path('/proc/'+str(browser.pid)+'/exe').resolve() == Path('/usr/lib/chromium/chromium')
             report.update(setupCommitted=saved['is_setup'] is True,
-                          discoveredApiKeySaved=bool(saved['api_key']), savedPort=saved['port'],
+                          validatedApiKeySaved=saved['api_key']==expected_api_key,
+                          discoveredApiKeySaved=not stages[0]['manualApiKeyFallbackUsed'], savedPort=saved['port'],
+                          manualApiKeyFallbackUsed=stages[0]['manualApiKeyFallbackUsed'],
                           manualPortFallbackUsed=stages[0]['manualPortFallbackUsed'],
                           browserVersion=subprocess.check_output(['/usr/bin/chromium', '--version'], text=True).strip(),
                           browserExecutableSha256=hashlib.file_digest(Path('/usr/lib/chromium/chromium').open('rb'), 'sha256').hexdigest(),
@@ -669,6 +684,6 @@ def exercise(legacy_rpc, runtime_identity, service):
         thread.join(timeout=5)
         report['bridgeStopped'] = not thread.is_alive()
         print('FRAMEY_BROWSER_PROGRESS_JSON='+json.dumps({k: v for k, v in report.items() if k != 'screenshots'}), flush=True)
-    assert report['setupCommitted'] and report['discoveredApiKeySaved'] and report['savedPort'] == 8384
+    assert report['setupCommitted'] and report['validatedApiKeySaved'] and report['savedPort'] == 8384
     assert report['ownedBrowserReaped'] and report['bridgeStopped']
     return report
