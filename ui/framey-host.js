@@ -406,8 +406,11 @@
   // uses it as a fallback; keep an explicit click handler authoritative and
   // pass the original click event rather than fabricating gamepad input.
   // The real forwardRef render also supports legacy render({}).type lookup.
-  const DialogButton = R.forwardRef(function DialogButton({children, disabled, onClick, onOKButton, ...props}, ref) {
+  const DialogButton = R.forwardRef(function DialogButton({children, disabled, focusable, tabIndex, onClick, onOKButton, ...props}, ref) {
+    // Composite controls can own focus on their outer wrapper. Opt the inner
+    // button out of sequential focus, unless a native tabIndex is explicit.
     return R.createElement('button', {...props, ref, type:'button', disabled:!!disabled,
+      tabIndex:tabIndex ?? (focusable===false ? -1 : undefined),
       onClick:event=>{if(!disabled)(onClick || onOKButton)?.(event);}}, children);
   });
   const Focusable = R.forwardRef(function Focusable(
