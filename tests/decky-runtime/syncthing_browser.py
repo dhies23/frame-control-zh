@@ -211,9 +211,9 @@ def ready_page(report, clock_start=None, pending=None, deadline=None):
                     removeEventListener('message',onMessage);clearTimeout(timer);
                     resolve(snapshot());
                 };
-                // A listener installed before the parent's own handler must
-                // inspect ready after all handlers for that message ran.
-                const onMessage=()=>queueMicrotask(()=>{if(snapshot().ready)finish();});
+                // Native dispatch can checkpoint microtasks between listeners.
+                // Inspect ready in a task after the parent's handler has run.
+                const onMessage=()=>setTimeout(()=>{if(snapshot().ready)finish();},0);
                 addEventListener('message',onMessage);
                 timer=setTimeout(finish,budget);
             });

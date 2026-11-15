@@ -198,29 +198,36 @@ class BrowserReadiness(unittest.TestCase):
         script = r"""
 const vm=require('node:vm');
 const handlers=new Set();
+let budgetExpired=false;
 const context={ready:INITIAL_READY,startupErrors:[],startupEvents:[],
  startupState:{readyMessages:INITIAL_READY?1:0},
  document:{readyState:'complete',getElementById:()=>({getAttribute:()=>'/panel'})},
- setTimeout,clearTimeout,queueMicrotask,
+ setTimeout:(fn,ms)=>setTimeout(()=>{if(ms>20)budgetExpired=true;fn();},ms),clearTimeout,queueMicrotask,
  addEventListener:(type,fn)=>{if(type==='message')handlers.add(fn);},
  removeEventListener:(type,fn)=>{if(type==='message')handlers.delete(fn);}};
 context.window=context;
 const event=EVENT;
-const timer=event==='never'?null:setTimeout(()=>{
+const timer=event==='never'?null:setTimeout(async ()=>{
  if(event==='ready'){context.ready=true;context.startupState.readyMessages++;}
- for(const fn of handlers)fn({data:{type:'framey:ready'}});
- if(event==='handler-after'){context.ready=true;context.startupState.readyMessages++;}
+ for(const fn of handlers){
+  fn({data:{type:'framey:ready'}});
+  if(event==='browser-handler-after')await Promise.resolve();
+ }
+ if(event==='handler-after'||event==='browser-handler-after'){context.ready=true;context.startupState.readyMessages++;}
 },10);
 (async()=>{
  const value=await vm.runInNewContext(EXPRESSION,context);
  if(timer!==null)clearTimeout(timer);
- console.log(JSON.stringify({value,remainingMessageListeners:handlers.size}));
+ console.log(JSON.stringify({value,remainingMessageListeners:handlers.size,budgetExpired}));
 })().catch(error=>{console.error(error);process.exitCode=1;});
 """.replace('INITIAL_READY', json.dumps(initial_ready)).replace('EVENT', json.dumps(event)).replace('EXPRESSION', json.dumps(expression))
         result = subprocess.run([node, '-e', script], capture_output=True, text=True, timeout=3)
         self.assertEqual(result.returncode, 0, result.stderr)
         response = json.loads(result.stdout)
         self.assertEqual(response['remainingMessageListeners'], 0)
+        if event == 'browser-handler-after':
+            self.assertFalse(response['budgetExpired'],
+                             'native listener checkpoints must not delay readiness until budget expiry')
         return response['value']
 
     def load_readiness_probe(self):
@@ -276,6 +283,17 @@ const timer=event==='never'?null:setTimeout(()=>{
         report, pending = {}, []
         self.assertIs(self.load_readiness_probe()(report, pending=pending, deadline=.1), page)
         self.assertEqual(report['lastReadinessAttempt']['browserEventWaitBudgetSeconds'], .1)
+        self.assertEqual(page.eval.call_count, 1)
+        page.sock.close.assert_not_called()
+
+
+    def test_native_checkpoint_before_later_parent_listener_does_not_miss_readiness(self):
+        page = self.ready_page()
+        page.sock.gettimeout.return_value = 5
+        page.eval.side_effect = lambda expression: self.execute_snapshot_javascript(
+            expression, event='browser-handler-after')
+        report, pending = {}, []
+        self.assertIs(self.load_readiness_probe()(report, pending=pending, deadline=.1), page)
         self.assertEqual(page.eval.call_count, 1)
         page.sock.close.assert_not_called()
 
