@@ -795,7 +795,8 @@
         onClick:()=>{if(valid(shown))publish({...shown,rows:shown.saved,dirty:false,error:''});}}, 'Cancel reordering'),
       shown.error && R.createElement('p', {role:'alert'}, shown.error));
   };
-  const ProgressBar = ({nProgress, value, max=100, indeterminate=false}) => R.createElement('progress', {
+  const ProgressBar = ({nProgress, value, max=100, indeterminate=false, focusable}) => R.createElement('progress', {
+    tabIndex:focusable===true ? 0 : focusable===false ? -1 : undefined,
     value:indeterminate || (value ?? nProgress)==null ? undefined : Math.max(0,Math.min(max,Number(value ?? nProgress)||0)), max});
   const ProgressBarItem = ({label, description, ...props}) => R.createElement('div', null,
     R.createElement('label', null,
