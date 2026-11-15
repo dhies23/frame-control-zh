@@ -2537,6 +2537,87 @@ pathlib.Path.rename = fail_staged_move
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(self.folder.exists(), action == 'update')
 
+    def peer_manifest_read_guard(self, manifest, grown=None):
+        # Inspect the actual remote reader's I/O budget. Growth happens after
+        # its size admission and before open, against a real private file.
+        return '''
+import pathlib
+peer_manifest_path = pathlib.Path(%r)
+peer_manifest_growth = %r
+peer_manifest_open = pathlib.Path.open
+class PeerManifestReadBudget:
+    def __init__(self, stream): self.stream = stream
+    def __enter__(self): return self
+    def __exit__(self, *args): self.stream.close()
+    def read(self, size=-1):
+        assert 0 <= size <= 16385, 'unbounded peer manifest read'
+        return self.stream.read(size)
+def guarded_peer_manifest_open(path, *args, **kwargs):
+    global peer_manifest_growth
+    mode = args[0] if args else kwargs.get('mode', 'r')
+    if path == peer_manifest_path and 'r' in mode:
+        if peer_manifest_growth is not None:
+            payload, peer_manifest_growth = peer_manifest_growth, None
+            path.write_bytes(payload)
+        return PeerManifestReadBudget(peer_manifest_open(path, *args, **kwargs))
+    return peer_manifest_open(path, *args, **kwargs)
+pathlib.Path.open = guarded_peer_manifest_open
+''' % (str(manifest), grown)
+
+    def test_peer_manifest_growth_keeps_transaction_reads_within_inventory_byte_limit(self):
+        data, _ = archive()
+        peer = self.folder.parent/'Other'
+        peer.mkdir()
+        manifest = peer/'plugin.json'
+        for note in ('ASCII', '日本語'):
+            raw = json.dumps({'name': 'Example', 'note': note}, ensure_ascii=False).encode('utf-8')
+            for size in (16384, 16385):
+                with self.subTest(note=note, size=size):
+                    manifest.write_bytes(b'{"name":"Other"}')
+                    grown = raw + b' '*(size-len(raw))
+                    guard = self.peer_manifest_read_guard(manifest, grown)
+                    with patch.object(frame_decky_store, 'APPLY', guard+frame_decky_store.APPLY):
+                        result = self.apply('install', data)
+                    self.assertEqual(manifest.read_bytes(), grown)
+                    if size == 16384:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('different plugin with this name', result.stderr)
+                        self.assertFalse(self.folder.exists())
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertTrue((self.folder/'dist/index.js').is_file())
+                        self.assertEqual(self.apply('remove').returncode, 0)
+                    self.assertFalse(list(self.folder.parent.glob('.frame-control-stage-*')))
+                    self.assertFalse(list(self.folder.parent.glob('.frame-control-old-*')))
+
+    def test_peer_manifest_bounded_reads_preserve_collision_and_malformed_controls(self):
+        data, _ = archive()
+        peer = self.folder.parent/'Other'
+        peer.mkdir()
+        manifest = peer/'plugin.json'
+        values = ((b'{"name":"Example"}', True), (b'{"name":"Other"}', False),
+                  (b'[]', False), (b'invalid json', False),
+                  ('{"name":"Example","note":"日本語"}'.encode('utf-8'), True),
+                  (b'{"name":"Example","note":"\xff"}', False))
+        for raw, collides in values:
+            for size in (16384, 16385):
+                with self.subTest(raw=raw, size=size):
+                    original = raw + b' '*(size-len(raw))
+                    manifest.write_bytes(original)
+                    guard = self.peer_manifest_read_guard(manifest)
+                    with patch.object(frame_decky_store, 'APPLY', guard+frame_decky_store.APPLY):
+                        result = self.apply('install', data)
+                    self.assertEqual(manifest.read_bytes(), original)
+                    if collides and size == 16384:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('different plugin with this name', result.stderr)
+                        self.assertFalse(self.folder.exists())
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(self.apply('remove').returncode, 0)
+                    self.assertFalse(list(self.folder.parent.glob('.frame-control-stage-*')))
+                    self.assertFalse(list(self.folder.parent.glob('.frame-control-old-*')))
+
     def test_peer_receipt_scan_uses_bounded_reads_and_preserves_oversized_neighbor(self):
         data, _ = archive()
         peer = self.folder.parent/'Other'
