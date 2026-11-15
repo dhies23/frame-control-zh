@@ -291,11 +291,69 @@ def record_startup_progress(report, value, received_after):
     return True
 
 
+def owned_browser_process_diagnostics(group, proc_root=Path('/proc')):
+    """Read bounded process counters for this disposable browser session only."""
+    report = dict(processes=[], entriesScanned=0, scanTruncated=False,
+                  processesTruncated=False, unreadableEntries=0)
+    if type(group) is not int or group <= 0:
+        report['error'] = 'InvalidProcessGroup'
+        return report
+    report['clockTicksPerSecond'] = os.sysconf('SC_CLK_TCK')
+    for entry in proc_root.iterdir():
+        if not entry.name.isdecimal():
+            continue
+        if report['entriesScanned'] == 4096:
+            report['scanTruncated'] = True
+            break
+        report['entriesScanned'] += 1
+        try:
+            with (entry/'stat').open('rb') as stream:
+                raw = stream.read(4097)
+            if len(raw) > 4096:
+                report['unreadableEntries'] += 1
+                continue
+            fields = raw.rsplit(b')', 1)[1].split()
+            if fields[2:4] != [str(group).encode(), str(group).encode()]:
+                continue
+            if len(report['processes']) == 64:
+                report['processesTruncated'] = True
+                break
+            # Recheck identity and ownership before retaining this process.
+            with (entry/'stat').open('rb') as stream:
+                again = stream.read(4097)
+            if len(again) > 4096:
+                report['unreadableEntries'] += 1
+                continue
+            current = again.rsplit(b')', 1)[1].split()
+            if current[19] != fields[19] or current[2:4] != fields[2:4]:
+                continue
+            record = dict(pid=int(entry.name), parentPid=int(current[1]),
+                          state=current[0].decode('ascii'),
+                          userTicks=int(current[11]), systemTicks=int(current[12]),
+                          threadCount=int(current[17]), startTicks=int(current[19]),
+                          residentPages=int(current[21]))
+            try:
+                with (entry/'wchan').open('rb') as stream:
+                    wait = stream.read(129)
+                record['wchan'] = wait[:128].decode(errors='replace')
+                record['wchanTruncated'] = len(wait) > 128
+            except OSError as error:
+                record['wchanError'] = type(error).__name__
+            report['processes'].append(record)
+        except (OSError, ValueError, IndexError) as error:
+            report['unreadableEntries'] += 1
+    return report
+
+
 def startup_diagnostics(browser, profile, log):
     """Bounded evidence from the owned fixture only; never change readiness."""
     report = dict(processAlive=browser.poll() is None,
                   returnCode=browser.returncode,
                   devToolsPortFilePresent=(profile/'DevToolsActivePort').is_file())
+    try:
+        report['ownedProcessSnapshot'] = owned_browser_process_diagnostics(browser.pid)
+    except OSError as error:
+        report['ownedProcessSnapshot'] = {'error': type(error).__name__}
     try:
         with log.open('rb') as stream:
             stream.seek(0, 2)
