@@ -52,7 +52,12 @@ addEventListener('message',async e=>{
    if(!back)throw Error('No route back button');back.click();
    await wait(()=>document.querySelectorAll('section button').length===2,'terminal-list-after-back');
    document.querySelectorAll('section button')[1].click();
-   await wait(()=>document.querySelectorAll('section button').length===0,'terminal-list-after-remove');stage('removed');
+   await wait(()=>document.querySelectorAll('section button').length===0,'terminal-list-after-remove');
+   // The list changes before the renderer paints it. Keep the evidence stage
+   // behind two render frames, as the HTTP fixture already does for output.
+   await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);
+   if(document.querySelectorAll('section button').length!==0)throw Error('Terminal list changed before removed capture');
+   stage('removed');
   }
  }catch(error){parent.postMessage({type:'test:failure',error:String(error),diagnostic:{
   phase,errors:[...errors],text:text().slice(0,3000),
