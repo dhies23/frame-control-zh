@@ -143,6 +143,9 @@ def main():
     unit.write_text('# Private fixture marker; no real service manager is contacted.\n')
     tools = home/'bin'
     tools.mkdir()
+    if case['probe'] == 'surround-private-audio':
+        import surround_route_diagnostic
+        surround_route_diagnostic.install(tools)
     systemctl = tools/'systemctl'
     systemctl.write_text('#!/bin/sh\ncase "$*" in *is-active*) exit 3;; *) exit 0;; esac\n')
     systemctl.chmod(0o700)
@@ -2388,8 +2391,12 @@ def main():
                     'discovery, loopback HTTP fetch/redirect, self-signed HTTPS rejection, restart and two clean parent-only stops passed; external stations, trusted HTTPS, playback, Frame and VR unverified')
             elif case['probe'] == 'surround-private-audio':
                 import surround_private
-                report['surroundAudio'] = surround_private.probe(backend, loader, env, log, processes,
-                    current, until_ready, surround_fixture, plugin)
+                try:
+                    report['surroundAudio'] = surround_private.probe(backend, loader, env, log, processes,
+                        current, until_ready, surround_fixture, plugin)
+                except Exception:
+                    surround_route_diagnostic.dump(env)
+                    raise
                 report['result'] = 'private PipeWire/Pulse sinks, bundled presets, real stream routing, restart persistence and owned cleanup; physical audio, official UI and Frame unverified'
             elif case['probe'] == 'desktop-apps-private-entries':
                 import shlex
