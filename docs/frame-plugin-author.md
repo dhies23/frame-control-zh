@@ -378,9 +378,9 @@ zero-based `notchIndex` and string `label`. Captions occupy their declared
 positions even when some notches have no label. Each caption matches the value
 evenly spaced between `min` and `max`, unless its optional numeric `value`
 overrides that match. An unmatched current value keeps its ordinary numeric
-accessibility value. Labels remain visible when `notchTicksVisible` is false;
-Framey does not draw Steam's tick marks or add snapping beyond the native
-slider's `step`.
+accessibility value. Labels remain visible when `notchTicksVisible` is false.
+Set it to `true` to show evenly spaced decorative marks beneath the range.
+These marks add no focus targets or snapping beyond the native slider's `step`.
 
 Open `ColorPickerModal` with `showModal` and supply numeric `defaultH` (0–360),
 `defaultS` and `defaultL` (0–100), and `defaultA` (0–1). These initialise one

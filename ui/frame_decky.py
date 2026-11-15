@@ -101,7 +101,10 @@ try:
     reply = connection.getresponse()
     if reply.status != 200: raise ValueError('CEF targets unavailable')
     targets = json.load(reply)
-    cef = any(x.get('title') == 'SharedJSContext' and 'steamloopback.host' in x.get('url','') for x in targets)
+    cef = isinstance(targets, list) and any(
+        isinstance(x, dict) and x.get('title') == 'SharedJSContext'
+        and isinstance(x.get('url'), str) and 'steamloopback.host' in x['url']
+        for x in targets)
 except (OSError, ValueError, http.client.HTTPException): cef = False
 finally: connection.close()
 try:
