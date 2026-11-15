@@ -529,11 +529,11 @@ class ProductionBrowserParent(unittest.TestCase):
         report.update(dict.fromkeys(('realSteamCef', 'realFrameContacted', 'managedInstallVerified',
             'installerEnabled', 'bootstrapStateInjected', 'browserSandboxDisabled'), False))
         report.update(childHarness=dict(installed=True, mode='owned-iframe-target', universalAccessGranted=False),
-            manualPortFallbackUsed=False, parentErrors=[],
+            manualPortFallbackUsed=False, manualApiKeyFallbackUsed=False, validatedApiKeySaved=True, parentErrors=[],
             stages=[dict(stage=stage, errors=[],
                          text=('Running\nFolders\nPrivate service sync\nDevices\nowned-peer'
                                if stage in ('running', 'restarted') else 'Stopped'),
-                         manualPortFallbackUsed=False)
+                         manualPortFallbackUsed=False, manualApiKeyFallbackUsed=False)
                     for stage in ('running', 'stopped', 'restarted', 'stopped')],
             actualPackagedProcessObservations=[dict(stage='running', pids=[101, 102]),
                                               dict(stage='restarted', pids=[201, 202])],
@@ -555,6 +555,19 @@ class ProductionBrowserParent(unittest.TestCase):
                              ('bootstrapStateInjected', True), ('realSteamCef', True)]:
             with self.subTest(key=key), self.assertRaises(ValueError):
                 driver.verify_http_parent({**report, key: invalid})
+
+    def test_parent_api_key_path_requires_matching_value_and_consistent_stages(self):
+        for manual in (False, True):
+            report = self.evidence()
+            report['manualApiKeyFallbackUsed'] = manual
+            for stage in report['stages']:
+                stage['manualApiKeyFallbackUsed'] = manual
+            self.driver().verify_http_parent(report)
+            with self.assertRaisesRegex(ValueError, 'API key path'):
+                self.driver().verify_http_parent({**report, 'validatedApiKeySaved': False})
+            report['stages'][0]['manualApiKeyFallbackUsed'] = not manual
+            with self.assertRaisesRegex(ValueError, 'API key path'):
+                self.driver().verify_http_parent(report)
 
     def test_verifier_rejects_visible_error_despite_successful_stage_and_http(self):
         report = self.evidence()
