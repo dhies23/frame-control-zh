@@ -140,16 +140,18 @@ def ready_page(report, clock_start=None, pending=None):
     reused = bool(pending)
     try:
         candidate = pending.pop() if reused else frame_steam.Page('Owned Syncthing actual backend')
-        phase = 'panel-ready'
-        accepted = bool(candidate.eval("typeof ready !== 'undefined' && ready"))
+        phase = 'panel-snapshot'
+        # One CDP evaluation per probe: repeated diagnostic requests compete
+        # with the starting renderer under ARM64 QEMU emulation.
+        snapshot = candidate.eval("""({ready:typeof ready !== 'undefined' && ready,
+            errors:window.startupErrors||[],state:window.startupState||null,
+            documentState:document.readyState,
+            iframeAssigned:!!document.getElementById('panel')?.getAttribute('src'),
+            events:window.startupEvents||[]})""")
+        accepted = snapshot['ready'] is True
         if accepted:
             outcome = 'ready'
             return candidate
-        phase = 'panel-errors'
-        snapshot = candidate.eval("""({errors:window.startupErrors||[],
-            state:window.startupState||null,documentState:document.readyState,
-            iframeAssigned:!!document.getElementById('panel')?.getAttribute('src'),
-            events:window.startupEvents||[]})""")
         report['startupErrors'] = snapshot['errors']
         report['startupEvents'] = snapshot.get('events', [])
         report['startupState'] = {key: snapshot[key] for key in

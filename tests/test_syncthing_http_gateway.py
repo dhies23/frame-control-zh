@@ -149,12 +149,11 @@ class BrowserReadyCandidate(unittest.TestCase):
 
     def test_unready_or_failed_candidate_is_closed_and_never_accepted(self):
         browser = self.browser()
-        snapshot = dict(errors=[], state=dict(parentInstalled=True, iframeLoads=1,
+        snapshot = dict(ready=False, errors=[], state=dict(parentInstalled=True, iframeLoads=1,
                         cacheRequests=0, seedReplies=0, readyMessages=0),
                         documentState='complete', iframeAssigned=True)
-        for replies, outcome, phase in [([False, snapshot], 'not-ready', 'panel-errors'),
-                ([OSError('owned CDP timeout')], 'failure', 'panel-ready'),
-                ([False, OSError('owned errors timeout')], 'failure', 'panel-errors')]:
+        for replies, outcome, phase in [([snapshot], 'not-ready', 'panel-snapshot'),
+                ([OSError('owned CDP timeout')], 'failure', 'panel-snapshot')]:
             with self.subTest(outcome=outcome, phase=phase):
                 page = Mock(); page.eval.side_effect = replies; report = {}
                 with patch.object(browser.frame_steam, 'Page', return_value=page):
@@ -167,7 +166,7 @@ class BrowserReadyCandidate(unittest.TestCase):
                     self.assertTrue(report['startupState']['iframeAssigned'])
 
     def test_ready_page_remains_owned_by_caller_and_trace_is_bounded(self):
-        browser = self.browser(); page = Mock(); page.eval.return_value = True
+        browser = self.browser(); page = Mock(); page.eval.return_value = dict(ready=True)
         report = dict(readinessAttempts=[{} for _ in range(16)])
         with patch.object(browser.frame_steam, 'Page', return_value=page):
             self.assertIs(browser.ready_page(report), page)
@@ -184,13 +183,13 @@ class BrowserReadyCandidate(unittest.TestCase):
 
     def test_attempt_uses_bridge_clock_and_progress_cannot_promote_an_unready_page(self):
         browser = self.browser(); page = Mock()
-        page.eval.side_effect = [False, dict(errors=[], events=[], state={},
+        page.eval.side_effect = [dict(ready=False, errors=[], events=[], state={},
                                             documentState='complete', iframeAssigned=True)]
         report = dict(parentStartupProgress=dict(records=[dict(type='panel-ready')]))
         with patch.object(browser.frame_steam, 'Page', return_value=page), \
                 patch.object(browser.time, 'monotonic', side_effect=[10, 12, 13]):
             self.assertIsNone(browser.ready_page(report, clock_start=5))
-        self.assertEqual(report['lastReadinessAttempt'], dict(phase='panel-errors', connectionReused=False,
+        self.assertEqual(report['lastReadinessAttempt'], dict(phase='panel-snapshot', connectionReused=False,
                          outcome='not-ready', elapsedSeconds=2,
                          startedAfterSeconds=5, finishedAfterSeconds=8))
         page.sock.close.assert_called_once()
