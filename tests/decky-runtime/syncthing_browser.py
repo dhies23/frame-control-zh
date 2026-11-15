@@ -612,6 +612,7 @@ def exercise(legacy_rpc, runtime_identity, service, expected_api_key):
         profile = Path(temporary.name)
         command = ['/usr/bin/chromium', '--headless', '--disable-gpu', '--no-first-run',
                    '--no-default-browser-check', '--disable-background-networking',
+                   '--disable-component-extensions-with-background-pages',
                    '--user-data-dir='+str(profile), '--window-size=1240,1100',
                    '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
                    'http://127.0.0.1:'+str(server.server_port)+'/']
