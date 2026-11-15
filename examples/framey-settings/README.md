@@ -12,8 +12,13 @@ fetches the saved value without changing it. These two fields are Framey
 additions; Decky's own menu still uses the main panel content. The quick
 action calls the backend, so it reads the persisted setting rather than a
 browser cache. A missing file or a valid object without `enabled` reads as the
-caller's default without writing anything. Damaged JSON, invalid UTF-8,
-non-object JSON and a saved non-boolean `enabled` value return an error on both
+caller's default without writing anything.
+The read RPC requires a boolean default, including when a saved value already
+exists. Strings such as `"false"`, numbers, null, arrays and objects are rejected
+without creating or changing the settings file; Python type hints alone do
+not validate RPC arguments. Omit the default to use `false`.
+Damaged JSON, invalid UTF-8, non-object JSON and a saved non-boolean `enabled`
+value return an error on both
 read and save. The original bytes stay untouched; the sample never treats an
 unreadable saved value as a successful default read. Storage permission errors
 also propagate instead of enabling editing.
