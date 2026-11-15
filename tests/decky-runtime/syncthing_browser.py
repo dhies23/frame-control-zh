@@ -457,7 +457,13 @@ def final_browser_state(timeout=8):
     """An isolated reader gives the complete final snapshot a hard wall bound."""
     command = [sys.executable, '-c',
         'print(\'{"phase":"interpreter-started"}\',flush=True); '
-        'import sys; sys.path[:0]=sys.argv[1:3]; import syncthing_browser as b; '
+        'import sys; '
+        'watched={"syncthing_browser","frame_steam","urllib.request",'
+        '"http.client","ssl","tempfile","threading","hashlib"}; seen=set(); '
+        'sys.addaudithook(lambda event,args: '
+        '(seen.add(args[0]),print(\'{"importModule":"\'+args[0]+\'"}\',flush=True)) '
+        'if event=="import" and args[0] in watched and args[0] not in seen else None); '
+        'sys.path[:0]=sys.argv[1:3]; import syncthing_browser as b; '
         'print(\'{"phase":"module-imported"}\',flush=True); '
         'b.frame_steam.CDP=sys.argv[3]; b.print_final_browser_state()',
         str(Path(__file__).resolve().parent), str(Path(frame_steam.__file__).resolve().parent),
@@ -473,11 +479,16 @@ def final_browser_state(timeout=8):
     except OSError as error:
         report['errorType'] = type(error).__name__
         output = b''
-    snapshots, phases = [], []
+    snapshots, phases, imports = [], [], []
     for line in output[:32768].splitlines():
         try:
             value = json.loads(line)
-            if 'phase' in value:
+            if value.get('importModule') in (
+                    'syncthing_browser', 'frame_steam', 'urllib.request',
+                    'http.client', 'ssl', 'tempfile', 'threading', 'hashlib'):
+                if value['importModule'] not in imports:
+                    imports.append(value['importModule'])
+            elif 'phase' in value:
                 phases.append(value['phase'])
             elif value.get('target') in ('parent', 'iframe'):
                 snapshots.append(value)
@@ -485,6 +496,7 @@ def final_browser_state(timeout=8):
             report['incompleteSnapshot'] = True
     report['snapshots'] = snapshots[:2]
     report['phases'] = phases[:5]
+    report['importModulesStarted'] = imports[:8]
     return report
 
 
