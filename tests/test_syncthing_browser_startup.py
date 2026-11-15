@@ -107,6 +107,7 @@ addEventListener('message',event=>{
                     browser = subprocess.Popen([
                         BROWSER, '--headless', '--disable-gpu', '--no-first-run',
                         '--no-default-browser-check', '--disable-background-networking',
+                        '--disable-component-extensions-with-background-pages',
                         '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
                         '--user-data-dir='+str(profile),
                         'data:text/html,<title>Framey listener order</title>'],
@@ -233,6 +234,7 @@ nativeTimeout(()=>{
                     browser = subprocess.Popen([
                         BROWSER, '--headless', '--disable-gpu', '--no-first-run',
                         '--no-default-browser-check', '--disable-background-networking',
+                        '--disable-component-extensions-with-background-pages',
                         '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
                         '--user-data-dir=' + str(profile),
                         'http://127.0.0.1:' + str(server.server_port) + '/'],
