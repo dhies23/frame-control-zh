@@ -421,14 +421,16 @@ sys.meta_path.insert(0, NoVmServer())
         browser = self.browser()
         partial = (b'{"phase":"interpreter-started"}\n{"phase":"module-imported"}\n'
                    b'{"target":"parent","state":{"ready":false}}\n{"target":')
-        failure = browser.subprocess.TimeoutExpired('owned reader', 8, output=partial)
-        with patch.object(browser.subprocess, 'run', side_effect=failure) as run:
+        failure = browser.subprocess.TimeoutExpired('owned reader', 7.75, output=partial)
+        with patch.object(browser.time, 'monotonic', side_effect=[100, 100.25]), \
+                patch.object(browser.subprocess, 'run', side_effect=failure) as run:
             report = browser.final_browser_state()
         self.assertTrue(report['timedOut'])
         self.assertEqual(report['snapshots'], [dict(target='parent', state=dict(ready=False))])
         self.assertTrue(report['incompleteSnapshot'])
         self.assertEqual(report['phases'], ['interpreter-started', 'module-imported'])
-        self.assertEqual(run.call_args.kwargs['timeout'], 8)
+        self.assertEqual(report['timeoutSeconds'], 8)
+        self.assertEqual(run.call_args.kwargs['timeout'], 7.75)
 
     def test_timeout_before_cdp_retains_interpreter_phase_without_inventing_snapshot(self):
         browser = self.browser()
