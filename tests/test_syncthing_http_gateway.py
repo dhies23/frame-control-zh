@@ -350,7 +350,7 @@ class FinalBrowserEvidence(unittest.TestCase):
     def browser(self):
         return load('final_browser_evidence', ROOT/'tests/decky-runtime/syncthing_browser.py')
 
-    def test_reader_reaches_cdp_without_importing_the_vm_http_server(self):
+    def test_reader_reaches_cdp_without_vm_server_or_url_opener_imports(self):
         import os
         import threading
         browser = self.browser()
@@ -369,15 +369,15 @@ class FinalBrowserEvidence(unittest.TestCase):
         self.addCleanup(server.shutdown)
         with tempfile.TemporaryDirectory() as temporary:
             # A fresh interpreter must reach the CDP reader even when the
-            # inbound VM-server dependency is unavailable. No browser or
+            # inbound VM server and general URL opener are unavailable. No browser or
             # backend is simulated by this empty owned target endpoint.
             Path(temporary, 'sitecustomize.py').write_text('''
 import sys
-class NoVmServer:
+class NoSetupImports:
     def find_spec(self, fullname, path=None, target=None):
-        if fullname == 'http.server':
-            raise ImportError('VM HTTP server is outside snapshot scope')
-sys.meta_path.insert(0, NoVmServer())
+        if fullname in ('http.server', 'urllib.request'):
+            raise ImportError('Setup/URL-opener imports are outside snapshot scope')
+sys.meta_path.insert(0, NoSetupImports())
 ''')
             environment = temporary+os.pathsep+os.environ.get('PYTHONPATH', '')
             with patch.dict(os.environ, {'PYTHONPATH': environment}), \
@@ -391,6 +391,7 @@ sys.meta_path.insert(0, NoVmServer())
                          ['interpreter-started', 'module-imported', 'targets-read'])
         self.assertEqual(report['snapshots'], [dict(target='parent', unavailable=True),
                                               dict(target='iframe', unavailable=True)])
+        self.assertNotIn('urllib.request', report['importModulesStarted'])
 
     def test_pending_parent_and_opaque_child_are_read_and_closed_without_advancing(self):
         from contextlib import redirect_stdout
@@ -402,7 +403,10 @@ sys.meta_path.insert(0, NoVmServer())
         parent.eval.return_value = dict(ready=False, state=dict(readyMessages=0))
         child.eval.return_value = dict(documentState='complete', rootText='Loading', errorText='')
         output = io.StringIO()
-        with patch.object(browser.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(targets).encode())), \
+        connection = Mock()
+        connection.getresponse.return_value.status = 200
+        connection.getresponse.return_value.read.return_value = json.dumps(targets).encode()
+        with patch.object(browser.frame_steam.http.client, 'HTTPConnection', return_value=connection), \
                 patch.object(browser.frame_steam, 'Page', side_effect=[parent, child]) as connect, \
                 redirect_stdout(output):
             browser.print_final_browser_state()
@@ -416,6 +420,7 @@ sys.meta_path.insert(0, NoVmServer())
             page.sock.close.assert_called_once()
             self.assertEqual(page.eval.call_count, 1)
             self.assertNotIn('advance(', page.eval.call_args.args[0])
+        connection.close.assert_called_once()
 
     def test_hard_timeout_preserves_completed_parent_snapshot(self):
         browser = self.browser()
@@ -451,13 +456,17 @@ sys.meta_path.insert(0, NoVmServer())
         parent.eval.return_value = dict(ready=False)
         child.eval.side_effect = OSError('fixture socket closed')
         output = io.StringIO()
-        with patch.object(browser.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(targets).encode())), \
+        connection = Mock()
+        connection.getresponse.return_value.status = 200
+        connection.getresponse.return_value.read.return_value = json.dumps(targets).encode()
+        with patch.object(browser.frame_steam.http.client, 'HTTPConnection', return_value=connection), \
                 patch.object(browser.frame_steam, 'Page', side_effect=[parent, child]), redirect_stdout(output):
             browser.print_final_browser_state()
         snapshots = [json.loads(line) for line in output.getvalue().splitlines() if '"target"' in line]
         self.assertEqual(snapshots[0]['state'], dict(ready=False))
         self.assertEqual(snapshots[1], dict(target='iframe', errorType='OSError'))
         child.sock.close.assert_called_once()
+        connection.close.assert_called_once()
 
 
 class BrowserRpcTimings(unittest.TestCase):

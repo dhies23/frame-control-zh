@@ -411,8 +411,21 @@ document.getElementById('panel').src = '/panel#fixture';
 
 def print_final_browser_state():
     """Read only the two owned fixture targets; never promote them to ready."""
-    with urllib.request.urlopen(frame_steam.CDP, timeout=2) as response:
+    target = frame_steam.urlsplit(frame_steam.CDP)
+    client = (frame_steam.http.client.HTTPSConnection if target.scheme == 'https'
+              else frame_steam.http.client.HTTPConnection)
+    connection = client(target.hostname, target.port, timeout=2)
+    try:
+        path = target.path or '/'
+        if target.query:
+            path += '?' + target.query
+        connection.request('GET', path)
+        response = connection.getresponse()
+        if response.status != 200:
+            raise OSError('Owned target metadata request failed')
         encoded = response.read(65537)
+    finally:
+        connection.close()
     assert len(encoded) <= 65536, 'Owned target metadata exceeds diagnostic bound'
     targets = json.loads(encoded)
     print('{"phase":"targets-read"}', flush=True)
@@ -480,7 +493,7 @@ def final_browser_state(timeout=8):
         'sys.addaudithook(lambda event,args: '
         '(seen.add(args[0]),print(\'{"importModule":"\'+args[0]+\'"}\',flush=True)) '
         'if event=="import" and args[0] in watched and args[0] not in seen else None); '
-        'sys.path[:0]=sys.argv[1:3]; import json,urllib.request,frame_steam; '
+        'sys.path[:0]=sys.argv[1:3]; import json,frame_steam; '
         'print(\'{"phase":"module-imported"}\',flush=True); '
         'frame_steam.CDP=sys.argv[3]; exec(sys.argv[4]); print_final_browser_state()',
         str(Path(__file__).resolve().parent), str(Path(frame_steam.__file__).resolve().parent),

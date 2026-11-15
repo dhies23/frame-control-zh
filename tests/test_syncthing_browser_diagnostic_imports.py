@@ -46,7 +46,8 @@ class DiagnosticImports(unittest.TestCase):
                       'timed-out reader must retain the last owned import reached')
 
     def test_completed_actual_reader_keeps_target_phases_and_bounded_import_names(self):
-        self.backend.write_text('CDP=""\nclass Fail(Exception): pass\n')
+        self.backend.write_text('import http.client\nfrom urllib.parse import urlsplit\n'
+                                'CDP=""\nclass Fail(Exception): pass\n')
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_args):
                 pass
@@ -97,7 +98,8 @@ class DiagnosticImports(unittest.TestCase):
         # The helper must read the query, rather than import unrelated setup.
         self.source.write_text('import time as fixture_boot\nfixture_boot.sleep(30)\n'+
                                self.source.read_text())
-        self.backend.write_text('CDP=""\nclass Fail(Exception): pass\n')
+        self.backend.write_text('import http.client\nfrom urllib.parse import urlsplit\n'
+                                'CDP=""\nclass Fail(Exception): pass\n')
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_args):
                 pass
