@@ -2428,7 +2428,9 @@ def split_by_app(data):
                 if manifest.is_symlink() or not manifest.is_file(): continue
                 try:
                     if manifest.stat().st_size>16384: continue
-                    peer_data=json.loads(manifest.read_text())
+                    with manifest.open('rb') as source: peer_bytes=source.read(16385)
+                    if len(peer_bytes)>16384: continue
+                    peer_data=json.loads(peer_bytes.decode('utf-8'))
                     if isinstance(peer_data,dict) and peer_data.get('name')==proposed_name:
                         raise RuntimeError('A different plugin with this name is already installed')
                 except (OSError,ValueError,UnicodeError): continue
