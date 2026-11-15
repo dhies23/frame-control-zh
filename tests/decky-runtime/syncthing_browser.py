@@ -119,6 +119,47 @@ window.advance=action=>{if(!ready)throw Error('Panel not ready');window.stage=nu
 '''
 
 
+def wait_browser_group(group, deadline):
+    """Do not remove the owned profile while a live session member can write it."""
+    while True:
+        live = []
+        for entry in Path('/proc').iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                fields = (entry/'stat').read_text().rsplit(')', 1)[1].split()
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            if fields[2:4] == [str(group), str(group)] and fields[0] not in ('Z', 'X'):
+                live.append(entry.name)
+        if not live:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError('Owned browser group did not stop: '+', '.join(live))
+        time.sleep(.01)
+
+
+def stop_browser(browser):
+    """Stop the private browser session, retaining the two ten-second budgets."""
+    try:
+        os.killpg(browser.pid, signal.SIGTERM)
+        try:
+            browser.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+    except ProcessLookupError:
+        pass
+    finally:
+        # Launcher exit does not prove that its profile-writing children exited.
+        deadline = time.monotonic()+10
+        try:
+            os.killpg(browser.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        browser.wait(timeout=max(0, deadline-time.monotonic()))
+        wait_browser_group(browser.pid, deadline)
+
+
 def screenshot(page):
     page.next_id += 1
     page._send(json.dumps({'id': page.next_id, 'method': 'Page.captureScreenshot',
@@ -590,14 +631,9 @@ def exercise(legacy_rpc, runtime_identity, service):
         if page:
             page.sock.close()
         if browser:
-            if browser.poll() is None:
-                os.killpg(browser.pid, signal.SIGTERM)
-            try:
-                browser.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(browser.pid, signal.SIGKILL)
-                browser.wait(timeout=10)
+            stop_browser(browser)
             report['ownedBrowserReaped'] = browser.poll() is not None
+            report['ownedBrowserGroupStopped'] = True
         temporary.cleanup()
         server.shutdown()
         server.server_close()
