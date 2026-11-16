@@ -1,4 +1,4 @@
-"""Declared Decky item help through real React/DOM, without headset access."""
+"""Declared Decky item tooltips with synthetic props and real React/DOM."""
 import sandbox  # noqa: F401
 import hashlib
 import html
@@ -16,7 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(sys.platform.startswith('linux') and BROWSER, 'Linux Chrome/Chromium is needed for real React/DOM')
 class ItemHelpBrowser(unittest.TestCase):
-    def test_button_and_dropdown_help_survive_updates_and_disabled_state(self):
+    def test_declared_tooltips_preserve_item_controls_and_deferred_loader(self):
+        # @decky/ui 4.16.0 ButtonItem/DropdownItem/SliderField inherit
+        # ItemProps.tooltip. These help strings and callbacks are synthetic.
         host = (ROOT/'ui/framey-host.js').read_text()
         without_start = re.sub(r'\n  start\(\);\n\}\)\(\);\s*$', '\n})();', host)
         self.assertNotEqual(without_start, host)
@@ -38,5 +40,5 @@ class ItemHelpBrowser(unittest.TestCase):
         self.assertIsNotNone(result, run.stderr[-2000:])
         report = json.loads(html.unescape(result.group(1)))
         self.assertIs(report.get('passed'), True, report)
-        report['hostSha256'] = hashlib.sha256(host.encode()).hexdigest()
-        print('Framey item help browser proof: '+json.dumps(report, sort_keys=True))
+        report.update(hostSha256=hashlib.sha256(host.encode()).hexdigest())
+        print('Framey item tooltip browser proof: '+json.dumps(report, sort_keys=True))
