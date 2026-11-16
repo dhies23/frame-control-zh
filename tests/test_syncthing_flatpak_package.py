@@ -375,11 +375,11 @@ class PreparedPackage(unittest.TestCase):
 
     def browser(self):
         report = dict.fromkeys(('success', 'actualDeckyRpc', 'syntheticInput', 'ownedBrowserReaped',
-                                'bridgeStopped', 'setupCommitted', 'discoveredApiKeySaved'), True)
+                                'bridgeStopped', 'setupCommitted', 'discoveredApiKeySaved', 'validatedApiKeySaved'), True)
         report.update(dict.fromkeys(('browserSandboxDisabled', 'realFrameContacted',
                                      'hostBusExposed', 'installerEnabled'), False))
-        report.update(savedPort=8384, panelSha256='a'*64, manualPortFallbackUsed=False,
-                      stages=[{'stage': s, 'errors': [], 'text': 'Private service sync', 'manualPortFallbackUsed': False} for s in
+        report.update(savedPort=8384, panelSha256='a'*64, manualPortFallbackUsed=False, manualApiKeyFallbackUsed=False,
+                      stages=[{'stage': s, 'errors': [], 'text': 'Private service sync', 'manualPortFallbackUsed': False, 'manualApiKeyFallbackUsed': False} for s in
                               ('running', 'stopped', 'restarted', 'stopped')],
                       actualPackagedProcessObservations=[{'stage': 'running', 'pids': [100, 101]},
                                                          {'stage': 'restarted', 'pids': [200, 201]}],
@@ -419,6 +419,23 @@ class PreparedPackage(unittest.TestCase):
             report = self.browser()
             report['manualPortFallbackUsed'] = value
             with self.assertRaisesRegex(ValueError, 'port path'):
+                self.module.verify_browser(report, 'a'*64)
+
+    def test_browser_api_key_paths_require_validated_value_and_consistent_evidence(self):
+        for manual in (False, True):
+            report = self.browser()
+            report['manualApiKeyFallbackUsed'] = manual
+            report['discoveredApiKeySaved'] = not manual
+            for stage in report['stages']:
+                stage['manualApiKeyFallbackUsed'] = manual
+            self.module.verify_browser(report, 'a'*64)
+            for field, value in [('validatedApiKeySaved', False),
+                                 ('discoveredApiKeySaved', manual),
+                                 ('manualApiKeyFallbackUsed', None)]:
+                with self.subTest(manual=manual, field=field), self.assertRaises(ValueError):
+                    self.module.verify_browser({**report, field: value}, 'a'*64)
+            report['stages'][0]['manualApiKeyFallbackUsed'] = not manual
+            with self.assertRaisesRegex(ValueError, 'API key path'):
                 self.module.verify_browser(report, 'a'*64)
 
     def test_browser_readiness_accepts_only_bounded_425_then_success(self):

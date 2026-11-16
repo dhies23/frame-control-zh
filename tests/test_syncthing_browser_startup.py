@@ -86,6 +86,83 @@ addEventListener('message',event=>{
         documents = scope['browser_documents'](payloads['browser-panel.html'].decode())
         self.check_startup(self.cdp(), documents, 0, 0, full_frontend=True)
 
+    def test_readiness_wait_observes_parent_handler_after_native_listener_checkpoint(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        source = ROOT / 'tests/decky-runtime/syncthing_browser.py'
+        node = next(n for n in ast.parse(source.read_text()).body
+                    if isinstance(n, ast.FunctionDef) and n.name == 'ready_page')
+        capture = Mock()
+        capture.eval.return_value = {'ready': True}
+        scope = dict(time=time, frame_steam=SimpleNamespace(
+            Page=lambda _title: capture, Fail=RuntimeError))
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), 'exec'), scope)
+        scope['ready_page']({}, deadline=time.monotonic()+1)
+        expression = capture.eval.call_args.args[0]
+        cdp, browser, page = self.cdp(), None, None
+        with tempfile.TemporaryDirectory(prefix='framey-native-listener-order-') as scratch:
+            profile = Path(scratch) / 'profile'
+            try:
+                with (Path(scratch) / 'browser.log').open('w+') as log:
+                    browser = subprocess.Popen([
+                        BROWSER, '--headless', '--disable-gpu', '--no-first-run',
+                        '--no-default-browser-check', '--disable-background-networking',
+                        '--disable-component-extensions-with-background-pages',
+                        '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
+                        '--user-data-dir='+str(profile),
+                        'data:text/html,<title>Framey listener order</title>'],
+                        stdout=log, stderr=log, start_new_session=True)
+                    deadline = time.monotonic()+15
+                    while time.monotonic() < deadline and page is None:
+                        self.assertIsNone(browser.poll(), 'isolated browser exited')
+                        try:
+                            port = (profile/'DevToolsActivePort').read_text().splitlines()[0]
+                            cdp.CDP = 'http://127.0.0.1:'+port+'/json'
+                            page = cdp.Page('Framey listener order')
+                        except (OSError, IndexError, cdp.Fail):
+                            time.sleep(.05)
+                    self.assertIsNotNone(page, 'isolated CDP page unavailable')
+                    for order in ('observer-first', 'parent-first', 'never-ready'):
+                        with self.subTest(order=order):
+                            setup = r'''
+window.ready=false;window.orderEvents=[];window.startupErrors=[];
+window.startupEvents=[];window.startupState={};
+const nativeTimeout=window.orderNativeTimeout||setTimeout;
+window.orderNativeTimeout=nativeTimeout;
+window.setTimeout=(fn,ms)=>nativeTimeout(()=>{
+ if(ms>500)orderEvents.push('fallback-budget');fn();},ms);
+window.orderParentHandler=event=>{
+ if(event.data!=='framey-order-fixture')return;
+ if(ORDER!=='never-ready'){ready=true;orderEvents.push('parent-ready');}
+ removeEventListener('message',orderParentHandler);
+};
+if(ORDER!=='observer-first')addEventListener('message',orderParentHandler);
+nativeTimeout(()=>{
+ if(ORDER==='observer-first')addEventListener('message',orderParentHandler);
+ postMessage('framey-order-fixture','*');
+},20);
+'''.replace('ORDER', json.dumps(order))
+                            result = page.eval('(()=>{'+setup+'return ('+expression+
+                                               ').then(value=>({value,events:orderEvents}));})()')
+                            expected_ready = order != 'never-ready'
+                            self.assertIs(result['value']['ready'], expected_ready)
+                            self.assertEqual('fallback-budget' in result['events'], not expected_ready,
+                                             'ready message must resolve before the fallback budget')
+                            print('Framey native listener order proof: '+json.dumps(
+                                dict(order=order, result=result), sort_keys=True))
+            finally:
+                if page is not None:
+                    page.sock.close()
+                if browser is not None:
+                    try:
+                        os.killpg(browser.pid, signal.SIGTERM)
+                        browser.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(browser.pid, signal.SIGKILL)
+                        browser.wait(timeout=5)
+                    except ProcessLookupError:
+                        browser.wait(timeout=5)
+
     def check_startup(self, cdp, documents, cut, delay, full_frontend=False):
         requests, rpc_calls = [], []
         started = time.monotonic()
@@ -157,6 +234,7 @@ addEventListener('message',event=>{
                     browser = subprocess.Popen([
                         BROWSER, '--headless', '--disable-gpu', '--no-first-run',
                         '--no-default-browser-check', '--disable-background-networking',
+                        '--disable-component-extensions-with-background-pages',
                         '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
                         '--user-data-dir=' + str(profile),
                         'http://127.0.0.1:' + str(server.server_port) + '/'],

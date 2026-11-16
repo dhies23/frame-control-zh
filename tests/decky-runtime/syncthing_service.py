@@ -547,7 +547,7 @@ def main(signed_flatpak=False):
 
         if signed_flatpak and Path('/input/browser-panel.html').exists():
             from syncthing_browser import exercise
-            report['browserSetup'] = exercise(legacy_rpc, runtime_identity, service)
+            report['browserSetup'] = exercise(legacy_rpc, runtime_identity, service, key)
             saved = json.loads(legacy_rpc('get_settings_json'))
             assert saved['is_setup'] is True and saved['api_key'] == key and saved['port'] == 8384
             assert prop(service, 'MainPID') == '0'
