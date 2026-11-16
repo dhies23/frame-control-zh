@@ -24,6 +24,7 @@ CDN = 'https://cdn.tzatzikiweeb.moe/file/steam-deck-homebrew/versions/'
 MAX_STORE = 4 * 1024 * 1024
 MAX_ZIP = 50 * 1024 * 1024
 MAX_UNPACKED = 150 * 1024 * 1024
+MAX_MANIFEST = 16 * 1024
 SAFE_FOLDER = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\Z')
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 FILESERVER_DIGEST = '7dc2ecdcd05aa415d1ac90afaff28ecb17f77809a2bc7a77aee8e92505b976f0'
@@ -147,6 +148,10 @@ def archive_info(data, expected_hash, expected_name):
         folder = manifests[0].split('/')[0]
         if not SAFE_FOLDER.fullmatch(folder):
             raise ValueError('Invalid plugin folder')
+        # Inventory needs this manifest to offer Update/Remove afterward.
+        # Reject an install that would immediately disappear from that view.
+        if archive.getinfo(manifests[0]).file_size > MAX_MANIFEST:
+            raise ValueError('Plugin manifest exceeds the 16 KiB inventory limit')
         fileserver = (expected_hash == FILESERVER_DIGEST and expected_name == 'DeckyFileServer'
                       and folder == 'DeckyFileServer')
         localsend = (expected_hash == LOCALSEND_DIGEST and expected_name == 'Decky Localsend'
@@ -546,7 +551,10 @@ try:
                 ((digest=='ef8c727943188cad04c63fae7e4e620b8080c07f35dec0c144e99c6166307473' and folder=='GamesPrefixManager') or
                  (digest=='12ab420f06023cd13717489aa92a1babd09dec8566a601f4b4bb93464fbc92b6' and folder=='games-prefix-manager')))
             wine_cellar=(int(plugin_id)==68 and digest=='7e077b933c234414d172b5c6d1c804b026bf39fa4e18e6663495a282637031e8' and folder=='decky-wine-cellar')
-            try: manifest=json.loads(z.read(folder+'/plugin.json').decode('utf-8'))
+            manifest_entry=z.getinfo(folder+'/plugin.json')
+            if manifest_entry.file_size>16384:
+                raise RuntimeError('Plugin manifest exceeds the 16 KiB inventory limit')
+            try: manifest=json.loads(z.read(manifest_entry).decode('utf-8'))
             except (UnicodeError,ValueError) as error:
                 raise RuntimeError('Plugin manifest must be UTF-8 JSON without a byte-order mark') from error
             if not isinstance(manifest,dict): raise RuntimeError('Invalid plugin manifest')
