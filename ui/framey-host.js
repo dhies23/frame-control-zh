@@ -396,6 +396,17 @@
   }, {passive:true});
 
   const passthrough = tag => ({children, ...props}) => R.createElement(tag, props, children);
+  // DialogCommonProps declares a ref. Expose each existing native wrapper
+  // without changing its tag, props or child lifecycle.
+  const dialogContainer = tag => R.forwardRef(function DialogContainer({children, ...props}, ref) {
+    return R.createElement(tag, {...props, ref}, children);
+  });
+  const dialogContainers = {
+    DialogBody:dialogContainer('div'), DialogBodyText:dialogContainer('p'),
+    DialogHeader:dialogContainer('h2'), DialogSubHeader:dialogContainer('h3'),
+    DialogFooter:dialogContainer('footer'), DialogLabel:dialogContainer('label'),
+    DialogControlsSection:dialogContainer('section'), DialogControlsSectionHeader:dialogContainer('h3'),
+  };
   const ScrollPanel = R.forwardRef(function ScrollPanel({children, ...props}, ref) {
     return R.createElement('div', {...props, ref}, children);
   });
@@ -1263,11 +1274,9 @@
     ColorPickerModal,
     Toggle, Spinner, SteamSpinner:Spinner, Tabs, SidebarNavigation,
     SuspensefulImage:({alt='', ...props})=>R.createElement('img', {...props, alt}),
-    Marquee:passthrough('span'), DialogBody:passthrough('div'), DialogBodyText:passthrough('p'),
-    DialogHeader:passthrough('h2'), DialogSubHeader:passthrough('h3'), DialogFooter:passthrough('footer'),
+    Marquee:passthrough('span'), ...dialogContainers,
     ControlsList,
-    DialogLabel:passthrough('label'), DialogControlsSection:passthrough('section'),
-    DialogControlsSectionHeader:passthrough('h3'), ModalRoot, SimpleModal,
+    ModalRoot, SimpleModal,
     ModalPosition:passthrough('div'),
     Menu, MenuGroup, MenuItem,
     ProgressBar, ProgressBarItem, ProgressBarWithInfo,
@@ -1312,7 +1321,8 @@
   };
   localModules.set('framey/components', Object.freeze(Object.fromEntries(
     Object.entries(DFL).filter(([name,value])=>/^[A-Z]/.test(name) &&
-      (typeof value==='function' || [DialogButton,Field,Focusable,TextField,ScrollPanel,ScrollPanelGroup].includes(value))))));
+      (typeof value==='function' || [DialogButton,Field,Focusable,TextField,ScrollPanel,ScrollPanelGroup,
+        ...Object.values(dialogContainers)].includes(value))))));
   // Some panels eagerly look up the optional Steam UI sound player. Allow the
   // lookup, but never claim playback or expose Steam's mutable audio store.
   localModules.set('framey/ui-audio', Object.freeze({UIAudio:Object.freeze({
