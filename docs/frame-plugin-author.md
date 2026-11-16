@@ -85,6 +85,11 @@ Keep setting mutations disabled after a failed backend read until an explicit
 reload succeeds. An initial display default or a stale value is not a recovered
 saved setting. The settings sample demonstrates this guard for its toggle and
 Reset action, including callbacks retained before React redraws.
+Validate RPC arguments in the backend too. The sample accepts only a boolean
+fallback for its boolean read, even if a saved value exists. A string such as
+`"false"`, numeric zero or null must not become a successful boolean read when
+the settings file is missing. Invalid defaults do not create or change it;
+omitting the default uses `false`.
 Validate backend replies at runtime as well as stored data. TypeScript
 `callable` annotations do not validate RPC results: a resolved string or object
 is not a boolean setting, and a fulfilled promise is not necessarily a save
