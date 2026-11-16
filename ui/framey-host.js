@@ -638,7 +638,7 @@
           'aria-label':typeof ariaLabel==='string' ? `Clear ${ariaLabel}` : typeof label==='string' ? `Clear ${label}` : 'Clear text'}, 'Clear'),
       inlineControls, tooltip != null && R.createElement('small', null, tooltip));
   });
-  const SliderField = ({label, description, icon, className, value, min=0, max=100, step=1, disabled, showValue, editableValue,
+  const SliderField = ({label, description, tooltip, icon, className, value, min=0, max=100, step=1, disabled, showValue, editableValue,
     valueSuffix='', resetValue, validValues, notchCount, notchLabels, notchTicksVisible, onChange}) => {
     const permitted = next => Number.isFinite(next) && next>=Number(min) && next<=Number(max) &&
       (typeof validValues!=='function' || validValues(next));
@@ -675,7 +675,8 @@
     permitted(resetValue) &&
       R.createElement('button', {type:'button', disabled:!!disabled,
         'aria-label':typeof label==='string'?`Reset ${label}`:'Reset slider value',
-        onClick:()=>{if(!disabled && permitted(resetValue))onChange?.(resetValue);}}, 'Reset'));
+        onClick:()=>{if(!disabled && permitted(resetValue))onChange?.(resetValue);}}, 'Reset'),
+    tooltip != null && R.createElement('small', null, tooltip));
   };
   const PanelSection = ({title, spinner, children}) => R.createElement('section', {'aria-busy':spinner ? true : undefined},
     title && R.createElement('h2', null, title), spinner && R.createElement(Spinner), children);
