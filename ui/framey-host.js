@@ -481,7 +481,8 @@
     },[label]);
     return R.createElement('span',{ref:node,hidden:true,'aria-hidden':true,style:{display:'none'}},label);
   };
-  const DropdownNativeInput = ({rows, label, menuLabel, selectedOption, disabled, strDefaultLabel, onChange, groupText}) => {
+  const dropdownTabIndex = focusable => typeof focusable==='boolean' ? (focusable ? 0 : -1) : undefined;
+  const DropdownNativeInput = ({rows, label, menuLabel, selectedOption, disabled, focusable, strDefaultLabel, onChange, groupText}) => {
     const choices=rows.map(row=>row.entry), sections=[];
     rows.forEach(({entry,path},index)=>{
       if (sections.at(-1)?.path!==path) sections.push({path,options:[]});
@@ -498,7 +499,7 @@
       : options);
     const selected=choices.findIndex(entry=>Object.is(entry.data, selectedOption));
     return R.createElement('select', {
-      value:selected < 0 ? '' : String(selected), disabled:!!disabled,
+      value:selected < 0 ? '' : String(selected), disabled:!!disabled, tabIndex:dropdownTabIndex(focusable),
       'aria-label':typeof menuLabel==='string' ? menuLabel : typeof label==='string' ? label : undefined,
       onChange:e=>{const entry=choices[Number(e.target.value)];if(!disabled && entry)onChange?.(entry);}},
       selected < 0 && R.createElement('option', {value:'', disabled:true}, strDefaultLabel || 'Choose an option'),
@@ -567,10 +568,10 @@
       } catch (failure) {failed(failure);}
     };
     return R.createElement('div', null,
-      R.createElement('button', {type:'button', disabled:!!props.disabled || phase==='loading', onClick:load},
+      R.createElement('button', {type:'button', tabIndex:dropdownTabIndex(props.focusable), disabled:!!props.disabled || phase==='loading', onClick:load},
         phase==='ready' ? 'Reload options' : 'Load options'),
       phase==='loading' && R.createElement('p', {role:'status'}, 'Waiting for plugin options…'),
-      phase==='loading' && R.createElement('button', {type:'button', disabled:!!props.disabled, onClick:cancel}, 'Cancel loading'),
+      phase==='loading' && R.createElement('button', {type:'button', tabIndex:dropdownTabIndex(props.focusable), disabled:!!props.disabled, onClick:cancel}, 'Cancel loading'),
       error && R.createElement('p', {role:'alert'}, error),
       phase==='ready' && DropdownInput({...props, onChange:entry=>{
         if (!current.current.disabled && gate.current.phase==='ready' && gate.current.mounted)
