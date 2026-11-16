@@ -590,13 +590,14 @@
   const ButtonItem = ({label, description, icon, style, children, disabled, onClick}) => R.createElement(Field, {label, description, icon, style},
     R.createElement('button', {type:'button', disabled:!!disabled,
       onClick:e=>{if(!disabled)onClick?.(e);}}, children || label));
-  const DialogCheckbox = ({label, description, tooltip, checked, defaultChecked, disabled, onChange, onClick, className, style}) =>
-    R.createElement('label', {className, style},
+  const DialogCheckbox = R.forwardRef(function DialogCheckbox({label, description, tooltip, checked, defaultChecked, disabled, onChange, onClick, className, style}, ref) {
+    return R.createElement('label', {ref, className, style},
       R.createElement('input', {type:'checkbox', checked, defaultChecked, disabled:!!disabled,
         onClick:event=>{if(!disabled)onClick?.(event);},
         onChange:e=>{if(!disabled)onChange?.(e.target.checked);}}), label,
       description != null && R.createElement('small', null, description),
       tooltip != null && R.createElement('small', null, tooltip));
+  });
   const TextField = R.forwardRef(function TextField({label, requiredLabel, description, tooltip, value, defaultValue, placeholder, disabled, bIsPassword,
     mustBeNumeric, mustBeURL, mustBeEmail, 'aria-label':ariaLabel,
     rangeMin, rangeMax, maxLength, minLength, pattern, required,
@@ -1312,7 +1313,7 @@
   };
   localModules.set('framey/components', Object.freeze(Object.fromEntries(
     Object.entries(DFL).filter(([name,value])=>/^[A-Z]/.test(name) &&
-      (typeof value==='function' || [DialogButton,Field,Focusable,TextField,ScrollPanel,ScrollPanelGroup].includes(value))))));
+      (typeof value==='function' || [DialogButton,DialogCheckbox,Field,Focusable,TextField,ScrollPanel,ScrollPanelGroup].includes(value))))));
   // Some panels eagerly look up the optional Steam UI sound player. Allow the
   // lookup, but never claim playback or expose Steam's mutable audio store.
   localModules.set('framey/ui-audio', Object.freeze({UIAudio:Object.freeze({
