@@ -41,6 +41,12 @@ def archive(flags=(), extra=None, manifest=None, members=()):
     return data, hashlib.sha256(data).hexdigest()
 
 
+def sized_manifest(size):
+    record = json.dumps({'name': 'Example', 'flags': [], 'note': '\u65e5'},
+                        ensure_ascii=False).encode('utf-8')
+    return record + b' ' * (size - len(record))
+
+
 def file_directory_collisions():
     for child in ('Example/cache/', 'Example/cache/data.json', 'Example/cache/nested/data.json'):
         for paths in (('Example/cache', child), (child, 'Example/cache')):
@@ -77,6 +83,15 @@ def duplicate_archive(second=b'#!/bin/sh\nexit 0\n', second_mode=0o100755):
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_manifest_size_matches_inventory_byte_limit(self):
+        data, digest = archive(manifest=sized_manifest(16_384))
+        self.assertEqual(frame_decky_store.archive_info(data, digest, 'Example'), 'Example')
+        manifest = sized_manifest(16_385)
+        self.assertLess(len(manifest.decode('utf-8')), 16_384)
+        data, digest = archive(manifest=manifest)
+        with self.assertRaisesRegex(ValueError, 'manifest exceeds the 16 KiB inventory limit'):
+            frame_decky_store.archive_info(data, digest, 'Example')
+
     def test_rejects_file_directory_and_implicit_parent_collisions_in_either_order(self):
         for paths, data, digest in file_directory_collisions():
             with self.subTest(paths=paths), self.assertRaisesRegex(ValueError, 'file/directory collision'):
@@ -238,6 +253,58 @@ class ArchiveTests(unittest.TestCase):
 
 @unittest.skipIf(os.name == 'nt', 'remote plugin transaction runs on Linux')
 class StoreTransaction(unittest.TestCase):
+    def test_manifest_limit_rejection_then_boundary_install_stays_in_inventory(self):
+        calls = self.record_service_calls()
+        oversized, _ = archive(manifest=sized_manifest(16_385))
+        result = self.apply('install', oversized)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('manifest exceeds the 16 KiB inventory limit', result.stderr)
+        self.assertFalse(self.folder.exists())
+        self.assertEqual(calls.read_text(), '')
+        self.assertEqual(list(self.folder.parent.iterdir()), [])
+        # The failed install releases its lock. The exact byte boundary can
+        # still install, appear in the actual remote inventory, and be removed.
+        valid, digest = archive(manifest=sized_manifest(16_384))
+        result = self.apply('install', valid)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        scan = subprocess.run([sys.executable, '-'], input=frame_decky.PLUGINS_PROBE,
+                              text=True, capture_output=True, env=self.env, timeout=10)
+        self.assertEqual(scan.returncode, 0, scan.stderr)
+        installed = json.loads(scan.stdout)['plugins']
+        self.assertEqual([(p['name'], p['storeId'], p['sha256']) for p in installed],
+                         [('Example', 42, digest)])
+        self.assertEqual((self.folder/'plugin.json').read_bytes(), sized_manifest(16_384))
+        result = self.apply('remove', expected=digest)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.folder.exists())
+
+    def test_oversized_manifest_update_preserves_saved_copy_and_service(self):
+        original, digest = archive(extra=('Example/saved-data.json', '{"keep":true}'))
+        self.assertEqual(self.apply('install', original).returncode, 0)
+        before = self.plugin_snapshot()
+        calls = self.record_service_calls()
+        no_extract = '''
+import zipfile
+def forbidden_extract(*args, **kwargs):
+    raise AssertionError('Manifest validation must finish before extraction')
+zipfile.ZipFile.extractall = forbidden_extract
+'''
+        for size in (16_385, 200_000):
+            data, _ = archive(manifest=sized_manifest(size))
+            with self.subTest(size=size), patch.object(frame_decky_store, 'APPLY', no_extract+frame_decky_store.APPLY):
+                result = self.apply('update', data, expected=digest)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('manifest exceeds the 16 KiB inventory limit', result.stderr)
+                self.assertNotIn('must finish before extraction', result.stderr)
+                self.assertEqual(self.plugin_snapshot(), before)
+                self.assertEqual(calls.read_text(), '')
+                self.assertEqual(list(self.folder.parent.iterdir()), [self.folder])
+        valid, _ = archive(manifest=sized_manifest(16_384))
+        result = self.apply('update', valid, expected=digest)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.folder/'plugin.json').read_bytes(), sized_manifest(16_384))
+        self.assertEqual(calls.read_text().splitlines(), ['stop', 'start'])
+
     def test_bluetooth_ipc_repair_is_pinned_and_preserves_original_archive_files(self):
         from framey_official import PLUGINS, archive as official_archive
         record = next(p for p in PLUGINS if p['id'] == 18)
@@ -2745,6 +2812,17 @@ pathlib.Path.open = guarded_open
 
 
 class StoreHost(unittest.TestCase):
+    def test_oversized_manifest_is_rejected_before_headset_transfer(self):
+        data, digest = archive(manifest=sized_manifest(16_385))
+        state = {'managed': True, 'running': True, 'plugins': []}
+        catalog = [{'id':42, 'name':'Example', 'root':False, 'sha256':digest, 'version':'1.0'}]
+        with patch.object(frame_decky_store.frame_decky, 'status', return_value=state), \
+             patch.object(frame_decky_store, 'catalog', return_value=catalog), \
+             patch.object(frame_decky_store.urllib.request, 'urlopen', return_value=io.BytesIO(data)):
+            with self.assertRaisesRegex(ValueError, 'manifest exceeds the 16 KiB inventory limit'):
+                frame_decky_store.change(lambda *args, **kwargs:self.fail('No headset transfer expected'),
+                                         'install', 42, reviewed_hash=digest)
+
     def test_archive_type_collision_is_rejected_before_headset_transfer(self):
         _, data, digest = next(file_directory_collisions())
         state = {'managed': True, 'running': True, 'plugins': []}

@@ -1,0 +1,68 @@
+<!doctype html><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<div id="framey-root"></div><div id="framey-error"></div><div id="framey-toasts"></div>
+<div id="framey-modal"></div><div id="fixture"></div><pre id="result">Pending</pre>
+<script>__REACT__</script><script>__REACT_DOM__</script><script>__HOST__</script>
+<script>
+(() => {
+  const result=document.getElementById('result'), container=document.getElementById('fixture');
+  const assert=(value,message)=>{if(!value)throw Error(message);};
+  const root=ReactDOM.createRoot(container), changes=[], clicks=[], loaders=[];
+  const choices=[{label:'First',data:0},{label:'Second',data:1}];
+  const render=props=>ReactDOM.flushSync(()=>root.render(React.createElement('div',null,
+    React.createElement('section',{id:'action'},React.createElement(DFL.ButtonItem,{
+      label:'Run action',description:'Action description',onClick:event=>clicks.push(event.type),...props},'Run')),
+    React.createElement('section',{id:'choice'},React.createElement(DFL.DropdownItem,{
+      label:'Pick item',description:'Choice description',rgOptions:choices,selectedOption:0,
+      onChange:entry=>changes.push(entry),...props}))
+  )));
+  const action=()=>container.querySelector('#action'), choice=()=>container.querySelector('#choice');
+  const notes=node=>[...node.querySelectorAll('small')].map(item=>item.textContent);
+  const checkHelp=text=>{
+    assert(JSON.stringify(notes(action()))===JSON.stringify(['Action description',text]),'button tooltip missing');
+    assert(JSON.stringify(notes(choice()))===JSON.stringify(['Choice description',text]),'dropdown tooltip missing');
+    assert([...container.querySelectorAll('small')].every(node=>node.getClientRects().length>0),
+      'help must be visible without hover');
+  };
+  try {
+    render({tooltip:'Use <local> & private values'});
+    checkHelp('Use <local> & private values');
+    assert(!container.querySelector('local'),'help string interpreted as markup');
+    const button=action().querySelector('button'), select=choice().querySelector('select');
+    button.click();assert(JSON.stringify(clicks)==='["click"]','button callback lost');
+    ReactDOM.flushSync(()=>{select.value='1';select.dispatchEvent(new Event('change',{bubbles:true}));});
+    assert(changes.length===1&&changes[0]===choices[1],'original dropdown option identity lost');
+    select.focus();
+    render({tooltip:'Changed help'});checkHelp('Changed help');
+    assert(action().querySelector('button')===button&&choice().querySelector('select')===select,
+      'help update replaced native controls');
+    assert(document.activeElement===select,'help update stole focus');
+    assert(select.value==='0','controlled dropdown selection changed');
+    render({tooltip:'Disabled help',disabled:true});checkHelp('Disabled help');
+    button.click();select.value='1';select.dispatchEvent(new Event('change',{bubbles:true}));
+    assert(clicks.length===1&&changes.length===1&&button.disabled&&select.disabled,'disabled actions escaped guard');
+    for(const props of [{tooltip:null},{tooltip:undefined},{}]) {
+      render(props);
+      assert(JSON.stringify(notes(action()))==='["Action description"]'&&
+        JSON.stringify(notes(choice()))==='["Choice description"]','removed help remained');
+      assert(action().querySelector('button')===button&&choice().querySelector('select')===select,
+        'help removal replaced controls');
+    }
+    render({tooltip:'Deferred help',onMenuWillOpen:showMenu=>loaders.push(showMenu)});
+    checkHelp('Deferred help');
+    const load=choice().querySelector('button');
+    ReactDOM.flushSync(()=>load.click());checkHelp('Deferred help');
+    assert(loaders.length===1&&!choice().querySelector('select'),'deferred option gate bypassed');
+    ReactDOM.flushSync(()=>loaders[0]());checkHelp('Deferred help');
+    assert(choice().querySelector('select'),'deferred options did not become available');
+    render({tooltip:'Help only',description:undefined});
+    assert(JSON.stringify(notes(action()))==='["Help only"]'&&
+      JSON.stringify(notes(choice()))==='["Help only"]','help depends on description');
+    ReactDOM.flushSync(()=>root.unmount());
+    result.textContent=JSON.stringify({passed:true,documentedApi:'@decky/ui 4.16.0 ItemProps.tooltip',
+      buttonAndDropdown:true,visibleWithoutHover:true,escapedText:true,disabledHelpAndActions:true,
+      descriptionPreserved:true,updatesAndRemoval:true,nativeControlsAndFocusPreserved:true,
+      originalCallbacksPreserved:true,deferredOptionGatePreserved:true,syntheticProps:true,realFrameContacted:false});
+  }catch(error){result.textContent=JSON.stringify({passed:false,error:String(error.stack||error)});}
+})();
+</script>

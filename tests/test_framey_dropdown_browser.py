@@ -46,6 +46,33 @@ class DropdownBrowser(unittest.TestCase):
         report.update(hostSha256=hashlib.sha256(host.encode()).hexdigest())
         print('Framey dropdown focusable browser proof: '+json.dumps(report, sort_keys=True))
 
+    def test_declared_item_icon_survives_native_and_deferred_selection(self):
+        # @decky/ui 4.16.0 DropdownItemProps inherits ItemProps.icon.
+        # These icons/options are synthetic, not a published plugin feature.
+        host = (ROOT/'ui/framey-host.js').read_text()
+        without_start = re.sub(r'\n  start\(\);\n\}\)\(\);\s*$', '\n})();', host)
+        self.assertNotEqual(without_start, host)
+        page = (ROOT/'tests/page/framey_dropdown_icon.html').read_text()
+        for token, source in [('__REACT__', (ROOT/'ui/vendor/react-18.3.1.min.js').read_text()),
+                              ('__REACT_DOM__', (ROOT/'ui/vendor/react-dom-18.3.1.min.js').read_text()),
+                              ('__HOST__', without_start)]:
+            self.assertEqual(page.count(token), 1)
+            page = page.replace(token, source.replace('</script', r'<\/script'))
+        with tempfile.TemporaryDirectory(prefix='framey-dropdown-icon-') as folder:
+            document = Path(folder)/'fixture.html'
+            document.write_text(page)
+            run = run_browser([BROWSER, '--headless', '--disable-gpu', '--no-first-run',
+                               '--no-default-browser-check', '--disable-background-networking',
+                               '--user-data-dir='+str(Path(folder)/'profile'), '--dump-dom',
+                               '--virtual-time-budget=1000', document.as_uri()])
+        self.assertEqual(run.returncode, 0, run.stderr[-2000:])
+        result = re.search(r'<pre id="result">([^<]*)</pre>', run.stdout)
+        self.assertIsNotNone(result, run.stderr[-2000:])
+        report = json.loads(html.unescape(result.group(1)))
+        self.assertIs(report.get('passed'), True, report)
+        report.update(hostSha256=hashlib.sha256(host.encode()).hexdigest())
+        print('Framey dropdown item icon browser proof: '+json.dumps(report, sort_keys=True))
+
     def test_published_value_remains_visible_through_deferred_option_load(self):
         plugin = next(p for p in PLUGINS if p['id'] == 68)
         data = archive(plugin)
