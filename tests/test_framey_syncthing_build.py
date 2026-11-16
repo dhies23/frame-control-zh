@@ -81,7 +81,9 @@ class LockedCargoFetch(unittest.TestCase):
             ' child = os.fork()\n'+
             ' if child == 0:\n'+
             '  signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'+
-            '  Path('+repr(str(self.marker))+').write_text(json.dumps(dict(pid=os.getpid(), pgid=os.getpgrp())))\n'+
+            # Publish the marker atomically: readers treat existence as complete JSON.
+            '  Path('+repr(str(self.marker)+'.tmp')+').write_text(json.dumps(dict(pid=os.getpid(), pgid=os.getpgrp())))\n'+
+            '  os.replace('+repr(str(self.marker)+'.tmp')+', '+repr(str(self.marker))+')\n'+
             '  time.sleep(60)\n  os._exit(0)\n'+
             ' while not Path('+repr(str(self.marker))+').exists(): time.sleep(.005)\n'+
             (' time.sleep(60)\n' if mode in ('timeout', 'interrupt') else '')+
