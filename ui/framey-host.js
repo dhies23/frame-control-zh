@@ -585,11 +585,13 @@
       // Native selection and the existing showMenu gate still own choices.
       typeof props.renderButtonValue==='function' && R.createElement('div', null,
         props.renderButtonValue(selected ? selected.label : props.strDefaultLabel || 'Choose an option')),
-      typeof props.onMenuWillOpen==='function' ? R.createElement(PreparedDropdown, props) : DropdownInput(props));
+      typeof props.onMenuWillOpen==='function' ? R.createElement(PreparedDropdown, props) : DropdownInput(props),
+      props.tooltip != null && R.createElement('small', null, props.tooltip));
   };
-  const ButtonItem = ({label, description, icon, style, children, disabled, onClick}) => R.createElement(Field, {label, description, icon, style},
+  const ButtonItem = ({label, description, tooltip, icon, style, children, disabled, onClick}) => R.createElement(Field, {label, description, icon, style},
     R.createElement('button', {type:'button', disabled:!!disabled,
-      onClick:e=>{if(!disabled)onClick?.(e);}}, children || label));
+      onClick:e=>{if(!disabled)onClick?.(e);}}, children || label),
+    tooltip != null && R.createElement('small', null, tooltip));
   const DialogCheckbox = ({label, description, tooltip, checked, defaultChecked, disabled, onChange, onClick, className, style}) =>
     R.createElement('label', {className, style},
       R.createElement('input', {type:'checkbox', checked, defaultChecked, disabled:!!disabled,
@@ -638,7 +640,7 @@
           'aria-label':typeof ariaLabel==='string' ? `Clear ${ariaLabel}` : typeof label==='string' ? `Clear ${label}` : 'Clear text'}, 'Clear'),
       inlineControls, tooltip != null && R.createElement('small', null, tooltip));
   });
-  const SliderField = ({label, description, icon, className, value, min=0, max=100, step=1, disabled, showValue, editableValue,
+  const SliderField = ({label, description, tooltip, icon, className, value, min=0, max=100, step=1, disabled, showValue, editableValue,
     valueSuffix='', resetValue, validValues, notchCount, notchLabels, notchTicksVisible, onChange}) => {
     const permitted = next => Number.isFinite(next) && next>=Number(min) && next<=Number(max) &&
       (typeof validValues!=='function' || validValues(next));
@@ -675,7 +677,8 @@
     permitted(resetValue) &&
       R.createElement('button', {type:'button', disabled:!!disabled,
         'aria-label':typeof label==='string'?`Reset ${label}`:'Reset slider value',
-        onClick:()=>{if(!disabled && permitted(resetValue))onChange?.(resetValue);}}, 'Reset'));
+        onClick:()=>{if(!disabled && permitted(resetValue))onChange?.(resetValue);}}, 'Reset'),
+    tooltip != null && R.createElement('small', null, tooltip));
   };
   const PanelSection = ({title, spinner, children}) => R.createElement('section', {'aria-busy':spinner ? true : undefined},
     title && R.createElement('h2', null, title), spinner && R.createElement(Spinner), children);
