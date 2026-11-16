@@ -411,8 +411,21 @@ document.getElementById('panel').src = '/panel#fixture';
 
 def print_final_browser_state():
     """Read only the two owned fixture targets; never promote them to ready."""
-    with urllib.request.urlopen(frame_steam.CDP, timeout=2) as response:
+    target = frame_steam.urlsplit(frame_steam.CDP)
+    client = (frame_steam.http.client.HTTPSConnection if target.scheme == 'https'
+              else frame_steam.http.client.HTTPConnection)
+    connection = client(target.hostname, target.port, timeout=2)
+    try:
+        path = target.path or '/'
+        if target.query:
+            path += '?' + target.query
+        connection.request('GET', path)
+        response = connection.getresponse()
+        if response.status != 200:
+            raise OSError('Owned target metadata request failed')
         encoded = response.read(65537)
+    finally:
+        connection.close()
     assert len(encoded) <= 65536, 'Owned target metadata exceeds diagnostic bound'
     targets = json.loads(encoded)
     print('{"phase":"targets-read"}', flush=True)
@@ -455,6 +468,23 @@ def print_final_browser_state():
 
 def final_browser_state(timeout=8):
     """An isolated reader gives the complete final snapshot a hard wall bound."""
+    started = time.monotonic()
+    import ast
+    report = dict(timeoutSeconds=timeout, timedOut=False)
+    # The failure reader needs this read-only query, not browser setup imports.
+    try:
+        with Path(__file__).open('rb') as stream:
+            source = stream.read(65537)
+        assert len(source) <= 65536, 'Failure reader source exceeds bound'
+        source = source.decode('utf-8')
+        query = next(node for node in ast.parse(source).body
+                     if isinstance(node, ast.FunctionDef) and node.name == 'print_final_browser_state')
+        query_source = ast.get_source_segment(source, query)
+        assert query_source is not None and len(query_source.encode()) <= 8192
+    except (OSError, ValueError, SyntaxError, StopIteration, AssertionError) as error:
+        report.update(errorType=type(error).__name__, snapshots=[], phases=[],
+                      importModulesStarted=[])
+        return report
     command = [sys.executable, '-c',
         'print(\'{"phase":"interpreter-started"}\',flush=True); '
         'import sys; '
@@ -463,14 +493,18 @@ def final_browser_state(timeout=8):
         'sys.addaudithook(lambda event,args: '
         '(seen.add(args[0]),print(\'{"importModule":"\'+args[0]+\'"}\',flush=True)) '
         'if event=="import" and args[0] in watched and args[0] not in seen else None); '
-        'sys.path[:0]=sys.argv[1:3]; import syncthing_browser as b; '
+        'sys.path[:0]=sys.argv[1:3]; import json,frame_steam; '
         'print(\'{"phase":"module-imported"}\',flush=True); '
-        'b.frame_steam.CDP=sys.argv[3]; b.print_final_browser_state()',
+        'frame_steam.CDP=sys.argv[3]; exec(sys.argv[4]); print_final_browser_state()',
         str(Path(__file__).resolve().parent), str(Path(frame_steam.__file__).resolve().parent),
-        frame_steam.CDP]
-    report = dict(timeoutSeconds=timeout, timedOut=False)
+        frame_steam.CDP, query_source]
+    remaining = timeout-(time.monotonic()-started)
+    if remaining <= 0:
+        report.update(timedOut=True, preparationDeadlineExceeded=True,
+                      snapshots=[], phases=[], importModulesStarted=[])
+        return report
     try:
-        result = subprocess.run(command, capture_output=True, timeout=timeout)
+        result = subprocess.run(command, capture_output=True, timeout=remaining)
         output = result.stdout
         report['returnCode'] = result.returncode
     except subprocess.TimeoutExpired as error:
