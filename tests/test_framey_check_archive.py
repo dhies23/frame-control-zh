@@ -140,13 +140,29 @@ class ArchiveChecker(unittest.TestCase):
         self.assertTrue(result['panelCandidate'])
 
 
-    def test_large_manifest_passes_installer_but_not_panel_admission(self):
+    def test_large_manifest_is_rejected_to_preserve_inventory_visibility(self):
         manifest = json.loads((SAMPLE / 'plugin.json').read_text())
         manifest['description'] = 'x' * 17_000
         code, result = self.run_check(manifest=manifest)
-        self.assertEqual(code, 0, result)
-        self.assertTrue(result['installerAccepted'])
-        self.assertFalse(result['panelCandidate'])
+        self.assertEqual(code, 1, result)
+        self.assertFalse(result['ok'])
+        self.assertIn('manifest exceeds the 16 KiB inventory limit', result['error'])
+
+    def test_manifest_byte_boundary_remains_a_panel_candidate(self):
+        record = json.dumps({**json.loads((SAMPLE/'plugin.json').read_text()), 'note': '\u65e5'},
+                            ensure_ascii=False).encode('utf-8')
+        for size in (16_384, 16_385):
+            with self.subTest(size=size):
+                code, result = self.run_check(manifest_bytes=record+b' '*(size-len(record)),
+                                              expected_runtime=size==16_384)
+                if size == 16_384:
+                    self.assertEqual(code, 0, result)
+                    self.assertTrue(result['installerAccepted'])
+                    self.assertTrue(result['panelCandidate'])
+                else:
+                    self.assertEqual(code, 1, result)
+                    self.assertFalse(result['ok'])
+                    self.assertIn('manifest exceeds the 16 KiB inventory limit', result['error'])
 
     def test_api_v1_requires_legacy_iife_or_decky_initializer(self):
         manifest = json.loads((SAMPLE / 'plugin.json').read_text())
