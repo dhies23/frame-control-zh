@@ -583,7 +583,7 @@
   const DropdownItem = props => {
     const choices=dropdownOptionRows(props.rgOptions).map(row=>row.entry);
     const selected=choices.find(entry=>Object.is(entry.data,props.selectedOption));
-    return R.createElement(Field, {label:props.label, description:props.description},
+    return R.createElement(Field, {label:props.label, description:props.description, icon:props.icon},
       // Keep the plugin's current-value view visible before a deferred read.
       // Native selection and the existing showMenu gate still own choices.
       typeof props.renderButtonValue==='function' && R.createElement('div', null,
