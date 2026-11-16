@@ -597,7 +597,7 @@
         onChange:e=>{if(!disabled)onChange?.(e.target.checked);}}), label,
       description != null && R.createElement('small', null, description),
       tooltip != null && R.createElement('small', null, tooltip));
-  const TextField = R.forwardRef(function TextField({label, requiredLabel, description, tooltip, value, defaultValue, placeholder, disabled, bIsPassword,
+  const TextField = R.forwardRef(function TextField({label, requiredLabel, description, tooltip, value, defaultValue, placeholder, disabled, tabIndex, bIsPassword,
     mustBeNumeric, mustBeURL, mustBeEmail, 'aria-label':ariaLabel,
     rangeMin, rangeMax, maxLength, minLength, pattern, required,
     bShowClearAction, bAlwaysShowClearAction, focusOnMount, inlineControls, style,
@@ -626,7 +626,7 @@
       R.createElement(R.Fragment, null, label, ' ', R.createElement('span', null, requiredLabel));
     return R.createElement(Field, {label:annotatedLabel, description, style},
       R.createElement('input', {type:bIsPassword?'password':mustBeNumeric?'number':mustBeURL?'url':mustBeEmail?'email':'text',
-        ref:input, autoFocus:!!focusOnMount && !disabled,
+        ref:input, autoFocus:!!focusOnMount && !disabled, tabIndex,
         min:rangeMin, max:rangeMax, maxLength, minLength, pattern, required,
         value, defaultValue:value==null?defaultValue:undefined, placeholder, disabled:!!disabled, 'aria-label':ariaLabel,
         onChange:e=>{if(!disabled){if(bShowClearAction && value==null)setDraft(e.currentTarget.value);onChange?.(e);}},
