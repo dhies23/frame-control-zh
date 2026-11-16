@@ -396,6 +396,17 @@
   }, {passive:true});
 
   const passthrough = tag => ({children, ...props}) => R.createElement(tag, props, children);
+  // DialogCommonProps declares a ref. Expose each existing native wrapper
+  // without changing its tag, props or child lifecycle.
+  const dialogContainer = tag => R.forwardRef(function DialogContainer({children, ...props}, ref) {
+    return R.createElement(tag, {...props, ref}, children);
+  });
+  const dialogContainers = {
+    DialogBody:dialogContainer('div'), DialogBodyText:dialogContainer('p'),
+    DialogHeader:dialogContainer('h2'), DialogSubHeader:dialogContainer('h3'),
+    DialogFooter:dialogContainer('footer'), DialogLabel:dialogContainer('label'),
+    DialogControlsSection:dialogContainer('section'), DialogControlsSectionHeader:dialogContainer('h3'),
+  };
   const ScrollPanel = R.forwardRef(function ScrollPanel({children, ...props}, ref) {
     return R.createElement('div', {...props, ref}, children);
   });
@@ -406,8 +417,11 @@
   // uses it as a fallback; keep an explicit click handler authoritative and
   // pass the original click event rather than fabricating gamepad input.
   // The real forwardRef render also supports legacy render({}).type lookup.
-  const DialogButton = R.forwardRef(function DialogButton({children, disabled, onClick, onOKButton, ...props}, ref) {
+  const DialogButton = R.forwardRef(function DialogButton({children, disabled, focusable, tabIndex, onClick, onOKButton, ...props}, ref) {
+    // Composite controls can own focus on their outer wrapper. Opt the inner
+    // button out of sequential focus, unless a native tabIndex is explicit.
     return R.createElement('button', {...props, ref, type:'button', disabled:!!disabled,
+      tabIndex:tabIndex ?? (focusable===false ? -1 : undefined),
       onClick:event=>{if(!disabled)(onClick || onOKButton)?.(event);}}, children);
   });
   const Focusable = R.forwardRef(function Focusable(
@@ -580,16 +594,18 @@
   const DropdownItem = props => {
     const choices=dropdownOptionRows(props.rgOptions).map(row=>row.entry);
     const selected=choices.find(entry=>Object.is(entry.data,props.selectedOption));
-    return R.createElement(Field, {label:props.label, description:props.description},
+    return R.createElement(Field, {label:props.label, description:props.description, icon:props.icon},
       // Keep the plugin's current-value view visible before a deferred read.
       // Native selection and the existing showMenu gate still own choices.
       typeof props.renderButtonValue==='function' && R.createElement('div', null,
         props.renderButtonValue(selected ? selected.label : props.strDefaultLabel || 'Choose an option')),
-      typeof props.onMenuWillOpen==='function' ? R.createElement(PreparedDropdown, props) : DropdownInput(props));
+      typeof props.onMenuWillOpen==='function' ? R.createElement(PreparedDropdown, props) : DropdownInput(props),
+      props.tooltip != null && R.createElement('small', null, props.tooltip));
   };
-  const ButtonItem = ({label, description, icon, style, children, disabled, onClick}) => R.createElement(Field, {label, description, icon, style},
+  const ButtonItem = ({label, description, tooltip, icon, style, children, disabled, onClick}) => R.createElement(Field, {label, description, icon, style},
     R.createElement('button', {type:'button', disabled:!!disabled,
-      onClick:e=>{if(!disabled)onClick?.(e);}}, children || label));
+      onClick:e=>{if(!disabled)onClick?.(e);}}, children || label),
+    tooltip != null && R.createElement('small', null, tooltip));
   const DialogCheckbox = R.forwardRef(function DialogCheckbox({label, description, tooltip, checked, defaultChecked, disabled, onChange, onClick, className, style}, ref) {
     return R.createElement('label', {ref, className, style},
       R.createElement('input', {type:'checkbox', checked, defaultChecked, disabled:!!disabled,
@@ -598,7 +614,7 @@
       description != null && R.createElement('small', null, description),
       tooltip != null && R.createElement('small', null, tooltip));
   });
-  const TextField = R.forwardRef(function TextField({label, requiredLabel, description, tooltip, value, defaultValue, placeholder, disabled, bIsPassword,
+  const TextField = R.forwardRef(function TextField({label, requiredLabel, description, tooltip, value, defaultValue, placeholder, disabled, tabIndex, bIsPassword,
     mustBeNumeric, mustBeURL, mustBeEmail, 'aria-label':ariaLabel,
     rangeMin, rangeMax, maxLength, minLength, pattern, required,
     bShowClearAction, bAlwaysShowClearAction, focusOnMount, inlineControls, style,
@@ -627,7 +643,7 @@
       R.createElement(R.Fragment, null, label, ' ', R.createElement('span', null, requiredLabel));
     return R.createElement(Field, {label:annotatedLabel, description, style},
       R.createElement('input', {type:bIsPassword?'password':mustBeNumeric?'number':mustBeURL?'url':mustBeEmail?'email':'text',
-        ref:input, autoFocus:!!focusOnMount && !disabled,
+        ref:input, autoFocus:!!focusOnMount && !disabled, tabIndex,
         min:rangeMin, max:rangeMax, maxLength, minLength, pattern, required,
         value, defaultValue:value==null?defaultValue:undefined, placeholder, disabled:!!disabled, 'aria-label':ariaLabel,
         onChange:e=>{if(!disabled){if(bShowClearAction && value==null)setDraft(e.currentTarget.value);onChange?.(e);}},
@@ -639,7 +655,7 @@
           'aria-label':typeof ariaLabel==='string' ? `Clear ${ariaLabel}` : typeof label==='string' ? `Clear ${label}` : 'Clear text'}, 'Clear'),
       inlineControls, tooltip != null && R.createElement('small', null, tooltip));
   });
-  const SliderField = ({label, description, icon, className, value, min=0, max=100, step=1, disabled, showValue, editableValue,
+  const SliderField = ({label, description, tooltip, icon, className, value, min=0, max=100, step=1, disabled, showValue, editableValue,
     valueSuffix='', resetValue, validValues, notchCount, notchLabels, notchTicksVisible, onChange}) => {
     const permitted = next => Number.isFinite(next) && next>=Number(min) && next<=Number(max) &&
       (typeof validValues!=='function' || validValues(next));
@@ -676,7 +692,8 @@
     permitted(resetValue) &&
       R.createElement('button', {type:'button', disabled:!!disabled,
         'aria-label':typeof label==='string'?`Reset ${label}`:'Reset slider value',
-        onClick:()=>{if(!disabled && permitted(resetValue))onChange?.(resetValue);}}, 'Reset'));
+        onClick:()=>{if(!disabled && permitted(resetValue))onChange?.(resetValue);}}, 'Reset'),
+    tooltip != null && R.createElement('small', null, tooltip));
   };
   const PanelSection = ({title, spinner, children}) => R.createElement('section', {'aria-busy':spinner ? true : undefined},
     title && R.createElement('h2', null, title), spinner && R.createElement(Spinner), children);
@@ -796,7 +813,8 @@
         onClick:()=>{if(valid(shown))publish({...shown,rows:shown.saved,dirty:false,error:''});}}, 'Cancel reordering'),
       shown.error && R.createElement('p', {role:'alert'}, shown.error));
   };
-  const ProgressBar = ({nProgress, value, max=100, indeterminate=false}) => R.createElement('progress', {
+  const ProgressBar = ({nProgress, value, max=100, indeterminate=false, focusable}) => R.createElement('progress', {
+    tabIndex:focusable===true ? 0 : focusable===false ? -1 : undefined,
     value:indeterminate || (value ?? nProgress)==null ? undefined : Math.max(0,Math.min(max,Number(value ?? nProgress)||0)), max});
   const ProgressBarItem = ({label, description, ...props}) => R.createElement('div', null,
     R.createElement('label', null,
@@ -1264,11 +1282,9 @@
     ColorPickerModal,
     Toggle, Spinner, SteamSpinner:Spinner, Tabs, SidebarNavigation,
     SuspensefulImage:({alt='', ...props})=>R.createElement('img', {...props, alt}),
-    Marquee:passthrough('span'), DialogBody:passthrough('div'), DialogBodyText:passthrough('p'),
-    DialogHeader:passthrough('h2'), DialogSubHeader:passthrough('h3'), DialogFooter:passthrough('footer'),
+    Marquee:passthrough('span'), ...dialogContainers,
     ControlsList,
-    DialogLabel:passthrough('label'), DialogControlsSection:passthrough('section'),
-    DialogControlsSectionHeader:passthrough('h3'), ModalRoot, SimpleModal,
+    ModalRoot, SimpleModal,
     ModalPosition:passthrough('div'),
     Menu, MenuGroup, MenuItem,
     ProgressBar, ProgressBarItem, ProgressBarWithInfo,
@@ -1313,7 +1329,8 @@
   };
   localModules.set('framey/components', Object.freeze(Object.fromEntries(
     Object.entries(DFL).filter(([name,value])=>/^[A-Z]/.test(name) &&
-      (typeof value==='function' || [DialogButton,DialogCheckbox,Field,Focusable,TextField,ScrollPanel,ScrollPanelGroup].includes(value))))));
+      (typeof value==='function' || [DialogButton,DialogCheckbox,Field,Focusable,TextField,ScrollPanel,ScrollPanelGroup,
+        ...Object.values(dialogContainers)].includes(value))))));
   // Some panels eagerly look up the optional Steam UI sound player. Allow the
   // lookup, but never claim playback or expose Steam's mutable audio store.
   localModules.set('framey/ui-audio', Object.freeze({UIAudio:Object.freeze({

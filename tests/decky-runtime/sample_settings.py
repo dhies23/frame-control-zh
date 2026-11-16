@@ -90,6 +90,10 @@ async def exercise(cycle):
         if cycle == 0:
             assert await client.call('get_setting', 'enabled', False) is False
             assert not SETTINGS.exists(), 'default reads must not create settings'
+            for fallback in ('false', '', 0, 1, None, [], {}):
+                rejected = await client.call('get_setting', 'enabled', fallback, success=False)
+                assert rejected['type'] == -1, rejected
+                assert not SETTINGS.exists(), 'invalid default reads must not create settings'
             assert await client.call('set_setting', 'enabled', True) is True
         elif cycle == 1:
             assert await client.call('get_setting', 'enabled', False) is True
@@ -101,6 +105,10 @@ async def exercise(cycle):
         assert json.loads(SETTINGS.read_bytes()) == expected
         assert SETTINGS.stat().st_mode & 0o777 == 0o600
         committed = SETTINGS.read_bytes()
+        for fallback in ('false', '', 0, 1, None, [], {}):
+            rejected = await client.call('get_setting', 'enabled', fallback, success=False)
+            assert rejected['type'] == -1, rejected
+            assert SETTINGS.read_bytes() == committed
         for method, args in [('set_setting', ['other', True]), ('set_setting', ['enabled', 'true'])]:
             rejected = await client.call(method, *args, success=False)
             assert rejected['type'] == -1, rejected
