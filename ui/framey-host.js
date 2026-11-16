@@ -585,11 +585,13 @@
       // Native selection and the existing showMenu gate still own choices.
       typeof props.renderButtonValue==='function' && R.createElement('div', null,
         props.renderButtonValue(selected ? selected.label : props.strDefaultLabel || 'Choose an option')),
-      typeof props.onMenuWillOpen==='function' ? R.createElement(PreparedDropdown, props) : DropdownInput(props));
+      typeof props.onMenuWillOpen==='function' ? R.createElement(PreparedDropdown, props) : DropdownInput(props),
+      props.tooltip != null && R.createElement('small', null, props.tooltip));
   };
-  const ButtonItem = ({label, description, icon, style, children, disabled, onClick}) => R.createElement(Field, {label, description, icon, style},
+  const ButtonItem = ({label, description, tooltip, icon, style, children, disabled, onClick}) => R.createElement(Field, {label, description, icon, style},
     R.createElement('button', {type:'button', disabled:!!disabled,
-      onClick:e=>{if(!disabled)onClick?.(e);}}, children || label));
+      onClick:e=>{if(!disabled)onClick?.(e);}}, children || label),
+    tooltip != null && R.createElement('small', null, tooltip));
   const DialogCheckbox = ({label, description, tooltip, checked, defaultChecked, disabled, onChange, onClick, className, style}) =>
     R.createElement('label', {className, style},
       R.createElement('input', {type:'checkbox', checked, defaultChecked, disabled:!!disabled,
