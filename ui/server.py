@@ -34,6 +34,7 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -1575,10 +1576,12 @@ class InputAgent:
         return ssh(command, **kwargs)
 
     def command(self, folder=""):
-        code = base64.b64encode(self.source.read_bytes()).decode()
+        # Raw base64 for the touch helper exceeds Windows' command-line limit.
+        # Keep stdin available for the long-lived stream of input events.
+        code = base64.b64encode(zlib.compress(self.source.read_bytes())).decode()
         client = input_client()
         return ("python3 -u -c " + shlex.quote(
-            f"import base64;exec(compile(base64.b64decode('{code}'),'frame_input_agent','exec'))")
+            f"import base64,zlib;exec(compile(zlib.decompress(base64.b64decode('{code}')),'frame_input_agent','exec'))")
             + f" {shlex.quote(client)} {shlex.quote(INPUT_NAME)} {shlex.quote(folder)}"
             + f" {shlex.quote(json.dumps(self.packages, separators=(',', ':')))}")
 
@@ -2172,9 +2175,9 @@ class TouchAgent(InputAgent):
         return ""
 
     def command(self, folder=""):
-        code = base64.b64encode(self.source.read_bytes()).decode()
+        code = base64.b64encode(zlib.compress(self.source.read_bytes())).decode()
         return "python3 -u -c " + shlex.quote(
-            f"import base64;exec(compile(base64.b64decode('{code}'),'frame_touch','exec'))")
+            f"import base64,zlib;exec(compile(zlib.decompress(base64.b64decode('{code}')),'frame_touch','exec'))")
 
 
 _touch = TouchAgent()
@@ -3899,6 +3902,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(frame_extensions.list_extensions())
             elif path == "/api/decky":
                 self.send_json(frame_decky.status(ssh))
+            elif path == "/api/decky/panel-status":
+                self.send_json(frame_decky.panel_status(ssh))
             elif path == "/api/decky/store":
                 self.send_json({'plugins': frame_decky_store.catalog()})
             elif path.startswith('/framey/panel/'):
