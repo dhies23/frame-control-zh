@@ -157,10 +157,11 @@ check Settings → System → About → System type: the release is x64, not a n
 Windows ARM build. On Linux, `uname -m` reports `x86_64` (x64) or `aarch64`
 (arm64). Use `.deb` on Debian/Ubuntu, or AppImage on other distributions.
 
-**iPhone and iPad:** no App Store, TestFlight or `.ipa` download is provided in
-the current release. It runs from your phone without a computer after setup.
-Build it from [`ios/`](ios) in Xcode on a Mac with your own signing team; see
-[docs/iphone.md](docs/iphone.md).
+**iPhone and iPad:** [join the public TestFlight beta](https://testflight.apple.com/join/9xjW91g6).
+You need a reachable Steam Frame with Developer Mode enabled and a Developer
+Mode user password set. After setup, it runs from your phone without a computer.
+To build from [`ios/`](ios), use Xcode on a Mac with your own signing team; see
+[the iPhone guide](docs/iphone.md).
 
 The app brings its own Python and `adb`. macOS includes SSH; Windows needs the
 OpenSSH Client optional feature (normally installed).
