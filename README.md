@@ -12,7 +12,7 @@ See what the headset sees, install games and Android apps, move files and text a
 [![Checks](https://img.shields.io/github/actions/workflow/status/saphid/frame-control/checks.yml?branch=main&label=checks)](https://github.com/saphid/frame-control/actions/workflows/checks.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-66c0f4)](LICENSE)
 
-[**Website**](https://frame-control.pages.dev) · [**Download**](#install) · [Trailer](#trailer) · [Features](#features) · [Set up the headset](#set-up-the-headset) · [Feedback](#feedback) · [Docs](#going-further)
+[**Website**](https://framecontrol.fun) · [**Download**](#install) · [Trailer](#trailer) · [Features](#features) · [Set up the headset](#set-up-the-headset) · [Feedback](#feedback) · [Docs](#going-further)
 
 <br>
 
@@ -296,7 +296,7 @@ Windows and Linux. The quickest way is **Report a problem** in the app (the
 speech-bubble button at the top, or **Help → Report a Problem…**). It adds
 diagnostics with personal details removed, shows you exactly what's included,
 and sends it privately to the maintainer; nothing is published. Without the app,
-use the [feedback form](https://frame-control.pages.dev/feedback/). Please include:
+use the [feedback form](https://framecontrol.fun/feedback/). Please include:
 
 - what you tried and what happened
 - your computer's OS and your SteamOS build (Steam Settings → System)
