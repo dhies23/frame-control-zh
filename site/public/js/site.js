@@ -39,11 +39,16 @@ if (card) {
 }
 
 // Keep linked opening instructions visible, including direct FAQ deep links.
-function revealInstructions() {
-  const target = document.getElementById(location.hash.slice(1));
-  if (target?.tagName === "DETAILS") target.open = true;
+function revealInstructions(hash = location.hash) {
+  const target = document.getElementById(hash.slice(1));
+  const answer = target?.closest("details");
+  if (answer) answer.open = true;
 }
-window.addEventListener("hashchange", revealInstructions);
+window.addEventListener("hashchange", () => revealInstructions());
+document.addEventListener("click", (event) => {
+  const link = event.target?.closest?.('a[href^="#"]');
+  if (link) revealInstructions(link.getAttribute("href"));
+});
 revealInstructions();
 
 // Latest version number, so the page never goes stale. Fails quietly.
