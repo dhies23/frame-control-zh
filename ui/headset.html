@@ -386,6 +386,7 @@ function frameyCacheSave(id,entries){
   try{localStorage.setItem(frameyCacheKey(id),encoded);frameyCacheFallback.delete(id);}
   catch(_){frameyCacheFallback.set(id,encoded);} // Same bounds as persisted data.
   showFrameyCacheStatus();
+  return !frameyCacheFallback.has(id);
 }
 byId('frameyCacheRetry').onclick=()=>{
   const saved=frameyCacheFallback.get(activeFrameyId);
@@ -410,6 +411,16 @@ window.addEventListener('message',async event=>{
   if(req.type==='framey:cache:save'){
     if(req.session===frameySession)frameyCacheSave(activeFrameyId,req.entries);
     return;
+  }
+  if(req.type==='framey:cache:commit'){
+    if(req.session!==frameySession||!Number.isSafeInteger(req.id)||req.id<1)return;
+    const reply={type:'framey:reply',id:req.id};
+    const saved=req.method==='save'&&Array.isArray(req.args)&&req.args.length===1
+      ? frameyCacheSave(activeFrameyId,req.args[0]) : undefined;
+    if(saved!==true)reply.error=saved===false
+      ? 'Plugin settings are only in memory. Use Retry saving before closing or reloading Frame Control.'
+      : 'Invalid plugin settings snapshot';
+    event.source.postMessage(reply,'*');return;
   }
   if(req.type==='framey:ready'&&req.session===frameySession){byId('frameyPanelStatus').textContent='Plugin panel ready';
     api('/api/framey/check',{kind:'panel',pluginId:activeFrameyId}).catch(()=>{});return;}
