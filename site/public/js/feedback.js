@@ -36,7 +36,7 @@ function githubUrl(data) {
 }
 
 function showError(message, data, uncertain = false) {
-  errorBox.textContent = message + " ";
+  errorBox.textContent = (uncertain ? "Delivery could not be confirmed." : message) + " ";
   if (data) {
     const a = document.createElement("a");
     a.href = uncertain ? "https://github.com/saphid/frame-control/issues" : githubUrl(data);
