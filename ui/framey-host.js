@@ -91,14 +91,7 @@
     get length() {return cache.size;},
     key(index) {return [...cache.keys()][index] ?? null;},
     getItem(key) {return cache.get(String(key)) ?? null;},
-    setItem(key, value) {
-      const name = String(key), data = String(value);
-      const next = new Map(cache); next.set(name, data);
-      if (next.size > 64 || name.length > 256 || data.length > 65536 ||
-          JSON.stringify(Object.fromEntries(next)).length > cacheLimit)
-        throw new DOMException('Framey plugin cache is full', 'QuotaExceededError');
-      cache.set(name, data); persistCache();
-    },
+    setItem(key, value) {setCacheItem(key, value); persistCache();},
     removeItem(key) {cache.delete(String(key)); persistCache();},
     clear() {cache.clear(); persistCache();},
   };
@@ -126,6 +119,14 @@
       target.removeItem(key); return true;
     },
   });
+  function setCacheItem(key, value) {
+    const name = String(key), data = String(value);
+    const next = new Map(cache); next.set(name, data);
+    if (next.size > 64 || name.length > 256 || data.length > 65536 ||
+        JSON.stringify(Object.fromEntries(next)).length > cacheLimit)
+      throw new DOMException('Framey plugin cache is full', 'QuotaExceededError');
+    cache.set(name, data);
+  }
   function persistCache() {
     parent.postMessage({type:'framey:cache:save', session:cacheSession,
       entries:Object.fromEntries(cache)}, '*');
@@ -140,7 +141,9 @@
     if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(method)) return Promise.reject(Error('Invalid backend method'));
     const id = ++nextId;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); reject(Error('Decky backend timed out')); }, timeout);
+      const timer = setTimeout(() => { pending.delete(id); reject(Error(type==='framey:cache:commit'
+        ? 'Could not confirm saved plugin settings; the parent did not reply. Reopen the panel to read the saved value.'
+        : 'Decky backend timed out')); }, timeout);
       pending.set(id, {resolve, reject, timer});
       parent.postMessage({type, id, method, args, legacy, session:cacheSession}, '*');
     });
@@ -1389,7 +1392,10 @@
       SetObject:async(key,value)=>{
         const encoded=JSON.stringify(value);
         if(encoded===undefined)throw Error('SteamClient.Storage requires a JSON value');
-        storage.setItem('steam-client:'+String(key),encoded);
+        setCacheItem('steam-client:'+String(key),encoded);
+        // Unlike localStorage's synchronous API, this async API can report
+        // whether the parent actually persisted the snapshot before success.
+        await request('save',[Object.fromEntries(cache)],false,'framey:cache:commit',5000);
       },
     },
   };
