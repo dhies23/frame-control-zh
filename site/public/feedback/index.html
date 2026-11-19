@@ -8,9 +8,9 @@
 <meta name="theme-color" content="#0e141b">
 <link rel="icon" href="/favicon.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<link rel="stylesheet" href="/css/site.css">
-<script src="/js/site.js" defer></script>
-<script src="/js/feedback.js" defer></script>
+<link rel="stylesheet" href="/css/site.css?v=20261119-reconcile1">
+<script src="/js/site.js?v=20261119-reconcile1" defer></script>
+<script src="/js/feedback.js?v=20261119-reconcile1" defer></script>
 </head>
 <body>
 
@@ -39,7 +39,8 @@
     <div class="head">
       <span class="kicker">Feedback</span>
       <h1>Tell us what happened</h1>
-      <p>Bugs, ideas and questions all help. What you send becomes a public issue on GitHub, where you can follow it.</p>
+      <p>Bugs, ideas and questions all help. What you send becomes a public issue on GitHub, where you can follow it. Don't include passwords or personal details.</p>
+      <p>For private questions, <a href="mailto:saphid@gmail.com">email Frame Control support</a>.</p>
     </div>
 
     <div class="form-wrap">
@@ -73,8 +74,8 @@
 
           <div class="row3">
             <div class="field">
-              <label for="os">Your computer</label>
-              <input type="text" id="os" name="os" maxlength="120" placeholder="e.g. Windows 11">
+              <label for="os">Your device and operating system</label>
+              <input type="text" id="os" name="os" maxlength="120" placeholder="e.g. Windows 11, or iPhone 16 with iOS 26">
             </div>
             <div class="field">
               <label for="version">App version</label>
@@ -87,7 +88,7 @@
           </div>
 
           <div class="field">
-            <label for="github">GitHub username <small>Optional. Add it to get notified when someone replies.</small></label>
+            <label for="github">GitHub username <small>Optional and not verified. Subscribe to the created issue on GitHub to follow replies.</small></label>
             <input type="text" id="github" name="github" maxlength="40" autocomplete="username" placeholder="@yourname">
           </div>
 
@@ -115,7 +116,8 @@
 
       <aside class="panel">
         <h3>Reporting a bug?</h3>
-        <p>The server log helps most: in the app, choose <b>Frame → Show Server Log</b> and paste the last few lines into Details.</p>
+        <p>The server log helps most: in the desktop app, choose <b>Frame → Show Server Log</b> and paste the last few lines into Details.</p>
+        <p>On iPhone or iPad, include your device model, iOS version, Frame Control version and SteamOS version.</p>
         <h3>Prefer GitHub?</h3>
         <p>You can <a href="https://github.com/saphid/frame-control/issues/new/choose">open an issue there directly</a>. First-time issues are closed until a maintainer reviews them; see <a href="https://github.com/saphid/frame-control/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>. This form skips that queue.</p>
         <h3 data-needs-kofi>Enjoying it?</h3>
