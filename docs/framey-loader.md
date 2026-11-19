@@ -185,7 +185,14 @@ Direct IndexedDB users remain unsupported.
 
 `SuspensefulImage` renders a native image. SteamClient `Storage.GetJSON` and
 `SetObject` use the same bounded per-plugin cache, including panel reopen
-persistence; they do not read Steam's account/global JSON store. Missing keys
+persistence; they do not read Steam's account/global JSON store. `SetObject`
+waits for the parent to save its snapshot in browser storage before resolving.
+A rejected browser write rejects the call with an "only in memory" error;
+the current value remains available in the panel and through **Retry saving**.
+A missing reply rejects after five seconds, without claiming whether the write
+committed. Reopen the panel to read the saved value before another edit.
+This acknowledgement covers browser storage, not Decky's backend settings.
+Missing keys
 reject with `Not found`. The suspend store has no methods. Optional Steam app/account globals
 are undefined until a successful library read. These fallbacks let settings render without inventing live
 games or account identity. [The exact-bundle follow-up](evidence/framey-ui-fallbacks-2026-10-26.json)
