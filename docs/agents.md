@@ -46,6 +46,10 @@ ignores environment proxies. Stdout contains newline-delimited JSON-RPC only.
 It supports MCP initialization, ping, tool listing and tool calls; no sampling,
 resources, prompts or streaming transport.
 
+An invalid JSON line, invalid UTF-8 or JSON nesting beyond the interpreter's
+parser limit returns a parse error without closing the MCP connection. The
+next request can still run. Lines larger than 1 MiB close the adapter as before.
+
 | Tool | Arguments | Effect |
 |---|---|---|
 | `computer_state` | none | Read-only gamescope window IDs/focus and bounded AT-SPI tree; reports incomplete observations |
