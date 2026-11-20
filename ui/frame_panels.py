@@ -82,11 +82,13 @@ async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET'
 headers:{'X-Panel-Key':token,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
 const s=await r.json();if(!r.ok)throw Error(s.error||'Panel request failed');return s;}
 const status=document.getElementById('status');
-async function refresh(){try{const s=await api('/panels');const list=document.getElementById('panels');list.replaceChildren();
+let refreshGeneration=0;
+async function refresh(){const current=++refreshGeneration;try{const s=await api('/panels');if(current!==refreshGeneration)return;
+const list=document.getElementById('panels');list.replaceChildren();
 for(const p of s.panels){const b=document.createElement('button');b.textContent=p.title;
 b.onclick=async()=>{b.disabled=true;try{const r=await api('/focus',{key:p.key});status.textContent=r.message;}
 catch(e){status.textContent=e.message;}finally{b.disabled=false;}};list.append(b);}
-status.textContent=s.panels.length?'':'No open panels.';}catch(e){status.textContent=e.message;}}
+status.textContent=s.panels.length?'':'No open panels.';}catch(e){if(current===refreshGeneration)status.textContent=e.message;}}
 document.getElementById('refresh').onclick=refresh;
 document.getElementById('close').onclick=async()=>{try{await api('/close',{});window.close();}catch(e){status.textContent=e.message;}};
 refresh();
