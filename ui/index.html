@@ -4122,9 +4122,11 @@ $("vol").oninput = () => {
   setVolume(+$("vol").value);
   clearTimeout(volTimer);
   const dev = window.connDevice;  // the headset whose slider this was, even 250 ms later
-  volTimer = setTimeout(async () => {
-    try { await api("/api/volume", { level: $("vol").value / 100 }, dev); } catch (e) { toast(e.message, true); }
-    volTimer = null;
+  const level = $("vol").value / 100;
+  const timer = volTimer = setTimeout(async () => {
+    try { await api("/api/volume", { level }, dev); } catch (e) { toast(e.message, true); }
+    // A newer input (possibly on another headset) owns its own pending draft.
+    if (volTimer === timer) volTimer = null;
   }, 250);
 };
 $("muteBtn").onclick = () => {
