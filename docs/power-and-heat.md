@@ -101,7 +101,9 @@ HTML names the alias.
 Only the latest observation is retained in server memory, including partial
 samples after stop or disconnect. **Download before starting another observation,
 restarting the server or quitting the app**: those discard the previous report.
-Page reloads retain server state. Download requests include an observation ID, so
+If the local worker cannot start, the previous report remains available and
+you can retry Start; no observation is left running. Page reloads retain server
+state. Download requests include an observation ID, so
 an old page cannot silently download or stop a replacement observation. Reports
 are not uploaded or automatically opened, and may contain device identifiers,
 OS builds and sensor paths. Review before sharing. The phone-hosted UI does not
