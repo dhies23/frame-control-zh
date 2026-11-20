@@ -191,6 +191,47 @@ class Protocol(unittest.TestCase):
 
 
 class ManagedBackend(unittest.TestCase):
+    def test_banner_thread_failure_reaps_backend_and_allows_retry(self):
+        popen = subprocess.Popen
+
+        def cleanup(proc):
+            # Reap only this test's child, including when the regression fails.
+            proc.stdin.close()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+            finally:
+                proc.stdout.close()
+
+        with mock.patch.dict(os.environ, {'FRAME_ALIAS': 'frame-control-test.invalid'}):
+            for phase in ('construct', 'start'):
+                with self.subTest(phase=phase):
+                    children = []
+
+                    def spawn(*args, **kwargs):
+                        proc = popen(*args, **kwargs)
+                        children.append(proc)
+                        self.addCleanup(cleanup, proc)
+                        return proc
+
+                    failure = (mock.patch.object(mcp.threading, 'Thread',
+                                                 side_effect=RuntimeError('banner thread unavailable'))
+                               if phase == 'construct' else
+                               mock.patch.object(mcp.threading.Thread, 'start',
+                                                 side_effect=RuntimeError('banner thread unavailable')))
+                    with mock.patch.object(mcp.subprocess, 'Popen', side_effect=spawn), failure:
+                        with self.assertRaisesRegex(RuntimeError, 'banner thread unavailable'):
+                            with mcp.backend():
+                                self.fail('startup failure must not yield a client')
+                    self.assertEqual(len(children), 1)
+                    self.assertTrue(children[0].stdin.closed)
+                    self.assertTrue(children[0].stdout.closed)
+                    self.assertIsNotNone(children[0].poll(), 'private backend must be reaped')
+            with mcp.backend() as client:
+                self.assertIn('os', client.request('/api/host'))
+
     def test_private_backend_auth_and_cleanup(self):
         from urllib.error import HTTPError, URLError
         from urllib.request import urlopen
