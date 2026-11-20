@@ -144,6 +144,10 @@ have no VR target. A plugin that depends on them can render only part of its UI
 or show an incompatibility message. A Decky plugin's Python backend still runs as
 the headset user when Decky loads it, so review third-party code before opting
 in. The panel iframe can make HTTPS requests subject to ordinary browser CORS.
+Decky's proxy networking remains unavailable. Legacy `serverAPI.fetchNoCors`
+resolves Decky's failure envelope, with `success: false` and a result explaining
+that proxy fetch is not supported on Frame. Modern API v1/v2 `fetchNoCors`
+rejects its promise. Neither fallback sends the request to a network or backend.
 
 ProtonDB Badges' current API v2 bundle rendered its settings in a local Chromium
 browser with a stubbed backend reply on 25 October 2026. Its controls accepted

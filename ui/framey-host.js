@@ -1591,7 +1591,9 @@
       // Decky's legacy route takes keyword arguments and returns this envelope.
       return ask(method, [kwargs], true).catch(failure=>({success:false, result:String(failure.message || failure)}));
     },
-    fetchNoCors: () => Promise.reject(Error('Decky proxy fetch is unavailable in Framey')),
+    // Decky's legacy API resolves failures as an envelope; modern fetchNoCors
+    // rejects instead. Let older plugins handle their ordinary failure branch.
+    fetchNoCors: async () => ({success:false, result:'Decky proxy fetch is not supported on Frame'}),
   };
   function projectApps(rows, limit) {
     if (!Array.isArray(rows) || rows.length > limit) throw Error('Invalid Steam app overview');
