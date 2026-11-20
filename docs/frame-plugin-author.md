@@ -61,6 +61,14 @@ panel admission. An oversized receipt leaves its plugin visible without store
 ownership or receipt metadata; valid neighbors still appear. Scanning does not
 rewrite the receipt. After the receipt is repaired, a fresh scan can recognize
 its ownership again. This limit is tested with disposable local plugin folders.
+
+Inventory also preserves a receipt's complete SHA-256 string and never converts
+a numeric or other non-string value into a digest. A valid hash followed by
+extra bytes is not the reviewed archive. Panel loading, backend calls and event
+subscriptions refuse that receipt; repair or restore it, then refresh and reopen.
+Inventory leaves the receipt bytes untouched. Disposable local tests cover these
+refusals and recovery; they do not contact Decky or a live Frame.
+
 Install, Update and Remove transactions also bound each ownership receipt read
 to 16 KiB plus one byte used to detect overflow. An oversized target receipt
 cannot authorize Update or Remove: the operation preserves installed files and
