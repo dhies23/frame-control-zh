@@ -8103,7 +8103,7 @@ function onConnection(s) {
     $("saveBtn").disabled = $("copyBtn").disabled = true;
     // Lists and their buttons (Remove, Launch…) were the other headset's: clear them
     // before anyone clicks one, until the new headset's arrive.
-    ["games", "titleList", "andApps", "flatpaks", "shotGrid", "gmGrid"].forEach(id => {
+    ["games", "titleList", "andApps", "flatpaks", "shotGrid", "gmGrid", "panelList"].forEach(id => {
       if ($(id)) $(id).innerHTML = `<div class="wait">Waiting for ${esc(s.device.name)}</div>`;
     });
     disp.list = []; disp.port = null;
