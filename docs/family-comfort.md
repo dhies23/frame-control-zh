@@ -99,6 +99,11 @@ replayed as a notification burst on reconnect. Headset warnings and the session
 limit continue without the phone. A physical iPhone's background delivery has
 not been verified and is not guaranteed.
 
+After switching headsets, the first session snapshot seeds that headset's alert
+history without sending its recent events as new notifications. This also
+applies when returning to a headset. History remains visible, and new events
+in later snapshots still notify once.
+
 ## Casting
 
 **Cast to this screen** (Home → **Right now**) starts the existing headset Live view and requests full
