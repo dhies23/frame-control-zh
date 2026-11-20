@@ -38,7 +38,38 @@ class Media(unittest.TestCase):
             with self.assertRaises(ValueError):
                 media.plan(name)
         with self.assertRaises(ValueError):
-            media.plan('film.mkv', metadata={'stereo_mode': 'right_left'})
+            media.plan('film.mkv', metadata={'stereo_mode': 'checkerboard_rl'})
+
+    def test_right_first_layout_selection_and_aspect(self):
+        for mode, layout in [('right_left', 'full-sbs-rl'), ('bottom_top', 'full-ou-rl')]:
+            with self.subTest(mode=mode):
+                self.assertEqual(media.plan('film.mkv', metadata={'stereo_mode': mode}),
+                                 {'kind': 'video', 'layout': layout, 'source': 'metadata'})
+                self.assertEqual(media.plan('film.mkv', 'mono', {'stereo_mode': mode})['layout'], 'mono')
+        for layout, aspect in [('sbs-rl', 2), ('ou-rl', .5), ('full-sbs-rl', 1), ('full-ou-rl', 1)]:
+            with self.subTest(layout=layout):
+                self.assertEqual(media.plan('photo.png', layout)['layout'], layout)
+                self.assertEqual(media.geometry(1920, 1080, layout), (1920, 1080, aspect))
+        for name in ('photo_RL.png', 'photo_SBS_RL.png', 'photo_BT.png', 'photo_OU_BT.png'):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'explicit'):
+                media.plan(name)
+
+    def test_right_first_pixels_normalize_each_eye_without_mirroring(self):
+        # Asymmetric pixels and two rows distinguish swapping eyes from mirroring or flipping.
+        def pixel(value):
+            return bytes([value, 0, 0, 255])
+        left = [pixel(1)+pixel(2), pixel(3)+pixel(4)]
+        right = [pixel(5)+pixel(6), pixel(7)+pixel(8)]
+        expected = b''.join(l+r for l, r in zip(left, right))
+        for layout in ('sbs-rl', 'full-sbs-rl'):
+            source = b''.join(r+l for l, r in zip(left, right))
+            self.assertEqual(media.stereo_pixels(source, 4, 2, layout), (expected, 4, 2))
+        for layout in ('ou-rl', 'full-ou-rl'):
+            source = b''.join(right+left)
+            self.assertEqual(media.stereo_pixels(source, 2, 4, layout), (expected, 4, 2))
+        for width, height, layout in [(3, 2, 'sbs-rl'), (2, 3, 'ou-rl')]:
+            with self.subTest(layout=layout), self.assertRaises(ValueError):
+                media.stereo_pixels(bytes(width*height*4), width, height, layout)
 
     def test_unsupported_containers_do_not_flatten_spatial_photos(self):
         for name in ('spatial.HEIC', 'stereo.mpo', 'cloud.ply', 'cloud.spz', 'app.exe'):
@@ -68,7 +99,7 @@ class Media(unittest.TestCase):
         self.assertIn('-frames:v', cmd)
 
     def play_with(self, name, busy=0, on_pixels=None, sleeps=None, info=None,
-                  fail=None, layout='auto', on_create=None, on_call=None):
+                  fail=None, layout='auto', on_create=None, on_call=None, frame=None, on_frame=None):
         """Run the player against a fake OpenVR; returns (status, pixels calls).
 
         Handle 0 is the theatre surround and 1 the screen. `fail(handle, n)` makes
@@ -97,6 +128,8 @@ class Media(unittest.TestCase):
 
             def pixels(self, handle, data, w, h):
                 calls.append((handle, w, h))
+                if on_frame:
+                    on_frame(handle, data, w, h)
                 if on_pixels:
                     on_pixels(len(calls))
                 if len(calls) <= busy or (fail and fail(handle, len(calls))):
@@ -107,7 +140,7 @@ class Media(unittest.TestCase):
                 # Call the installed handler directly: a real SIGTERM kills Windows.
                 stop_now()
 
-        frame = bytes(4*2*4)
+        frame = bytes(4*2*4) if frame is None else frame
         proc = unittest.mock.MagicMock()
         proc.stdout = io.BytesIO(frame*4)
         proc.wait.return_value = 0
@@ -268,6 +301,9 @@ class Media(unittest.TestCase):
         for name, layout, tags, expect in [
                 ('clip_SBS.mp4', 'auto', None, ('sbs', 'filename')),
                 ('clip.mkv', 'auto', {'stereo_mode': 'left_right'}, ('full-sbs', 'metadata')),
+                ('clip.mkv', 'auto', {'stereo_mode': 'right_left'}, ('full-sbs-rl', 'metadata')),
+                ('clip.mkv', 'auto', {'stereo_mode': 'bottom_top'}, ('full-ou-rl', 'metadata')),
+                ('clip_OU.mp4', 'sbs-rl', None, ('sbs-rl', 'explicit')),
                 ('clip_OU.mp4', 'sbs', None, ('sbs', 'explicit')),
                 ('clip.mkv', 'mono', {'stereo_mode': 'left_right'}, ('mono', 'explicit'))]:
             with self.subTest(name=name, layout=layout):
@@ -275,6 +311,24 @@ class Media(unittest.TestCase):
                 playing = self.writes[0]
                 self.assertEqual(playing['state'], 'playing')
                 self.assertEqual((playing['layout'], playing['source']), expect)
+
+    def test_player_submits_normalized_right_first_frames(self):
+        left, right = bytes([10, 20, 30, 255])*2, bytes([40, 50, 60, 255])*2
+        expected = (left+right)*2
+        for layout in ('sbs-rl', 'full-sbs-rl', 'ou-rl', 'full-ou-rl'):
+            packed_sbs = layout.startswith(('sbs', 'full-sbs'))
+            source = (right+left)*2 if packed_sbs else right*2+left*2
+            submitted, created = [], []
+            with self.subTest(layout=layout):
+                result, _ = self.play_with('clip.mp4', layout=layout, frame=source,
+                    info={'codec_name': 'h264', 'width': 4 if packed_sbs else 2,
+                          'height': 2 if packed_sbs else 4},
+                    on_frame=lambda handle, data, w, h: submitted.append((data, w, h)) if handle == 1 else None,
+                    on_create=lambda *args, **kw: created.append(args))
+                self.assertEqual(result['state'], 'ended')
+                self.assertEqual(submitted, [(expected, 4, 2)]*4)
+                self.assertTrue(created[1][3])  # the owned screen is stereoscopic
+                self.assertEqual(created[1][4], 1 if layout.startswith('full') else (2 if packed_sbs else .5))
 
     def test_fake_frame_library_and_traversal(self):
         with tempfile.TemporaryDirectory() as d, patch.object(remote, 'ROOT', Path(d)):
@@ -302,6 +356,13 @@ class Media(unittest.TestCase):
                 with self.assertRaises(server.Failure):
                     server.media(body)
             ssh.assert_not_called()
+
+    def test_server_forwards_right_first_layouts_to_owned_runtime(self):
+        for layout in ('sbs-rl', 'ou-rl', 'full-sbs-rl', 'full-ou-rl'):
+            body = {'action': 'play', 'id': 'a'*32+'/photo.png', 'layout': layout}
+            with self.subTest(layout=layout), patch.object(server, 'ssh', side_effect=['', '{}']) as ssh:
+                server.media(body)
+                self.assertEqual(json.loads(ssh.call_args.kwargs['stdin']), body)
 
     def test_fake_frame_stop_only_owns_our_unit(self):
         for rc in (0, 5):  # 5: already collected ("not loaded"), a no-op
