@@ -138,6 +138,12 @@ python scripts/macview-bench.py run --pc --scenario capture --source window:1234
 
 ## What's verified
 
+- **Verified locally:** controlled failures while writing a viewer's HTTP
+  upgrade response release the registered session and its controller. Eight
+  failed upgrades leave room for a fresh viewer; rejected authentication and
+  malformed upgrades retain their HTTP errors and preserve another session.
+  These checks use private in-memory transport and a synthetic source with
+  native calls replaced. They add no Windows capture or physical Frame proof.
 - **Verified in CI, this PR:** on `windows-latest`, the native adapter builds
   and a real x264 synthetic stream passes the ticket, reconnect, timing and
   input-echo tests through the helper. The Windows installer builds with the
