@@ -123,6 +123,39 @@ class Media(unittest.TestCase):
         self.assertNotIn('-re', cmd)
         self.assertIn('-frames:v', cmd)
 
+    def test_rotated_mono_uses_display_dimensions_and_reciprocal_pixel_aspect(self):
+        for rotation in (90, -90, 270, 450):
+            with self.subTest(rotation=rotation):
+                created = []
+                info = {'codec_name': 'h264', 'width': 4, 'height': 2,
+                        'sample_aspect_ratio': '2:1',
+                        'tags': {'rotate': '180'},  # matrix takes precedence over stale tags
+                        'side_data_list': [{'side_data_type': 'Display Matrix', 'rotation': rotation}]}
+                result, calls = self.play_with('portrait.mp4', info=info, layout='mono',
+                                              on_create=lambda *a, **k: created.append(a))
+                self.assertEqual(result['state'], 'ended')
+                self.assertEqual(calls[-1], (1, 2, 4))
+                self.assertEqual(created[-1][-1], .5)
+        # A half turn keeps both dimensions and pixel shape.
+        created = []
+        self.play_with('portrait.mp4', info={**info, 'side_data_list': [], 'tags': {'rotate': '180'}},
+                       layout='mono', on_create=lambda *a, **k: created.append(a))
+        self.assertEqual(created[-1][-1], 2)
+
+    def test_rotated_stereo_and_invalid_rotation_fail_before_openvr(self):
+        def unexpected_overlay(*a, **k):
+            self.fail('Invalid orientation reached OpenVR')
+        for layout in media.LAYOUTS[2:]:
+            with self.subTest(layout=layout), self.assertRaisesRegex(ValueError, 'rotated stereo'):
+                self.play_with('stereo.mp4', layout=layout, on_create=unexpected_overlay,
+                               info={'codec_name': 'h264', 'width': 4, 'height': 2,
+                                     'side_data_list': [{'side_data_type': 'Display Matrix', 'rotation': 90}]})
+        for rotation in (45, 'nan', 'inf', 'bad', None, True):
+            with self.subTest(rotation=rotation), self.assertRaisesRegex(ValueError, 'rotation'):
+                self.play_with('portrait.mp4', layout='mono', on_create=unexpected_overlay,
+                               info={'codec_name': 'h264', 'width': 4, 'height': 2,
+                                     'side_data_list': [{'side_data_type': 'Display Matrix', 'rotation': rotation}]})
+
     def play_with(self, name, busy=0, on_pixels=None, sleeps=None, info=None,
                   fail=None, layout='auto', on_create=None, on_call=None, frame=None, on_frame=None):
         """Run the player against a fake OpenVR; returns (status, pixels calls).

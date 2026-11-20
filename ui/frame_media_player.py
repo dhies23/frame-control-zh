@@ -7,6 +7,7 @@ owns only our screen and optional black surround. Exiting destroys both.
 import argparse
 import ctypes as C
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -130,6 +131,20 @@ def decoder_command(path, info, width, height, audio, photo=False):
     return cmd
 
 
+def media_rotation(info):
+    """Read ffprobe orientation in the same priority as FFmpeg autorotation."""
+    matrices = [s for s in info.get('side_data_list', [])
+                if s.get('side_data_type') == 'Display Matrix']
+    value = matrices[0].get('rotation') if matrices else info.get('tags', {}).get('rotate', 0)
+    try:
+        angle = float(value) if not isinstance(value, bool) else float('nan')
+    except (TypeError, ValueError):
+        angle = float('nan')
+    if not math.isfinite(angle) or angle % 90:
+        raise ValueError('Unsupported media rotation; export with rotation applied first')
+    return int(angle % 360)
+
+
 def ignore_signals():
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -153,7 +168,7 @@ def play(args):
         info, audio = probe(path)
         plan = frame_media.plan(path.name, args.layout, info.get('tags'))
         width, height, aspect = frame_media.geometry(info['width'], info['height'], plan['layout'],
-                                                   info.get('sample_aspect_ratio'))
+                                                   info.get('sample_aspect_ratio'), media_rotation(info))
         photo = plan['kind'] == 'photo'
         command = decoder_command(path, info, width, height, audio, photo)
     vr, proc, frames, started = None, None, 0, time.monotonic()
