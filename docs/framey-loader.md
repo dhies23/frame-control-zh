@@ -17,6 +17,16 @@ choose **Open panel** from the installed plugin list. The panel contains the
 plugin's own controls and settings. Update and Remove affect only plugin
 folders that Frame Control's store manager installed.
 
+Install, Update and Remove can restart the shared Decky service. After confirmation,
+Framey closes any open plugin panel before submitting the change, including a
+panel for a different plugin. It retires that panel's subscriptions and ignores
+late replies from its old session. Refresh installed status and reopen the panel
+to read saved settings again. Canceling confirmation keeps the panel open. A
+failed or uncertain change leaves it closed; use **Check result** when offered
+before reopening. Closing a panel does not cancel a backend save already sent
+or prove that it persisted. These lifecycle checks use the shipped parent script
+with synthetic replies; they add no live-headset or worn-VR proof.
+
 Update and Remove recheck ownership under the transaction lock using a regular
 store receipt file with a matching positive integer store ID. A symlinked,
 unreadable or malformed receipt cannot authorize a change. Refused operations

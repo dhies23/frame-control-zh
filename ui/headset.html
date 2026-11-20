@@ -253,8 +253,10 @@ async function deckyChange(action,plugin){if(deckyBusy)return;
   if(!deckyState||(action!=='remove'&&!deckyState.running))return;
   if(!confirm(`${action} ${plugin.name}? Store plugins run code as your Frame user.`))return;
   deckyBusy=true;showDeckyStore();
-  const panelClosed=(action==='update'||action==='remove')&&activeFrameyId===plugin.id;
-  const panelNote=panelClosed?(action==='remove'?' Plugin panel closed after removal.':
+  // Every store mutation can restart the shared Decky service. Retire even a
+  // different plugin's settings view and subscriptions before submitting it.
+  const panelClosed=activeFrameyId!==null;
+  const panelNote=panelClosed?(action==='remove'&&activeFrameyId===plugin.id?' Plugin panel closed after removal.':
     ' Old plugin panel closed; reopen it after refreshing installed plugins.') : '';
   if(panelClosed)closeFrameyPanel();
   deckyJobView(`${action} ${plugin.name}`,
