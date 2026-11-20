@@ -130,10 +130,13 @@ snapshot from enabling a second edit; it does not cancel backend work or
 coordinate independent clients.
 
 The optional `framey-test-sample-browser.py` replay connects the built sample and
-real Framey host to published Decky in a networkless Linux container. It verifies
-rendered toggle/Reset saves, iframe reopen and two loader restarts against saved
-file hashes. Its parent bridge, receipt and DOM input are synthetic; it does not
-prove Frame HTTP/SSH, ARM64 browser or live-headset behavior.
+real Framey host through the shipped headset parent page to published Decky in a
+networkless Linux container. It verifies rendered toggle/Reset saves, iframe
+reopen, two loader restarts and a full parent-page reload against saved file
+hashes. The parent's API wrapper, receipt forwarding, session checks and iframe
+sandbox are unchanged. HTTP responses, the Steam CEF connection, receipt and DOM
+input are fixtures; this does not prove Frame's HTTP/SSH service, ARM64 browser
+or live-headset behavior.
 
 Give text fields a visible `label` or an explicit `aria-label`; Framey preserves
 the latter on the native input. This includes Wine Cellar 0.2.1's published
