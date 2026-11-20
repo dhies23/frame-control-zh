@@ -221,6 +221,35 @@ class UpgradeCleanupTests(unittest.TestCase):
                 native.lib.fc_new.assert_not_called()
                 native.lib.fc_free.assert_not_called()
 
+    def test_producer_startup_failure_releases_session_and_allows_retry(self):
+        native = mock.Mock()
+        native.lib.fc_new.side_effect = range(1, 4)
+        with mock.patch.object(agent.sys, 'platform', 'linux'):
+            host = agent.Agent(native, 'master', ROOT/'ui/mac-view.html')
+        for count, phase in enumerate(('construct', 'start'), 1):
+            with self.subTest(phase=phase):
+                failure = (mock.patch.object(agent.threading, 'Thread',
+                                             side_effect=RuntimeError('producer unavailable'))
+                           if phase == 'construct' else
+                           mock.patch.object(agent.threading.Thread, 'start',
+                                             side_effect=RuntimeError('producer unavailable')))
+                with failure, mock.patch.object(agent.Session, 'produce') as produce:
+                    handler = self.request(host, io.BytesIO())
+                produce.assert_not_called()
+                self.assertTrue(handler.close_connection)
+                handler.connection.shutdown.assert_called()
+                self.assertEqual(host.sessions, {})
+                self.assertEqual(native.lib.fc_free.call_args_list,
+                                 [mock.call(i) for i in range(1, count+1)])
+        output = io.BytesIO()
+        with mock.patch.object(agent.Session, 'produce') as produce:
+            handler = self.request(host, output)
+        produce.assert_called_once_with()
+        self.assertTrue(output.getvalue().startswith(b'HTTP/1.1 101 '))
+        self.assertTrue(handler.close_connection)
+        self.assertEqual(host.sessions, {})
+        self.assertEqual(native.lib.fc_free.call_args_list, [mock.call(i) for i in range(1, 4)])
+
 
 class AdapterTests(unittest.TestCase):
     def test_dxgi_only_bundle_captures_displays_without_optional_wgc_properties(self):

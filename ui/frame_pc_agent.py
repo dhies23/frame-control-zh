@@ -316,8 +316,9 @@ class Session:
             if self.stop_event.is_set():
                 self.controller.close()
                 return
-            self.writer = threading.Thread(target=self.produce, daemon=True)
-            self.writer.start()
+            writer = threading.Thread(target=self.produce, daemon=True)
+            writer.start()
+            self.writer = writer
         try:
             while not self.stop_event.is_set():
                 m = self.ws.receive()
