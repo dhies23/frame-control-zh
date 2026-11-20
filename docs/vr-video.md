@@ -60,6 +60,15 @@ Choose an explicit layout if that assumption doesn't match the file.
 Unknown or conflicting tags ask for a choice, rather than silently flattening
 stereo. The explicit selector always wins. Layout is not guessed from resolution.
 
+For mono video, quarter-turn rotation metadata is included when sizing the
+screen. A 90°/270° turn swaps the dimensions and the source pixel aspect;
+FFmpeg still performs the pixel rotation. Stereo media with nonzero rotation
+metadata is refused before creating overlays: rotating a packed stereo image
+can change its packing and eye order. Export it with rotation applied first,
+then select the resulting layout. Non-quarter-turn or invalid rotation metadata
+also needs an exported copy. These changes have local decoder and player tests;
+their appearance in a real Frame remains unverified.
+
 ## What was verified
 
 **Verified remotely, 2026-09-28:** SteamOS 0.4.1, BUILD_ID
