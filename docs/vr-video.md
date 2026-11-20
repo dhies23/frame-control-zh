@@ -43,6 +43,13 @@ wrong or uses an unsupported codec. Standalone PNG/JPEG photos remain supported.
 Track selection has local generated-file proof; real-Frame playback of these
 multi-track files remains unverified.
 
+For audio, the player also uses the first track marked as default, falling
+back to the first audio track if none is marked. It sends only that track to
+the Frame's audio output. There is no language or audio-track selector; remux
+the file with the intended default to choose a different track. Generated-file
+checks cover selection and decoded audio bytes locally; real-Frame sound and
+lip sync remain unverified.
+
 For right-eye-first video or photos, choose **right eye on left** (SBS) or
 **right eye on top** (OU) in Layout. The CLI/API values are `sbs-rl`, `ou-rl`,
 `full-sbs-rl` and `full-ou-rl`. The player swaps eye images without mirroring

@@ -112,7 +112,10 @@ def probe(path):
     # A preview track can precede the movie. Honor the container's default,
     # falling back to its first non-artwork video when none is marked.
     video = next((s for s in videos if s.get('disposition', {}).get('default')), videos[0])
-    return video, any(s['codec_type'] == 'audio' for s in streams)
+    audios = [s for s in streams if s['codec_type'] == 'audio']
+    audio = next((s for s in audios if s.get('disposition', {}).get('default')),
+                 audios[0] if audios else None)
+    return video, audio
 
 
 def decoder_command(path, info, width, height, audio, photo=False):
@@ -130,8 +133,8 @@ def decoder_command(path, info, width, height, audio, photo=False):
     else:
         cmd += ['-r', '30']
     cmd += ['-f', 'rawvideo', 'pipe:1']
-    if audio and not photo:
-        cmd += ['-map', '0:a:0', '-f', 'pulse', 'Frame Control Media']
+    if audio is not None and not photo:
+        cmd += ['-map', '0:%s' % audio['index'], '-f', 'pulse', 'Frame Control Media']
     return cmd
 
 
