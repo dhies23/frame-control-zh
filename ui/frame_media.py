@@ -49,15 +49,25 @@ def plan(name, layout='auto', metadata=None):
     return {'kind': 'video' if suffix in VIDEO else 'photo', 'layout': layout, 'source': source}
 
 
-def geometry(width, height, layout):
-    """Bound transfer to 1920x1080; return packed dimensions and texel aspect."""
+def geometry(width, height, layout, sample_aspect_ratio=None):
+    """Bound transfer to 1920x1080 while preserving each eye's display aspect."""
     if not 0 < width <= 32768 or not 0 < height <= 32768:
         raise ValueError('Invalid media dimensions')
     if layout not in LAYOUTS[1:]:
         raise ValueError('Resolve the layout before playback')
+    # ffprobe uses 0:1 or N/A when the source does not specify pixel shape.
+    pixel_aspect = 1
+    if sample_aspect_ratio not in (None, '', 'N/A', '0:1'):
+        ratio = re.fullmatch(r'([0-9]+):([0-9]+)', sample_aspect_ratio) if isinstance(sample_aspect_ratio, str) else None
+        if not ratio or not all(int(v) > 0 for v in ratio.groups()):
+            raise ValueError('Invalid media pixel aspect ratio')
+        pixel_aspect = int(ratio[1]) / int(ratio[2])
     scale = min(1, 1920 / width, 1080 / height)
     w, h = max(2, int(width * scale) // 2 * 2), max(2, int(height * scale) // 2 * 2)
-    return w, h, {'mono': 1, 'sbs': 2, 'ou': .5, 'full-sbs': 1, 'full-ou': 1}[layout.removesuffix('-rl')]
+    packing = {'mono': 1, 'sbs': 2, 'ou': .5, 'full-sbs': 1, 'full-ou': 1}[layout.removesuffix('-rl')]
+    # Scaling rounds to even dimensions; raw RGBA carries no aspect metadata.
+    aspect = packing * pixel_aspect * (width * h / (height * w))
+    return w, h, aspect
 
 
 def stereo_pixels(data, width, height, layout):

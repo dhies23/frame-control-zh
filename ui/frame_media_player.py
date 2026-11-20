@@ -152,7 +152,8 @@ def play(args):
     else:
         info, audio = probe(path)
         plan = frame_media.plan(path.name, args.layout, info.get('tags'))
-        width, height, aspect = frame_media.geometry(info['width'], info['height'], plan['layout'])
+        width, height, aspect = frame_media.geometry(info['width'], info['height'], plan['layout'],
+                                                   info.get('sample_aspect_ratio'))
         photo = plan['kind'] == 'photo'
         command = decoder_command(path, info, width, height, audio, photo)
     vr, proc, frames, started = None, None, 0, time.monotonic()

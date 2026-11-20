@@ -41,6 +41,13 @@ their pixels and keeps the selected half/full packing's aspect correction.
 These additions have offline pixel and player tests; real-Frame playback and
 worn eye separation for right-eye-first sources remain unverified.
 
+The player uses ffprobe's pixel aspect ratio for anamorphic video and photos,
+in addition to the selected stereo packing. It preserves each eye's display
+shape when scaling to the transfer limit, including even-dimension rounding.
+Missing or unspecified pixel shape uses square pixels; invalid ratios fail
+before creating an overlay. This correction has local decoder and geometry
+proof; its appearance on a real Frame remains unverified.
+
 Auto layout reads delimited filename tags: `_SBS`, `_HSBS`, `_LR`, `_OU`,
 `_TB`, `_HOU`, `_HTB`, `_FSBS`, `_FOU`, `_FTB`. SBS/OU without `F` means
 half-resolution packing. Full packing preserves each eye's original aspect.
@@ -132,7 +139,7 @@ The ffmpeg path above completed instead.
   4K/8K decode, HDR, controller interaction or behaviour on other OS builds.
   Output is bounded to 1920×1080 packed pixels before OU rearrangement.
 - **Not implemented:** pause, seeking, subtitles, playlists,
-  non-square pixel correction, VR180/360 projection and fisheye.
+  VR180/360 projection and fisheye.
   This preview is a flat stereo screen, not a dome player.
 - **Native spatial-photo blocker:** HEIC/HEIF/AVIF/MPO stereo-container
   extraction isn't implemented in our viewer. We reject these rather than
