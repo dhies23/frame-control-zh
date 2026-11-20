@@ -10,6 +10,51 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(shutil.which('node'), 'Node exercises the shared page JS')
 class ComfortUI(unittest.TestCase):
+    def test_switch_seeds_history_without_replaying_recent_alerts(self):
+        page = (ROOT / 'ui/index.html').read_text(encoding='utf-8')
+        code = page[page.index('let comfortBusy ='):page.index('async function changeComfort(')]
+        setup = r'''
+const assert = require('node:assert/strict');
+const elements = new Map(), notifications = [], toasts = [];
+const $ = id => {
+  if (!elements.has(id)) elements.set(id, {textContent:'',hidden:true,disabled:false,
+    value:'30',defaultValue:'30',checked:true,defaultChecked:true,type:'number'});
+  return elements.get(id);
+};
+const window = {frameApp:{notify:async message=>{notifications.push(message);}}};
+const log = ()=>{}, toast = message=>toasts.push(message);
+let devGen = 0;
+const snapshot = (id, events=[]) => ({id,active:true,time:100,remaining:600,events});
+const event = (id, message) => ({id,kind:'break',time:99,message});
+'''
+        checks = r'''
+renderComfort(snapshot('a'));
+if (SCENARIO === 'return_device') {
+  devGen++;
+  renderComfort(snapshot('b'));
+}
+const switched = SCENARIO !== 'same_device_new_session';
+if (switched) devGen++;
+const id = SCENARIO === 'same_session_id' || SCENARIO === 'return_device' ? 'a' : 'new';
+const history = event('history', 'Recent history');
+renderComfort(snapshot(id,[history]));
+assert.match($('comfortEvents').textContent,/Recent history/,'history stays visible');
+assert.equal(notifications.length,switched ? 0 : 1,'first new-headset snapshot must only seed history');
+assert.equal(toasts.length,switched ? 0 : 1);
+assert.equal($('comfortAnnouncement').textContent,switched ? '' : 'Recent history');
+const fresh = event('fresh','New break');
+renderComfort(snapshot(id,[history,fresh]));
+assert.deepEqual(notifications,switched ? ['New break'] : ['Recent history','New break']);
+assert.equal($('comfortAnnouncement').textContent,'New break');
+renderComfort(snapshot(id,[history,fresh]));
+assert.equal(notifications.filter(x=>x==='New break').length,1,'ordinary polls must not replay alerts');
+'''
+        for scenario in ('new_device', 'same_session_id', 'return_device', 'same_device_new_session'):
+            with self.subTest(scenario=scenario):
+                result = subprocess.run(['node', '-e', setup + f'const SCENARIO={scenario!r};\n' + code + checks],
+                                        capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_late_status_cannot_overwrite_session_changes(self):
         page = (ROOT / 'ui/index.html').read_text(encoding='utf-8')
         api = page[page.index('let devGen ='):page.index('function setConn(')]
@@ -119,6 +164,7 @@ const $ = id => {
   return elements.get(id);
 };
 let denied = 0;
+let devGen = 0;
 const window = {frameApp:{notify:async()=>{denied++;throw Error('permission denied');}}};
 const log = ()=>{}, toast = ()=>{};
 '''
@@ -174,6 +220,7 @@ const $ = id => {
 };
 const window = {frameApp:{notify:async()=>{}}};
 const log = ()=>{}, toast = ()=>{};
+let devGen = 0;
 '''
         checks = r'''
 renderComfort({id:'old', active:false, time:100, options:{minutes:1,breakMinutes:0,stillMinutes:0,batteryAlert:false,heatAlert:false},

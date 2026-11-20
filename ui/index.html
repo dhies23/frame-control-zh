@@ -2918,6 +2918,7 @@ $("vrUtilities").onclick = async e => {
 // The Frame owns the clock. Poll independently of the selected tab, from the first status check on.
 let comfortBusy = false, comfortSeen = new Set(), comfortSession = null, comfortHydrated = false, comfortActive = false;
 let comfortRevision = 0, comfortChanging = 0;
+let comfortGeneration = null;
 async function localNotification(message, request = false) {
   try {
     if (window.frameApp?.notify) await window.frameApp.notify(message, request);
@@ -2936,7 +2937,9 @@ async function localNotification(message, request = false) {
 }
 
 function renderComfort(s) {
-  const firstSnapshot = !comfortHydrated;
+  // Switching away and back also starts a new history snapshot for that headset.
+  const firstSnapshot = !comfortHydrated || comfortGeneration !== devGen;
+  comfortGeneration = devGen;
   comfortHydrated = true;
   $("sessionStart").disabled = !!s.active;
   for (const id of ["sessionMinutes", "breakMinutes", "stillMinutes", "batteryAlert", "heatAlert"])
