@@ -76,8 +76,10 @@ background:#23384b;color:white;cursor:pointer}button:focus-visible{outline:4px s
 <button id="refresh">Refresh</button> <button id="close">Close switcher</button>
 <p id="status" role="status"></p><div id="panels"></div>
 <script>
-const token=location.hash.slice(1)||sessionStorage.getItem('panelKey')||'';
-if(token)sessionStorage.setItem('panelKey',token);history.replaceState(null,'',location.pathname);
+let token=location.hash.slice(1);
+try{token=token||sessionStorage.getItem('panelKey')||'';
+if(token)sessionStorage.setItem('panelKey',token);}catch(_){}
+history.replaceState(null,'',location.pathname);
 async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',
 headers:{'X-Panel-Key':token,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
 const s=await r.json();if(!r.ok)throw Error(s.error||'Panel request failed');return s;}

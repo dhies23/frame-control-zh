@@ -167,6 +167,11 @@ listing panels, requesting focus and closing this switcher. Like Mac viewer
 launch tickets, it is initially readable by another process running as the
 same Frame user. Panel titles are rendered as text, never HTML. The companion
 retains its existing request guards. No Mac capture credentials cross this API.
+If the browser denies tab storage, the launch key stays in memory for the
+current page and the fragment is still removed. A reload cannot recover that
+key without tab storage: close the switcher window and reopen it from Frame
+Control. Missing keys continue to fail authentication. Offline checks cover
+this fallback; storage denial has not been observed on the real Frame.
 
 **Verified:** the real headset page rendered its panel list (image above), its
 HTTP focus request changed `GAMESCOPE_FOCUSED_APP` to `2000999030`, a request
