@@ -119,11 +119,68 @@ class AutoSyncTest(unittest.TestCase):
     def test_watermark_moves_when_turned_off_and_on_again(self):
         self.sync.update({"screenshots": True})
         self.now[0] += 1000
-        self.sync.update({"clips": True})  # already on: the watermark stays
+        self.sync.update({"clips": True})  # legacy shared date stays; clips have their own
         self.assertEqual(self.sync.state()["since"], NOW)
         self.sync.update({"screenshots": False, "clips": False})
         self.sync.update({"screenshots": True})
         self.assertEqual(self.sync.state()["since"], NOW + 1000)
+
+    def test_enabling_second_kind_starts_now_and_survives_restart(self):
+        for first, second in (("screenshots", "clips"), ("clips", "screenshots")):
+            with self.subTest(first=first):
+                self.frame = FakeFrame()
+                self.now[0] = NOW
+                path = self.dir / (first + "-start.json")
+                sync = self.make(path)
+                sync.update({first: True})
+                self.now[0] += 1000
+                sync.update({second: True})
+                # A repeated settings request must not move an enabled switch's date.
+                self.now[0] += 1000
+                sync.update({second: True})
+                sync = self.make(path)
+                self.frame.shots = [shot(1, NOW + 5), shot(2, NOW + 1005)]
+                self.frame.clips = [clip(1, NOW + 5), clip(2, NOW + 1005)]
+                sync.tick()
+                shots = [shot(n, 0)["id"] for n in ([1, 2] if first == "screenshots" else [2])]
+                clips = [clip(n, 0)["id"] for n in ([1, 2] if first == "clips" else [2])]
+                self.assertEqual(self.frame.saved, [("frame-a", shots)])
+                self.assertEqual(self.frame.exported, [("frame-a", c) for c in clips])
+                # Explicit history import still includes the skipped older item.
+                sync.copy_all()
+                sync.tick()
+                if second == "screenshots":
+                    self.assertEqual(self.frame.saved[-1], ("frame-a", [shot(1, 0)["id"]]))
+                else:
+                    self.assertEqual(self.frame.exported[-1], ("frame-a", clip(1, 0)["id"]))
+
+    def test_reenabled_kind_skips_its_off_period_while_other_kind_stays_on(self):
+        for setting in ("screenshots", "clips"):
+            with self.subTest(setting=setting):
+                self.frame = FakeFrame()
+                self.now[0] = NOW
+                sync = self.make(self.dir / (setting + "-reenable.json"))
+                sync.update({"screenshots": True, "clips": True})
+                sync.update({setting: False})
+                self.now[0] += 1000
+                sync.update({setting: True})
+                self.frame.shots = [shot(1, NOW + 5), shot(2, NOW + 1005)]
+                self.frame.clips = [clip(1, NOW + 5), clip(2, NOW + 1005)]
+                sync.tick()
+                shots = [shot(n, 0)["id"] for n in ([2] if setting == "screenshots" else [1, 2])]
+                clips = [clip(n, 0)["id"] for n in ([2] if setting == "clips" else [1, 2])]
+                self.assertEqual(self.frame.saved, [("frame-a", shots)])
+                self.assertEqual(self.frame.exported, [("frame-a", c) for c in clips])
+
+    def test_legacy_settings_keep_the_start_date_of_enabled_kinds(self):
+        path = self.dir / "legacy.json"
+        path.write_text(json.dumps({"screenshots": True, "clips": True, "since": NOW - 1000}))
+        sync = self.make(path)
+        self.frame.shots = [shot(1, NOW - 2000), shot(2, NOW - 500)]
+        self.frame.clips = [clip(1, NOW - 2000), clip(2, NOW - 500)]
+        sync.tick()
+        self.assertEqual(self.frame.saved, [("frame-a", [shot(2, 0)["id"]])])
+        self.assertEqual(self.frame.exported, [("frame-a", clip(2, 0)["id"])])
 
     def test_copy_everything_now_once(self):
         self.frame.shots = [shot(1, NOW - 3600), shot(2, NOW - 60)]
@@ -672,6 +729,31 @@ class Server(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("node"), "Node exercises the Settings renderer")
 class Settings(unittest.TestCase):
+    def test_each_enabled_kind_shows_its_own_start_date(self):
+        page = (Path(__file__).resolve().parents[1] / "ui/index.html").read_text(encoding="utf-8")
+        script = page.split("const autoSync =", 1)[1].split("async function loadAutoSync", 1)[0]
+        harness = r'''
+const assert = require('node:assert/strict');
+const nodes = {};
+const $ = id => nodes[id] ||= {};
+const HOST = {mobile: false, computer: 'computer'};
+const esc = value => value;
+'''
+        checks = r'''
+const state = {screenshots:true,clips:true,since:1,sinceByKind:{shots:100000,clips:200000}};
+renderAutoSync(state);
+assert.ok($('syncStatus').textContent.includes(`Copying new screenshots since ${syncWhen(100000)}.`));
+assert.ok($('syncStatus').textContent.includes(`Copying new Steam clips since ${syncWhen(200000)}.`));
+renderAutoSync({...state,clips:false});
+assert.ok($('syncStatus').textContent.includes(`Copying new screenshots since ${syncWhen(100000)}.`));
+assert.ok(!$('syncStatus').textContent.includes('Steam clips since'));
+renderAutoSync({screenshots:false,clips:true,since:300000});
+assert.ok($('syncStatus').textContent.includes(`Copying new Steam clips since ${syncWhen(300000)}.`));
+'''
+        result = subprocess.run(["node", "-e", harness + "const autoSync =" + script + checks],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_resume_is_available_after_a_copy_error(self):
         page = (Path(__file__).resolve().parents[1] / "ui/index.html").read_text(encoding="utf-8")
         script = page.split("const autoSync =", 1)[1].split("async function loadAutoSync", 1)[0]

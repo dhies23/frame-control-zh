@@ -140,14 +140,17 @@ One real Frame screenshot was copied through this path on 25 October 2026;
 see the [test record](evidence/screenshot-copy-2026-10-25.md). The collision
 case was tested with separate fake sources, not two real same-name screenshots.
 
-- **Only what's new.** It copies what you take after turning it on, so the
-  shots and clips already on the headset don't all arrive at once. **Copy
+- **Only what's new.** Each switch starts with captures made after you turn
+  that switch on, even if the other kind is already enabled. Its start date
+  survives an app restart and appears in Settings. Existing enabled switches
+  keep their earlier shared start date when upgrading. **Copy
   everything now** copies everything that isn't on this computer yet, once.
 - **Turning it off.** Disabling a switch stops new automatic work for that
   kind. The current screenshot batch or clip can finish, but the next one
-  won't start. If both switches were off, turning one back on starts with
-  new captures. **Copy everything now** is a separate explicit request
-  and continues even if you turn the automatic switches off.
+  won't start. Turning a switch back on starts with new captures for that
+  kind, including when the other switch stayed on. **Copy everything now** is
+  a separate explicit request and continues even if you turn the automatic
+  switches off.
 - **Deleted stays deleted.** What it has copied is remembered, per headset, in
   `auto-sync.json` in Frame Control's data folder, so a file you delete here
   isn't copied again (**Copy everything now** would bring it back).
