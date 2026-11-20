@@ -5,8 +5,8 @@ minute, while a headset is connected and nothing else is running on it, and copi
 what's new with the same code as Save and Export: screenshots to ~/Pictures/SteamFrame,
 saved Steam clips to ~/Videos/SteamFrame.
 
-- Only what's newer than the moment it was turned on, so turning it on doesn't copy
-  the whole back-catalogue; Copy everything now does that, once.
+- Each kind starts with captures newer than the moment its switch was turned on,
+  so enabling it doesn't copy the back-catalogue; Copy everything now does that, once.
 - What it has copied is remembered per headset (auto-sync.json in the app's data
   folder), so a file deleted from this computer isn't copied again.
 - A clip Steam is still writing (a chunk changed in the last SETTLE seconds) waits
@@ -66,7 +66,7 @@ def disk_full(error):
 
 
 def _defaults():
-    return {"screenshots": False, "clips": False, "since": None, "synced": {}, "paused": None,
+    return {"screenshots": False, "clips": False, "since": None, "sinceByKind": {}, "synced": {}, "paused": None,
             "checked": None, "copied": 0, "copied_time": None, "error": None, "waiting": 0}
 
 
@@ -103,6 +103,10 @@ class AutoSync:
         s["screenshots"], s["clips"] = bool(s["screenshots"]), bool(s["clips"])
         if not isinstance(s["synced"], dict):
             s["synced"] = {}
+        if not isinstance(s["sinceByKind"], dict):
+            s["sinceByKind"] = {}
+        # Keep the old shared date for existing enabled switches on upgrade.
+        s["sinceByKind"] = {kind: s["sinceByKind"].get(kind, s["since"]) for kind in KINDS}
         return s
 
     def _save(self):
@@ -124,15 +128,18 @@ class AutoSync:
             return {k: s[k] for k in ("screenshots", "clips", "since", "paused", "checked", "copied",
                                       "copied_time", "error", "waiting")} | {
                 "pending": self._all, "running": self._running,
+                "sinceByKind": dict(s["sinceByKind"]),
                 "folders": {"shots": str(self.shots_folder), "clips": str(self.clips_folder)}}
 
     def update(self, changes):
-        """{"screenshots": bool, "clips": bool}: turning it on starts the watermark now."""
+        """{"screenshots": bool, "clips": bool}: enabling each kind starts its date now."""
         with self._lock:
             was = self.enabled()
             before = self._s["screenshots"], self._s["clips"]
-            for key in ("screenshots", "clips"):
+            for key, kind in (("screenshots", "shots"), ("clips", "clips")):
                 if key in changes:
+                    if bool(changes[key]) and not self._s[key]:
+                        self._s["sinceByKind"][kind] = self.clock()
                     self._s[key] = bool(changes[key])
             if before != (self._s["screenshots"], self._s["clips"]):
                 self._revision += 1
@@ -182,7 +189,7 @@ class AutoSync:
             clips = self._s["clips"] or want_all
             if not (shots or clips) or self._s["paused"]:
                 return INTERVAL
-            since = None if want_all else self._s["since"] or 0
+            since = None if want_all else {kind: self._s["sinceByKind"][kind] or 0 for kind in KINDS}
             revision = None if want_all else self._revision
         device = self.device()
         if not device:
@@ -288,7 +295,7 @@ class AutoSync:
             done = self._synced(device, "shots")
             self._mark(device, "shots", [s["id"] for s in listing if s.get("saved")])
             todo = [s["id"] for s in sorted(listing, key=lambda s: s["time"])
-                    if not s.get("saved") and (since is None or (s["time"] >= since and s["id"] not in done))
+                    if not s.get("saved") and (since is None or (s["time"] >= since["shots"] and s["id"] not in done))
                     and self._retry_allowed(device, s["id"])]
             for i in range(0, len(todo), BATCH):
                 if self._interrupted(device, revision):
@@ -318,7 +325,7 @@ class AutoSync:
             for c in sorted(listing, key=lambda c: c["time"]):
                 if c.get("saved"):
                     continue
-                if since is not None and (c["time"] < since or c["id"] in done):
+                if since is not None and (c["time"] < since["clips"] or c["id"] in done):
                     continue
                 if not self._retry_allowed(device, c["id"]):
                     continue

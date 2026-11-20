@@ -6274,7 +6274,10 @@ function renderAutoSync(s) {
   if (s.copied_time) lines.push(`Last copied ${s.copied} file${s.copied === 1 ? "" : "s"} on ${syncWhen(s.copied_time)}.`);
   if (on && s.checked) lines.push(`Last checked ${syncWhen(s.checked)}.`);
   if (on && s.waiting) lines.push(`${s.waiting} clip${s.waiting === 1 ? " is" : "s are"} still being written; copied once Steam finishes.`);
-  if (on && s.since) lines.push(`Copying what's new since ${syncWhen(s.since)}.`);
+  for (const [key, kind, label] of [["screenshots", "shots", "screenshots"], ["clips", "clips", "Steam clips"]]) {
+    const since = s.sinceByKind?.[kind] ?? s.since;
+    if (s[key] && since) lines.push(`Copying new ${label} since ${syncWhen(since)}.`);
+  }
   $("syncStatus").textContent = lines.length ? lines.join(" ") : "Off.";
   for (const [id, key, what] of [["shotsSyncNote", "screenshots", "New screenshots"], ["clipsSyncNote", "clips", "New Steam clips"]]) {
     $(id).hidden = !s[key] || !!HOST.mobile;
