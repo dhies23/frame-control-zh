@@ -148,6 +148,10 @@ Decky's proxy networking remains unavailable. Legacy `serverAPI.fetchNoCors`
 resolves Decky's failure envelope, with `success: false` and a result explaining
 that proxy fetch is not supported on Frame. Modern API v1/v2 `fetchNoCors`
 rejects its promise. Neither fallback sends the request to a network or backend.
+The file picker is also unavailable. Modern `openFilePicker` and legacy
+`serverAPI.openFilePicker` / `openFilePickerV2` return rejected promises with
+"Decky file picker is not supported on Frame", so plugins can use their normal
+failure handlers. These methods do not select a path or browse headset files.
 
 ProtonDB Badges' current API v2 bundle rendered its settings in a local Chromium
 browser with a stubbed backend reply on 25 October 2026. Its controls accepted

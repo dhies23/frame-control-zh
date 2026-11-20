@@ -1568,6 +1568,9 @@
           match.component : R.createElement(match.component)) :
           (view === 'settings' ? plugin.settings : plugin.content))));
   }
+  // Decky exposes picker failures as rejected promises. Keep the method
+  // available so plugins' .then/.catch handlers can handle this limitation.
+  const unsupportedFilePicker = () => Promise.reject(Error('Decky file picker is not supported on Frame'));
   window.__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIInit = {
     connect: (version, name) => ({
       _version: Math.min(version, 2),
@@ -1575,6 +1578,7 @@
       callable: method => (...args) => ask(method, args),
       addEventListener:addPluginEvent, removeEventListener:removePluginEvent,
       routerHook, toaster,
+      openFilePicker: unsupportedFilePicker,
       fetchNoCors: () => Promise.reject(Error('Decky proxy fetch is unavailable in Framey')),
       executeInTab: () => Promise.reject(Error('Steam tab injection is unavailable in Framey')),
       injectCssIntoTab: () => Promise.reject(Error('Steam tab injection is unavailable in Framey')),
@@ -1585,6 +1589,7 @@
   };
   const legacyServerAPI = {
     routerHook, toaster,
+    openFilePicker: unsupportedFilePicker, openFilePickerV2: unsupportedFilePicker,
     callPluginMethod: (method, kwargs={}) => {
       if (!kwargs || typeof kwargs !== 'object' || Array.isArray(kwargs))
         return Promise.resolve({success:false, result:'Legacy plugin arguments must be an object'});
