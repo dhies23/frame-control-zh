@@ -114,5 +114,3 @@ def probe(backend, loader, env, log, processes, call, rpc, until_ready, settings
             sibling.terminate()
         sibling.wait(timeout=5)
     return evidence
-
-
