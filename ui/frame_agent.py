@@ -61,7 +61,7 @@ approvals = Approvals()
 
 def validate(name, args):
     fields = {
-        'launch': {'appid'}, 'install': {'id'}, 'uninstall': {'id'},
+        'launch': {'appid'}, 'quit': {'appid'}, 'install': {'id'}, 'uninstall': {'id'},
         'send_text': {'text'}, 'send_file': {'path'}, 'panel': {'id'},
         'power': {'action'}, 'keep_awake': {'action'},
     }
@@ -74,6 +74,8 @@ def validate(name, args):
     if name == 'keep_awake' and args['action'] not in ('on', 'off', 'status'):
         raise ValueError('Expected on, off or status')
     action = {'name': name, 'arguments': dict(args)}
+    if name == 'quit':
+        action['warning'] = 'This may force the game to close. Unsaved progress may be lost.'
     if name == 'send_file':
         path = Path(args['path']).expanduser().resolve(strict=True)
         if not path.is_file() or path.stat().st_size > 16 * 1024**2:
@@ -101,7 +103,7 @@ def _call(server, body):
     action = validate(name, args)
     if name in ('install', 'uninstall', 'panel') and not server.FLATPAK_ID.fullmatch(args['id']):
         raise ValueError('Expected a Flatpak application ID')
-    if name == 'launch' and not server.APPID.fullmatch(args['appid']):
+    if name in ('launch', 'quit') and not server.APPID.fullmatch(args['appid']):
         raise ValueError('Expected a Steam app ID')
     if name == 'keep_awake' and args['action'] == 'status':
         return keep_awake(server, 'status')
@@ -112,6 +114,8 @@ def _call(server, body):
     approvals.consume(token, action)
     if name == 'launch':
         return server.launch(args)
+    if name == 'quit':
+        return server.force_quit({**args, 'action': 'quit'})
     if name in ('install', 'uninstall'):
         return server.flatpak({**args, 'action': name})
     if name == 'send_text':
