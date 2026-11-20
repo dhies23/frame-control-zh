@@ -138,6 +138,12 @@ forward. **Open in headset** opens the same switcher as its own panel; choose
 it again from Steam's dashboard after switching away. Refresh updates the list.
 This is a list, not thumbnail Exposé.
 
+Switching headsets immediately clears the companion’s old panel titles and
+**Show** buttons. Use **Refresh** to read the selected headset’s panels; late
+replies from the previous headset cannot restore its list. Offline regression
+tests exercise the shipped connection, list and focus handlers with synthetic
+responses. They do not verify physical panel focus or worn visibility.
+
 If Refresh requests overlap, only the newest request can update the headset
 switcher's list or refresh error. Offline tests execute the shipped page script
 with reordered responses; they do not verify worn-headset selection or visibility.
