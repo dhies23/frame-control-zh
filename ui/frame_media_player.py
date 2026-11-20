@@ -105,9 +105,13 @@ def probe(path):
     if result.returncode:
         raise ValueError(result.stderr[-2000:] or 'Cannot read media')
     streams = json.loads(result.stdout)['streams']
-    video = next((s for s in streams if s['codec_type'] == 'video'), None)
-    if not video:
+    videos = [s for s in streams if s['codec_type'] == 'video'
+              and not s.get('disposition', {}).get('attached_pic')]
+    if not videos:
         raise ValueError('No image or video stream')
+    # A preview track can precede the movie. Honor the container's default,
+    # falling back to its first non-artwork video when none is marked.
+    video = next((s for s in videos if s.get('disposition', {}).get('default')), videos[0])
     return video, any(s['codec_type'] == 'audio' for s in streams)
 
 
@@ -118,8 +122,8 @@ def decoder_command(path, info, width, height, audio, photo=False):
         codec = {'h264': 'h264_v4l2m2m', 'hevc': 'hevc_v4l2m2m'}.get(info['codec_name'])
         if not codec:
             raise ValueError('Hardware playback currently supports H.264 and H.265 only')
-        cmd += ['-c:v', codec]
-    cmd += ['-i', str(path), '-map', '0:v:0', '-vf', 'scale=%s:%s' % (width, height),
+        cmd += ['-c:%s' % info['index'], codec]
+    cmd += ['-i', str(path), '-map', '0:%s' % info['index'], '-vf', 'scale=%s:%s' % (width, height),
             '-pix_fmt', 'rgba']
     if photo:
         cmd += ['-frames:v', '1']
