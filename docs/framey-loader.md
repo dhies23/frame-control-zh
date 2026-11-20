@@ -188,7 +188,13 @@ work in VR. Storage Cleaner rendered an
 Its cleanup actions were not tested; they may remove local game saves.
 
 Framey also supplies local tabs/sidebar pages, spinners, dialog/menu wrappers
-and progress bars. `SidebarNavigation` preserves each visible page's React
+and progress bars. Its finite `DFL.IconsModule` supplies local `Search` and
+`WiredNetworkWarning` SVGs so SteamGridDB's search field and image-error view
+can render without dereferencing a missing namespace. These use local magnifier
+and warning artwork, with the plugin's SVG props and styles; they do not expose
+Steam's icon module. The exact published expressions render in a local browser,
+but real artwork requests, live settings persistence and worn use remain unverified.
+`SidebarNavigation` preserves each visible page's React
 `icon` beside its title in the local navigation button, including icon props
 and later updates. Separators and pages with `visible: false` do not become
 buttons. This is local page selection; it does not recreate Steam's sidebar
