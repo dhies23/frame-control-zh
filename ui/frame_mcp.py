@@ -159,8 +159,8 @@ def backend(url=None):
     def read_banner():
         lines.put(proc.stdout.readline())
 
-    threading.Thread(target=read_banner, daemon=True).start()
     try:
+        threading.Thread(target=read_banner, daemon=True).start()
         try:
             banner = lines.get(timeout=10)
         except queue.Empty:
