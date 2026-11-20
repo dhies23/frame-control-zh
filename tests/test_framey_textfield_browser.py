@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import unittest
 import zipfile
 
@@ -66,7 +67,10 @@ def run_browser(command, timeout=30):
             report[stream+'Bytes'] = len(raw)
             report[stream+'Tail'] = raw[-4096:].decode('utf-8', errors='replace')
             report[stream+'Truncated'] = len(raw) > 4096
-        print('FRAMEY_BROWSER_TIMEOUT_JSON='+json.dumps(report), file=sys.stderr, flush=True)
+        diagnostic = 'FRAMEY_BROWSER_TIMEOUT_JSON='+json.dumps(report)
+        print(diagnostic, file=sys.stderr, flush=True)
+        # Repeat the same bounded evidence in unittest's final error block.
+        failure.add_note(diagnostic)
         raise
     finally:
         try:
@@ -106,6 +110,11 @@ class BrowserCleanup(unittest.TestCase):
             self.assertEqual(raised.exception.timeout, 2)
             line = diagnostics.getvalue().strip()
             self.assertTrue(line.startswith('FRAMEY_BROWSER_TIMEOUT_JSON='), line)
+            # unittest's final failure block uses this traceback formatter. The
+            # early stderr record can be outside a CI log tail by that point.
+            summary = ''.join(traceback.format_exception_only(raised.exception))
+            self.assertIn(line, summary)
+            self.assertIn('TimeoutExpired', summary)
             report = json.loads(line.split('=', 1)[1])
             self.assertEqual(report['timeoutSeconds'], 2)
             self.assertIsNone(report['launcherReturnCode'])
