@@ -1277,13 +1277,25 @@
     ...['Notifications','RemotePlayTogetherControls','VoiceChat','Friends',
       'Settings','Perf','Help','Music'].map((name,value)=>[name,value]), ['Decky',999],
   ].flatMap(([name,value])=>[[name,value],[value,name]])));
+  // A finite set of local SVGs for published panel controls, not Steam's icon
+  // module. In particular, SteamGridDB dereferences these before rendering its
+  // search field or an image-error placeholder.
+  const localIcon = path => ({children, ...props}) => R.createElement('svg', {
+    viewBox:'0 0 24 24', width:'1em', height:'1em', fill:'none', stroke:'currentColor',
+    strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round', 'aria-hidden':true,
+    ...props,
+  }, children, R.createElement('path', {d:path}));
+  const IconsModule = Object.freeze({
+    Search:localIcon('M21 21l-6-6M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14'),
+    WiredNetworkWarning:localIcon('M12 3 2 21h20L12 3zM12 9v5M12 17v.01'),
+  });
   const DFL = window.DFL = {
     definePlugin: init => init,
     PanelSection, PanelSectionRow: passthrough('div'), Field, ToggleField, DropdownItem, ReorderableList,
     Dropdown: DropdownItem, ButtonItem, DialogCheckbox, TextField, SliderField,
     Focusable, ScrollPanel, ScrollPanelGroup,
     DialogButton, DialogButtonPrimary: DialogButton, ConfirmModal,
-    DialogButtonSecondary: DialogButton, Button: DialogButton, GamepadButton, QuickAccessTab,
+    DialogButtonSecondary: DialogButton, Button: DialogButton, GamepadButton, QuickAccessTab, IconsModule,
     ColorPickerModal,
     Toggle, Spinner, SteamSpinner:Spinner, Tabs, SidebarNavigation,
     SuspensefulImage:({alt='', ...props})=>R.createElement('img', {...props, alt}),
