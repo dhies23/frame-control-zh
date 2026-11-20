@@ -48,6 +48,7 @@ class Observation:
                 raise ValueError('An observation is already running')
             if sampler.LOCK.exists():
                 raise ValueError('Smoke session active (/tmp/frame-test.lock); observation not started')
+            previous = self.id, self.cancel, self.reason, self.started, self.report, self.thread
             count, interval = PRESETS[preset]
             self.id = uuid.uuid4().hex
             self.cancel = threading.Event()
@@ -61,8 +62,15 @@ class Observation:
             command = [*route[:-1], '-T', '-o', 'StrictHostKeyChecking=yes',
                        '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', route[-1],
                        'python3', '-', '--probe', '--count', str(count), '--interval', str(interval)]
-            self.thread = threading.Thread(target=self._collect, args=(command, count, interval), daemon=True)
-            self.thread.start()
+            try:
+                self.thread = threading.Thread(target=self._collect, args=(command, count, interval), daemon=True)
+                self.thread.start()
+            except Exception:
+                # A failed worker launch must not replace the last exportable
+                # report or leave Start blocked by an observation that never ran.
+                self.id, self.cancel, self.reason, self.started, self.report, self.thread = previous
+                self.running = False
+                raise
             return self.status()
 
     def _collect(self, command, count, interval):
