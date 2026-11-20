@@ -112,16 +112,73 @@ class Media(unittest.TestCase):
 
     def test_decode_is_hardware_and_one_clock_for_audio(self):
         for codec, decoder in [('h264', 'h264_v4l2m2m'), ('hevc', 'hevc_v4l2m2m')]:
-            cmd = player.decoder_command(Path('/tmp/a file.mp4'), {'codec_name': codec}, 1280, 720, True)
+            cmd = player.decoder_command(Path('/tmp/a file.mp4'), {'index': 0, 'codec_name': codec}, 1280, 720, {'index': 1})
             self.assertIn(decoder, cmd)
             self.assertIn('-re', cmd)
             self.assertIn('pulse', cmd)
             self.assertIn(str(Path('/tmp/a file.mp4')), cmd)
         with self.assertRaises(ValueError):
-            player.decoder_command(Path('x.webm'), {'codec_name': 'vp9'}, 640, 480, False)
-        cmd = player.decoder_command(Path('x.png'), {'codec_name': 'png'}, 640, 480, False, True)
+            player.decoder_command(Path('x.webm'), {'index': 0, 'codec_name': 'vp9'}, 640, 480, None)
+        cmd = player.decoder_command(Path('x.png'), {'index': 0, 'codec_name': 'png'}, 640, 480, None, True)
         self.assertNotIn('-re', cmd)
         self.assertIn('-frames:v', cmd)
+
+    def test_movie_uses_default_video_instead_of_earlier_preview_or_cover(self):
+        # Shape observed from a generated MKV: an MJPEG preview precedes its
+        # default H.264 movie. An attached cover must never win either.
+        preview = dict(index=0, codec_type='video', codec_name='mjpeg',
+                       width=32, height=24, disposition={'default': 0})
+        movie = dict(index=2, codec_type='video', codec_name='h264',
+                     width=64, height=48, disposition={'default': 1})
+        cover = dict(preview, index=3, disposition={'default': 1, 'attached_pic': 1})
+        audio = dict(index=1, codec_type='audio', codec_name='aac')
+        for streams in ([preview, audio, movie], [cover, audio, movie]):
+            with self.subTest(streams=streams), patch.object(player.subprocess, 'run',
+                    return_value=unittest.mock.Mock(returncode=0, stdout=json.dumps({'streams': streams}))):
+                info, selected_audio = player.probe(Path('movie.mkv'))
+                self.assertEqual(info, movie)
+                self.assertEqual(selected_audio, audio)
+                cmd = player.decoder_command(Path('movie.mkv'), info, 64, 48, selected_audio)
+                self.assertEqual(cmd[cmd.index('-map')+1], '0:2')
+                self.assertEqual(cmd[cmd.index('-c:2')+1], 'h264_v4l2m2m')
+                self.assertIn('0:1', cmd)
+
+    def test_movie_audio_follows_default_track_and_falls_back_to_first(self):
+        video = dict(index=1, codec_type='video', codec_name='h264', width=64, height=48)
+        first = dict(index=0, codec_type='audio', codec_name='aac', disposition={'default': 0})
+        preferred = dict(first, index=2, disposition={'default': 1})
+        later_default = dict(preferred, index=3)
+        for streams, expected in [([first, video, preferred, later_default], preferred),
+                                  ([first, video], first),
+                                  ([video], None)]:
+            with self.subTest(streams=streams), patch.object(player.subprocess, 'run',
+                    return_value=unittest.mock.Mock(returncode=0, stdout=json.dumps({'streams': streams}))):
+                info, audio = player.probe(Path('movie.mkv'))
+                self.assertEqual(audio, expected)
+                cmd = player.decoder_command(Path('movie.mkv'), info, 64, 48, audio)
+                maps = [cmd[i+1] for i, v in enumerate(cmd) if v == '-map']
+                self.assertEqual(maps, ['0:1'] + ([] if expected is None else ['0:%s' % expected['index']]))
+                self.assertEqual('pulse' in cmd, expected is not None)
+                # Photos never start audio, even if their container includes it.
+                photo = player.decoder_command(Path('photo.png'), info, 64, 48, audio, photo=True)
+                self.assertNotIn('pulse', photo)
+
+    def test_probe_falls_back_to_first_video_and_keeps_standalone_photos(self):
+        first = dict(index=1, codec_type='video', codec_name='png', width=4, height=2)
+        second = dict(first, index=2)
+        cover = dict(first, index=0, disposition={'attached_pic': 1})
+        for streams in ([first], [cover, first, second]):
+            with self.subTest(streams=streams), patch.object(player.subprocess, 'run',
+                    return_value=unittest.mock.Mock(returncode=0, stdout=json.dumps({'streams': streams}))):
+                info, audio = player.probe(Path('photo.png'))
+                self.assertEqual(info, first)
+                self.assertFalse(audio)
+                cmd = player.decoder_command(Path('photo.png'), info, 4, 2, audio, photo=True)
+                self.assertEqual(cmd[cmd.index('-map')+1], '0:1')
+        with patch.object(player.subprocess, 'run', return_value=unittest.mock.Mock(
+                returncode=0, stdout=json.dumps({'streams': [cover]}))):
+            with self.assertRaisesRegex(ValueError, 'No image or video stream'):
+                player.probe(Path('artwork.mp4'))
 
     def test_rotated_mono_uses_display_dimensions_and_reciprocal_pixel_aspect(self):
         for rotation in (90, -90, 270, 450):
@@ -206,7 +263,8 @@ class Media(unittest.TestCase):
         old = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
         with tempfile.TemporaryDirectory() as d, \
                 patch.object(player, 'Overlay', FakeOverlay), \
-                patch.object(player, 'probe', return_value=(info or {'codec_name': 'h264', 'width': 4, 'height': 2}, False)), \
+                patch.object(player, 'probe', return_value=(dict(index=0, **(info or
+                    {'codec_name': 'h264', 'width': 4, 'height': 2})), None)), \
                 patch.object(player.subprocess, 'Popen', return_value=proc), \
                 patch.object(player, 'write_status', side_effect=record), \
                 patch.object(player.frame_splat, 'render', return_value=(bytes(4*4*2), 4, 2)), \

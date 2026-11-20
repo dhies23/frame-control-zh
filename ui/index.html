@@ -2917,6 +2917,7 @@ $("vrUtilities").onclick = async e => {
 
 // The Frame owns the clock. Poll independently of the selected tab, from the first status check on.
 let comfortBusy = false, comfortSeen = new Set(), comfortSession = null, comfortHydrated = false, comfortActive = false;
+let comfortRevision = 0, comfortChanging = 0;
 async function localNotification(message, request = false) {
   try {
     if (window.frameApp?.notify) await window.frameApp.notify(message, request);
@@ -2981,18 +2982,33 @@ function renderComfort(s) {
   const history = (s.events || []).slice(-3).map(e => `${at(e.time)} ${e.message}`).join(" · ");
   if ($("comfortEvents").textContent !== history) $("comfortEvents").textContent = history;
 }
+async function changeComfort(label, body, button) {
+  // A status request already in flight describes the state before this action.
+  const revision = ++comfortRevision, generation = devGen;
+  comfortChanging++;
+  try {
+    const result = await act(label, () => api("/api/comfort", body), button);
+    if (result && revision === comfortRevision && generation === devGen) renderComfort(result);
+  } finally { comfortChanging--; }
+}
 async function pollComfort() {
   // Not while the Frame can't be reached: each poll would be another ssh attempt waiting to
   // time out, and the banner already says why. Status checks bring it back (setOnline).
   if (online === false) {
     const message = "Session status appears when the Frame is connected.";
     if ($("comfortStatus").textContent !== message) $("comfortStatus").textContent = message;
-  } else if (!comfortBusy) {
+  } else if (!comfortBusy && !comfortChanging) {
     comfortBusy = true;
-    try { renderComfort(await api("/api/comfort", {action: "status"})); }
+    const revision = comfortRevision, generation = devGen;
+    try {
+      const result = await api("/api/comfort", {action: "status"});
+      if (revision === comfortRevision && generation === devGen) renderComfort(result);
+    }
     catch (e) {
-      const message = "Session status unavailable: " + e.message;
-      if ($("comfortStatus").textContent !== message) $("comfortStatus").textContent = message;
+      if (!e.stale && revision === comfortRevision && generation === devGen) {
+        const message = "Session status unavailable: " + e.message;
+        if ($("comfortStatus").textContent !== message) $("comfortStatus").textContent = message;
+      }
     }
     finally { comfortBusy = false; }
   }
@@ -3000,15 +3016,13 @@ async function pollComfort() {
 }
 $("comfortForm").onsubmit = async e => {
   e.preventDefault();
-  const result = await act("Start session", () => api("/api/comfort", {
+  await changeComfort("Start session", {
     action: "start", minutes: Number($("sessionMinutes").value), breakMinutes: Number($("breakMinutes").value),
     stillMinutes: Number($("stillMinutes").value), batteryAlert: $("batteryAlert").checked, heatAlert: $("heatAlert").checked,
-  }), $("sessionStart"));
-  if (result) renderComfort(result);
+  }, $("sessionStart"));
 };
 $("sessionCancel").onclick = async () => {
-  const result = await act("Cancel session", () => api("/api/comfort", {action: "cancel"}), $("sessionCancel"));
-  if (result) renderComfort(result);
+  await changeComfort("Cancel session", {action: "cancel"}, $("sessionCancel"));
 };
 $("testNotification").onclick = () => act("Test notification", async () => {
   await localNotification("Comfort notifications are enabled on this device.", true);
