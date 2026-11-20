@@ -130,6 +130,40 @@ class DesktopPower(unittest.TestCase):
             run.assert_not_called()
         self.assertIsNone(self.observation.status()['id'])
 
+    def test_failed_worker_start_preserves_report_and_allows_retry(self):
+        def collect(command, payload, count, interval, stop, received, **kw):
+            received(SAMPLE)
+            return {'schemaVersion': 1, 'requestedSamples': count, 'intervalSeconds': interval,
+                    'samples': [SAMPLE], 'stopped': 'Synthetic collection stopped'}
+
+        with patch.object(frame_power.sampler, 'stream_report', side_effect=collect) as run:
+            for has_previous in (False, True):
+                with self.subTest(has_previous=has_previous):
+                    observation = frame_power.Observation()
+                    self.addCleanup(observation.shutdown)
+                    if has_previous:
+                        old = observation.start('minute', ('ssh', 'old'), {'alias': 'old'})
+                        observation.thread.join(3)
+                        self.assertFalse(observation.thread.is_alive())
+                        saved, _ = observation.export(old['id'], 'json')
+                    before = observation.status()
+                    calls = run.call_count
+                    with patch.object(frame_power.threading.Thread, 'start',
+                                      side_effect=RuntimeError('cannot start new thread')):
+                        with self.assertRaisesRegex(RuntimeError, 'cannot start new thread'):
+                            observation.start('five-minutes', ('ssh', 'new'), {'alias': 'new'})
+                    self.assertEqual(observation.status(), before)
+                    self.assertEqual(run.call_count, calls, 'failed startup must not collect')
+                    if has_previous:
+                        self.assertEqual(observation.export(old['id'], 'json')[0], saved)
+                    retried = observation.start('minute', ('ssh', 'retry'), {'alias': 'retry'})
+                    observation.thread.join(3)
+                    self.assertFalse(observation.thread.is_alive())
+                    report = json.loads(observation.export(retried['id'], 'json')[0])
+                    self.assertEqual(report['headset'], {'alias': 'retry'})
+                    self.assertEqual(report['samples'], [SAMPLE])
+                    self.assertFalse(observation.status()['running'])
+
     def test_headset_switch_preserves_original_identity_and_requests_cancel(self):
         done = threading.Event()
         def collect(command, payload, count, interval, cancel, received, **kw):
