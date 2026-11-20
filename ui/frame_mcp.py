@@ -194,7 +194,7 @@ def serve(client):
             return 1
         try:
             response = dispatch(client, json.loads(line))
-        except (ValueError, UnicodeError):
+        except (ValueError, UnicodeError, RecursionError):
             response = {'jsonrpc': '2.0', 'id': None, 'error': {'code': -32700, 'message': 'Parse error'}}
         if response is not None:
             print(json.dumps(response), flush=True)
