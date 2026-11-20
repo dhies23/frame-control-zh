@@ -5,10 +5,10 @@ const SITE = {
   kofi: "alexsouthwell",
 };
 
-// Donate buttons.
+// Keep placeholder links hidden until their destination is set.
 for (const el of document.querySelectorAll("[data-kofi]")) {
   if (SITE.kofi) el.href = `https://ko-fi.com/${SITE.kofi}`;
-  else el.hidden = true;
+  el.hidden = !SITE.kofi;
 }
 for (const el of document.querySelectorAll("[data-needs-kofi]")) el.hidden = !SITE.kofi;
 for (const el of document.querySelectorAll("[data-no-kofi]")) el.hidden = !!SITE.kofi;

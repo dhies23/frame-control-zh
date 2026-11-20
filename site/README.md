@@ -8,6 +8,10 @@ The Frame Control website, <https://framecontrol.fun>, on Cloudflare Pages.
 - `public/js/site.js`: settings, including the Ko-fi page name for the donate buttons, OS hints and opening-help deep links. OS hints lead to instructions, never directly to an architecture-specific installer.
 - `test/onboarding.test.mjs`: desktop/mobile browser hints and opening-help deep links.
 
+Support links stay hidden until the shared script assigns the configured Ko-fi
+URL. The homepage offers its GitHub support link before that script runs,
+including when JavaScript is unavailable or the Ko-fi setting is empty.
+
 ## Feedback → GitHub issues
 
 The function needs a `GITHUB_TOKEN` secret: a fine-grained token with **Issues: read and write** on
