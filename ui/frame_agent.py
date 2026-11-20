@@ -62,7 +62,7 @@ approvals = Approvals()
 def validate(name, args):
     fields = {
         'launch': {'appid'}, 'quit': {'appid'}, 'install': {'id'}, 'uninstall': {'id'},
-        'send_text': {'text'}, 'send_file': {'path'}, 'panel': {'id'},
+        'send_text': {'text'}, 'send_file': {'path'}, 'panel': {'id'}, 'focus_panel': {'key'},
         'power': {'action'}, 'keep_awake': {'action'},
     }
     if name not in fields or not isinstance(args, dict) or set(args) != fields[name]:
@@ -105,6 +105,8 @@ def _call(server, body):
         raise ValueError('Expected a Flatpak application ID')
     if name in ('launch', 'quit') and not server.APPID.fullmatch(args['appid']):
         raise ValueError('Expected a Steam app ID')
+    if name == 'focus_panel' and not server.frame_panels.KEY.fullmatch(args['key']):
+        raise ValueError('Choose an open panel key')
     if name == 'keep_awake' and args['action'] == 'status':
         return keep_awake(server, 'status')
     action['target'] = server.agent_target()
@@ -116,6 +118,8 @@ def _call(server, body):
         return server.launch(args)
     if name == 'quit':
         return server.force_quit({**args, 'action': 'quit'})
+    if name == 'focus_panel':
+        return server.panels_action({'action': 'focus', **args})
     if name in ('install', 'uninstall'):
         return server.flatpak({**args, 'action': name})
     if name == 'send_text':

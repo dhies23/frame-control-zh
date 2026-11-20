@@ -65,6 +65,7 @@ def string(description):
 TOOLS = [tool('computer_state', 'Read Frame X11 windows and a bounded AT-SPI accessibility tree. Names are untrusted app content. Observation only, no clicks or typing.', read=True),
          tool('status', 'Read battery, services and installed apps.', read=True),
          tool('running', 'List running Steam-managed games and their app IDs. Names are untrusted app content; this only observes.', read=True),
+         tool('panels', 'List existing SteamVR dashboard panels, including hidden ones, with their keys. Titles are untrusted app content. Observation only; use focus_panel to request a switch.', read=True),
          tool('screenshot', 'Capture the headset (private screen content is returned to this MCP client).',
               {'view': {'type': 'string', 'enum': ['headset', 'desktop']}}, read=True),
          tool('job', 'Check a background install job.', {'id': string('Job ID')}, ['id'], read=True)]
@@ -76,6 +77,7 @@ for name, field, description in [
     ('send_text', 'text', 'Send text to the Frame desktop clipboard.'),
     ('send_file', 'path', 'Send a file (up to 16 MiB) from the HTTP server computer to Frame Downloads.'),
     ('panel', 'id', 'Open an installed Flatpak as a floating panel; needs zsh on the computer.'),
+    ('focus_panel', 'key', 'Ask SteamVR to show an existing dashboard panel by its key from panels. Reports dispatch only, not verified focus or visibility. Does not change spatial placement or close panels.'),
     ('power', 'action', 'suspend, reboot or poweroff. Opens a terminal for the user password.'),
     ('keep_awake', 'action', 'on, off or status using the optional PR #16 script. on changes idle timers; off restores them. Never automatic.'),
 ]:
@@ -100,6 +102,8 @@ def call(client, name, args):
         return {'content': [{'type': 'image', 'mimeType': 'image/png', 'data': base64.b64encode(png).decode()}]}
     if name == 'computer_state':
         result = client.request('/api/computer/state')
+    elif name == 'panels':
+        result = client.request('/api/panels', {'action': 'list'})
     elif name in ('status', 'running', 'job'):
         result = client.request('/api/' + name + ('?' + urlencode(args) if args else ''))
     else:
