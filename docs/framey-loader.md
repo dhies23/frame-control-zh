@@ -137,6 +137,12 @@ Framey exports, not Steam webpack IDs. Sound playback throws an unsupported
 error, and Steam audio stores, function-source signatures and global patches are
 not fabricated. The [module lookup checks](evidence/framey-module-lookup-2026-10-26.md)
 record the resulting TabMaster documentation support and remaining blockers.
+Framey also supplies the local `achievementClasses.AchievementListItemBase`
+class map used by TabMaster's filter-selection rows. Replaying the complete
+published row in local React/DOM verifies rendering and synthetic activation,
+with private icon and MicroSDeck stand-ins. This adds no proof of TabMaster
+library editing, live settings persistence or worn/controller use; its
+compatibility rating is unchanged.
 
 The host currently supplies sections, rows, buttons, toggles, text fields,
 sliders, grouped dropdowns,
