@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import unittest
 import zipfile
 
@@ -46,6 +47,17 @@ def wait_browser_group(group, timeout=5):
         time.sleep(.01)
 
 
+class BrowserTimeout(subprocess.TimeoutExpired):
+    """Keep the timeout contract and bounded evidence on Python 3.9 too."""
+    def __init__(self, failure, diagnostic):
+        super().__init__(failure.cmd, failure.timeout,
+                         output=failure.output, stderr=failure.stderr)
+        self.diagnostic = diagnostic
+
+    def __str__(self):
+        return super().__str__()+'\n'+self.diagnostic
+
+
 def run_browser(command, timeout=30):
     # Chrome can leave children holding the profile and captured output after
     # its parent exits or times out. Own the whole session before starting it,
@@ -66,8 +78,11 @@ def run_browser(command, timeout=30):
             report[stream+'Bytes'] = len(raw)
             report[stream+'Tail'] = raw[-4096:].decode('utf-8', errors='replace')
             report[stream+'Truncated'] = len(raw) > 4096
-        print('FRAMEY_BROWSER_TIMEOUT_JSON='+json.dumps(report), file=sys.stderr, flush=True)
-        raise
+        diagnostic = 'FRAMEY_BROWSER_TIMEOUT_JSON='+json.dumps(report)
+        print(diagnostic, file=sys.stderr, flush=True)
+        # A TimeoutExpired subclass also renders on Python 3.9, before
+        # exception notes were supported. Keep the original as the cause.
+        raise BrowserTimeout(failure, diagnostic) from failure
     finally:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -104,8 +119,17 @@ class BrowserCleanup(unittest.TestCase):
             with contextlib.redirect_stderr(diagnostics), self.assertRaises(subprocess.TimeoutExpired) as raised:
                 run_browser([sys.executable, '-c', parent], timeout=2)
             self.assertEqual(raised.exception.timeout, 2)
+            self.assertEqual(raised.exception.cmd, [sys.executable, '-c', parent])
+            self.assertTrue(raised.exception.output.endswith('STDOUT-æ'.encode()))
+            self.assertTrue(raised.exception.stderr.endswith('STDERR-ø'.encode()))
+            self.assertIs(type(raised.exception.__cause__), subprocess.TimeoutExpired)
             line = diagnostics.getvalue().strip()
             self.assertTrue(line.startswith('FRAMEY_BROWSER_TIMEOUT_JSON='), line)
+            # unittest's final failure block uses this traceback formatter. The
+            # early stderr record can be outside a CI log tail by that point.
+            summary = ''.join(traceback.format_exception_only(type(raised.exception), raised.exception))
+            self.assertIn(line, summary)
+            self.assertIn('timed out after 2 seconds', summary)
             report = json.loads(line.split('=', 1)[1])
             self.assertEqual(report['timeoutSeconds'], 2)
             self.assertIsNone(report['launcherReturnCode'])

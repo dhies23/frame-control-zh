@@ -78,8 +78,19 @@ node --check ui/control-center.js
 Responsive layout, actual browser rendering and keyboard/touch behavior still
 need browser verification. No Control Center test connects to a real headset.
 
-GitHub Actions runs this suite on macOS and Windows with Python 3.12, and on
-Linux with Python 3.13. Unit-test discovery does not pick up `tests/e2e`.
+GitHub Actions runs the main checks job on Linux with Python 3.9, and the
+platform server-test jobs on macOS and Windows with Python 3.12 and Linux with
+Python 3.13. Unit-test discovery does not pick up `tests/e2e`.
+
+Linux Framey DOM fixtures use a private browser process group and a 30-second
+wait. On timeout, `run_browser` prints `FRAMEY_BROWSER_TIMEOUT_JSON` with the
+launcher status, pipe byte counts and at most the final 4,096 bytes of each
+pipe. A `TimeoutExpired` subclass renders that same record in unittest’s final
+error block, including on Python 3.9, when an early record is outside a CI log
+tail. It preserves the command, timeout and partial output fields and chains
+the original timeout as its cause. The existing owned-group cleanup still runs. This is diagnostic
+evidence, not a retry or a change to the timeout or passing assertions; it
+does not establish the cause of earlier browser failures.
 
 ## The fake Frame
 
