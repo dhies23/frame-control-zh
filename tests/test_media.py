@@ -85,6 +85,31 @@ class Media(unittest.TestCase):
         self.assertEqual(media.geometry(3840, 2160, 'sbs'), (1920, 1080, 2))
         self.assertEqual(media.geometry(1920, 1080, 'ou'), (1920, 1080, .5))
 
+    def test_pixel_aspect_preserves_per_eye_shape_after_bounded_scaling(self):
+        for layout, eye_factor in [('mono', 1), ('sbs', 1), ('ou', 1),
+                                   ('full-sbs', .5), ('full-ou', 2),
+                                   ('sbs-rl', 1), ('ou-rl', 1),
+                                   ('full-sbs-rl', .5), ('full-ou-rl', 2)]:
+            for width, height in [(720, 576), (3840, 2160), (1919, 1079)]:
+                with self.subTest(layout=layout, dimensions=(width, height)):
+                    w, h, aspect = media.geometry(width, height, layout, '64:45')
+                    self.assertLessEqual(w, 1920)
+                    self.assertLessEqual(h, 1080)
+                    if layout.removesuffix('-rl') in ('ou', 'full-ou'):
+                        eye_width, eye_height = w, h/2
+                    else:
+                        eye_width, eye_height = (w if layout == 'mono' else w/2), h
+                    self.assertAlmostEqual(eye_width/eye_height*aspect,
+                                           width/height*64/45*eye_factor)
+
+    def test_unknown_pixel_aspect_defaults_to_square_and_invalid_ratios_fail(self):
+        for ratio in (None, '', 'N/A', '0:1', '1:1'):
+            with self.subTest(ratio=ratio):
+                self.assertEqual(media.geometry(1920, 1080, 'sbs', ratio), (1920, 1080, 2))
+        for ratio in ('1:0', '0:0', '-1:1', '1:-1', 'nan', 'inf', '1:2:3', 2):
+            with self.subTest(ratio=ratio), self.assertRaisesRegex(ValueError, 'pixel aspect'):
+                media.geometry(1920, 1080, 'mono', ratio)
+
     def test_decode_is_hardware_and_one_clock_for_audio(self):
         for codec, decoder in [('h264', 'h264_v4l2m2m'), ('hevc', 'hevc_v4l2m2m')]:
             cmd = player.decoder_command(Path('/tmp/a file.mp4'), {'codec_name': codec}, 1280, 720, True)
@@ -329,6 +354,14 @@ class Media(unittest.TestCase):
                 self.assertEqual(submitted, [(expected, 4, 2)]*4)
                 self.assertTrue(created[1][3])  # the owned screen is stereoscopic
                 self.assertEqual(created[1][4], 1 if layout.startswith('full') else (2 if packed_sbs else .5))
+
+    def test_player_uses_probed_pixel_aspect_for_the_screen(self):
+        created = []
+        result, _ = self.play_with('clip.mp4', layout='full-sbs-rl',
+            info={'codec_name': 'h264', 'width': 4, 'height': 2, 'sample_aspect_ratio': '16:15'},
+            on_create=lambda *args, **kw: created.append(args))
+        self.assertEqual(result['state'], 'ended')
+        self.assertAlmostEqual(created[1][4], 16/15)
 
     def test_fake_frame_library_and_traversal(self):
         with tempfile.TemporaryDirectory() as d, patch.object(remote, 'ROOT', Path(d)):
