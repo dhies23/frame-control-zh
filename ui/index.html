@@ -4227,8 +4227,16 @@ function upload(file, mode, dev = window.connDevice, backupToken = null, progres
 function copyToDownloads(file, path, dev) {
   return path ? api("/api/transfer", { action: "copy-local", path }, dev) : upload(file, "push", dev);
 }
+let mediaRefreshSeq = 0;
 async function refreshMedia(selectId) {
-  const data = await api("/api/media", { action: "list" });
+  const seq = ++mediaRefreshSeq, gen = devGen;
+  let data;
+  try { data = await api("/api/media", { action: "list" }); }
+  catch (error) {
+    if (seq !== mediaRefreshSeq || gen !== devGen || error.stale) return;
+    throw error;
+  }
+  if (seq !== mediaRefreshSeq || gen !== devGen) return;
   const selected = selectId || $("mediaFile").value;
   $("mediaFile").replaceChildren();
   if (!data.files.length) $("mediaFile").add(new Option("Send media to begin", ""));
