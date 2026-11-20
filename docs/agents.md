@@ -12,6 +12,8 @@ The default MCP command starts a private HTTP backend on a free loopback port,
 with a fresh local access key. It stops that backend when the MCP client closes
 stdin or sends SIGTERM. It uses its own SSH control socket, so closing it does
 not close the desktop app's connection. No manually started server is needed.
+If its startup-banner reader cannot start, the adapter also stops and reaps
+that private backend before reporting the startup error; a new connection can retry.
 
 Add this stdio server to your MCP client (use absolute paths):
 
