@@ -138,6 +138,10 @@ forward. **Open in headset** opens the same switcher as its own panel; choose
 it again from Steam's dashboard after switching away. Refresh updates the list.
 This is a list, not thumbnail Exposé.
 
+If Refresh requests overlap, only the newest request can update the headset
+switcher's list or refresh error. Offline tests execute the shipped page script
+with reordered responses; they do not verify worn-headset selection or visibility.
+
 ![Frame Control's switcher rendered on the Frame](img/panel-switcher.png)
 
 This is our own Python/HTML implementation (`ui/frame_panels.py`), using the
