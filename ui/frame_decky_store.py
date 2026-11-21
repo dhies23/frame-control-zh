@@ -362,6 +362,9 @@ def apply_script(plugin_id, digest):
     if plugin_id == 131 and digest == '0641231eec139e3231e7b5369d0dbacefd686b52e3f2fffb39384876881408da':
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
         return 'FRAMEY_DOWNLOAD_ALL_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
+    if plugin_id == 130 and digest == 'ef8c727943188cad04c63fae7e4e620b8080c07f35dec0c144e99c6166307473':
+        source = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
+        return 'FRAMEY_PREFIX_MANAGER_101_IPC_SOURCE = '+repr(source)+'\n'+APPLY
     if plugin_id == 130 and digest == PREFIX_MANAGER_102_DIGEST:
         source = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
         return 'FRAMEY_PREFIX_MANAGER_102_IPC_SOURCE = '+repr(source)+'\n'+APPLY
@@ -1110,6 +1113,23 @@ Plugin.cleanup_orphans = _framey_cleanup_orphans
                 manifest['flags']=[]
                 (unpacked/'plugin.json').write_text(json.dumps(manifest))
                 compat_shims.append('prefix-manager-user-paths')
+                if digest=='ef8c727943188cad04c63fae7e4e620b8080c07f35dec0c144e99c6166307473':
+                    previous=main.read_bytes()
+                    if hashlib.sha256(previous).hexdigest()!='5118a1aeae00b0979d501e8e5cdb6c27bf27cae1f3cf5af581f0fb44345519a1':
+                        raise RuntimeError('Prefix Manager 1.0.1 managed safeguards differ from tested source')
+                    ipc=globals().get('FRAMEY_PREFIX_MANAGER_101_IPC_SOURCE')
+                    if not isinstance(ipc,str) or not ipc: raise RuntimeError('Missing Prefix Manager 1.0.1 child IPC EOF repair')
+                    modules=unpacked/'py_modules'
+                    modules.mkdir(exist_ok=True)
+                    helper=modules/'framey_decky_ipc.py'
+                    if helper.exists(): raise RuntimeError('Prefix Manager 1.0.1 child IPC helper collides with archive')
+                    compile(ipc,str(helper),'exec')
+                    helper.write_text(ipc,encoding='utf-8')
+                    source=(b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                            b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')+previous
+                    compile(source,str(main),'exec')
+                    main.write_bytes(source)
+                    compat_shims.append('prefix-manager-101-ipc-eof')
                 if digest=='12ab420f06023cd13717489aa92a1babd09dec8566a601f4b4bb93464fbc92b6':
                     previous=main.read_bytes()
                     if hashlib.sha256(previous).hexdigest()!='96786bc3609b34d449a72b9159e01bd46b40d6c9b4e28ae384e64ffeab387478':

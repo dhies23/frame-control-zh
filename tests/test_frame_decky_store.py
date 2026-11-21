@@ -722,8 +722,9 @@ zipfile.ZipFile.extractall = forbidden_extract
         self.assertEqual(manifest['flags'], [])
         self.assertNotIn('api_version', manifest)
         self.assertEqual(json.loads((folder/'.frame-control-store.json').read_text())['compatShims'],
-                         ['prefix-manager-user-paths'])
-        self.assertFalse((folder/'py_modules/framey_decky_ipc.py').exists())
+                         ['prefix-manager-user-paths', 'prefix-manager-101-ipc-eof'])
+        self.assertEqual((folder/'py_modules/framey_decky_ipc.py').read_bytes(),
+                         (Path(frame_decky_store.__file__).parent/'framey_decky_ipc.py').read_bytes())
         compile((folder/'main.py').read_bytes(), str(folder/'main.py'), 'exec')
         with zipfile.ZipFile(io.BytesIO(data)) as original:
             self.assertEqual((folder/'LICENSE').read_bytes(), original.read(record['folder']+'/LICENSE'))

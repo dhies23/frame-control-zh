@@ -307,7 +307,9 @@ u=h/'.config/systemd/user/frame-control-decky.service'; u.parent.mkdir(parents=T
                     self.assertEqual(ssh(f'sha256sum {installed}/py_modules/rclone_manager.py').split()[0], manager_hash)
                 if plugin['id'] == 130:
                     self.assertEqual(json.loads(ssh(f'cat {installed}/plugin.json'))['flags'], [])
-                    self.assertEqual(found[0]['compatShims'], ['prefix-manager-user-paths'])
+                    self.assertEqual(found[0]['compatShims'], ['prefix-manager-user-paths', 'prefix-manager-101-ipc-eof'])
+                    self.assertEqual(ssh(f'sha256sum {installed}/py_modules/framey_decky_ipc.py').split()[0],
+                                     hashlib.sha256((ROOT/'ui/framey_decky_ipc.py').read_bytes()).hexdigest())
                     self.assertEqual(found[0]['compatibility']['status'], 'partial')
                 if plugin['id'] == 135:
                     chunk = 'chunks/pluginApi-B8sV7970.js'
