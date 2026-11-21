@@ -291,20 +291,26 @@ async function checkDeckyJob(){const saved=savedDeckyJob();
   catch(error){deckyJobView(`${saved.action} ${saved.name}`,`Error: ${error.message}`,null,true);}
   finally{await refreshDecky();deckyBusy=false;byId('deckyJobCheck').disabled=false;renderDeckyInstalled();showDeckyStore();}}
 byId('deckyJobCheck').onclick=checkDeckyJob;
+let frameyLoadTimer=null;
+function clearFrameyLoadTimer(){if(frameyLoadTimer!=null){if(typeof clearTimeout==='function')clearTimeout(frameyLoadTimer);frameyLoadTimer=null;}}
 function openFrameyPanel(id,name){
   if(deckyBusy||deckyJobPending()||!deckyState?.running)return;
   const installed=(deckyState?.plugins||[]).find(p=>p.storeId===id);if(!installed)return;
   stopFrameyScrollHold();
+  clearFrameyLoadTimer();
   byId('frameyCompatibility').textContent=compatibilityText(installed);
   closeFrameyEvents();
   activeFrameyId=id;activeFrameyReceipt={sha256:installed.sha256,version:installed.version};
   showFrameyCacheStatus();
-  frameySession=`${Date.now()}-${Math.random()}`;byId('frameyTitle').textContent=name;
+  const session=`${Date.now()}-${Math.random()}`;
+  frameySession=session;byId('frameyTitle').textContent=name;
   byId('frameyPanelStatus').textContent='Loading plugin panel…';
-  byId('frameyFrame').src=`/framey/panel/${id}?session=${encodeURIComponent(frameySession)}#${frameySession}`;
+  byId('frameyFrame').src=`/framey/panel/${id}?session=${encodeURIComponent(session)}#${session}`;
   byId('frameyPanel').hidden=false;byId('frameyPanel').scrollIntoView();
-  setTimeout(()=>{if(activeFrameyId===id&&byId('frameyPanelStatus').textContent==='Loading plugin panel…')
-    byId('frameyPanelStatus').textContent='No compatible panel loaded. This plugin may need Steam UI features Framey cannot provide.';},12000);
+  const timer=setTimeout(()=>{if(frameyLoadTimer===timer)frameyLoadTimer=null;
+    if(activeFrameyId===id&&frameySession===session&&byId('frameyPanelStatus').textContent==='Loading plugin panel…')
+      byId('frameyPanelStatus').textContent='No compatible panel loaded. This plugin may need Steam UI features Framey cannot provide.';},12000);
+  frameyLoadTimer=timer;
 }
 let frameyEventsActive=false,frameyRunningActive=false,frameyDownloadsActive=false;
 function closeFrameyEvents(){
@@ -321,8 +327,8 @@ function closeFrameyEvents(){
       session:frameySession,events:[],cursor:0}).catch(()=>{});
   frameyEventsActive=false;
 }
-function closeFrameyPanel(){stopFrameyScrollHold();closeFrameyEvents();activeFrameyId=null;activeFrameyReceipt=null;frameySession=null;
-  byId('frameyFrame').removeAttribute('src');byId('frameyPanel').hidden=true;}
+function closeFrameyPanel(){stopFrameyScrollHold();clearFrameyLoadTimer();closeFrameyEvents();activeFrameyId=null;activeFrameyReceipt=null;frameySession=null;
+  showFrameyCacheStatus();byId('frameyFrame').removeAttribute('src');byId('frameyPanel').hidden=true;}
 byId('frameyClose').onclick=closeFrameyPanel;
 function scrollFramey(direction){
   if(activeFrameyId===null||!frameySession||!['up','down'].includes(direction))return false;
@@ -430,11 +436,11 @@ window.addEventListener('message',async event=>{
       : 'Invalid plugin settings snapshot';
     event.source.postMessage(reply,'*');return;
   }
-  if(req.type==='framey:ready'&&req.session===frameySession){byId('frameyPanelStatus').textContent='Plugin panel ready';
+  if(req.type==='framey:ready'&&req.session===frameySession){clearFrameyLoadTimer();byId('frameyPanelStatus').textContent='Plugin panel ready';
     api('/api/framey/check',{kind:'panel',pluginId:activeFrameyId}).catch(()=>{});return;}
   if(req.type==='framey:input'&&req.session===frameySession){
     api('/api/framey/check',{kind:'input'}).catch(()=>{});return;}
-  if(req.type==='framey:error'&&req.session===frameySession){
+  if(req.type==='framey:error'&&req.session===frameySession){clearFrameyLoadTimer();
     byId('frameyPanelStatus').textContent=`Plugin panel unavailable: ${String(req.message).slice(0,200)}`;return;}
   if(req.type==='framey:downloads:close'){
     if(req.session===frameySession&&frameyDownloadsActive){
@@ -478,7 +484,11 @@ window.addEventListener('message',async event=>{
     return;
   }
   if(req.type==='framey:events:close'){
-    if(req.session===frameySession)closeFrameyEvents();return;
+    if(req.session===frameySession&&frameyEventsActive){
+      frameyEventsActive=false;
+      api('/api/framey/events',{id:activeFrameyId,receipt:activeFrameyReceipt?.sha256,
+        session:frameySession,events:[],cursor:0}).catch(()=>{});
+    }return;
   }
   if(req.type==='framey:events'){
     if(req.session!==frameySession||!Number.isSafeInteger(req.id)||req.id<1||!Array.isArray(req.args)||
