@@ -181,6 +181,8 @@ class Recorder:
             if self._state["state"] in ("starting", "recording", "stopping", "saving"):
                 raise ClipError("Already recording, or still saving the last recording", 409)
             self._state = {"state": "starting"}
+        proc = None
+        errors = None
         try:
             out = self.run(probe_command() if self.work == WORK else probe_command(self.work), 30)
             audio = "audio=1" in out
@@ -195,9 +197,16 @@ class Recorder:
                 errors.seek(0)
                 err = errors.read().decode(errors="replace").strip()
                 errors.close()
+                errors = None
                 self.release(proc)
+                proc = None
                 raise ClipError(err or "The Frame didn't start recording")
         except BaseException as e:
+            if proc is not None:
+                _end(proc)
+                self.release(proc)
+            if errors is not None:
+                _close(errors)
             with self._lock:
                 self._state = {"state": "failed", "error": str(e)}
             raise
@@ -209,6 +218,7 @@ class Recorder:
             self.start_thread(lambda: self._watch(proc, name, audio, lines, errors))
         except BaseException:
             _end(proc)
+            _close(errors)
             self.release(proc)
             with self._lock:
                 self._state, self._proc = {"state": "failed", "error": "Couldn't follow the recording"}, None
@@ -232,7 +242,10 @@ class Recorder:
         while time.monotonic() < deadline:
             state = self.status()['state']
             if state == 'recording':
-                self.stop()
+                try:
+                    self.stop()
+                except ClipError:
+                    pass
             elif state not in ('starting', 'stopping', 'saving'):
                 break
             time.sleep(.2)
