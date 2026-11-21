@@ -374,6 +374,60 @@ class AutoSyncTest(unittest.TestCase):
                 self.assertEqual(len(copied), 1)
                 self.assertEqual(sync._synced("frame-a", kind), {items[0]["id"]})
 
+    def test_retired_pass_does_not_overwrite_cleared_state_or_backoff(self):
+        # 1. Offline/general exception from a retired automatic pass must not set error or backoff.
+        self.frame = FakeFrame()
+        self.now[0] = NOW
+        sync = self.make(self.dir / "retired-error.json")
+        sync.update({"screenshots": True, "clips": False})
+
+        def fail_after_disable(device):
+            sync.update({"screenshots": False, "clips": False})
+            raise RuntimeError("offline")
+
+        sync.list_shots = fail_after_disable
+        delay = sync.tick()
+        self.assertEqual(delay, fa.INTERVAL)
+        self.assertEqual(sync._backoff, 0)
+        self.assertIsNone(sync.state()["error"])
+        self.assertIsNone(sync.state()["paused"])
+
+        # 2. DiskFull from a retired automatic pass must not pause or set error.
+        self.frame = FakeFrame()
+        self.now[0] = NOW
+        self.frame.shots = [shot(1, NOW + 5)]
+        sync = self.make(self.dir / "retired-diskfull.json")
+        sync.update({"screenshots": True, "clips": False})
+
+        def diskfull_after_disable(device, ids):
+            sync.update({"screenshots": False, "clips": False})
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        sync.save_shots = diskfull_after_disable
+        delay = sync.tick()
+        self.assertEqual(delay, fa.INTERVAL)
+        self.assertIsNone(sync.state()["paused"])
+        self.assertIsNone(sync.state()["error"])
+
+        # 3. Retired clips pass with an unsettled clip must not overwrite waiting=0.
+        self.frame = FakeFrame()
+        self.now[0] = NOW
+        self.frame.clips = [clip(1, NOW + 5, idle=5), clip(2, NOW + 6, idle=60)]
+        sync = self.make(self.dir / "retired-waiting.json")
+        sync.update({"screenshots": False, "clips": True})
+        orig_space = sync.space
+
+        def disable_before_second_clip(folder):
+            sync.update({"screenshots": False, "clips": False})
+            return orig_space(folder)
+
+        sync.space = disable_before_second_clip
+        delay = sync.tick()
+        self.assertEqual(delay, fa.INTERVAL)
+        self.assertEqual(sync.state()["waiting"], 0)
+        self.assertIsNone(sync.state()["error"])
+        self.assertEqual(self.frame.exported, [])
+
     def test_copy_everything_now_keeps_its_explicit_request_when_toggles_change(self):
         self.sync.update({"screenshots": True, "clips": True})
         self.frame.shots = [shot(1, NOW - 10), shot(2, NOW - 5)]

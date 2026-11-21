@@ -203,23 +203,31 @@ class AutoSync:
             copied, waiting, done = self._pass(device, shots, clips, since, revision)
         except DiskFull as e:
             with self._lock:
-                self._s.update(paused=str(e), error=str(e))
-                self._save()
+                if revision is None or revision == self._revision:
+                    self._s.update(paused=str(e), error=str(e))
+                    self._save()
             return INTERVAL
         except Exception as e:
             friendly = self.offline(e)
-            self._backoff = min(max(self._backoff * 2, INTERVAL * 2), MAX_BACKOFF)
             with self._lock:
+                if revision is not None and revision != self._revision:
+                    return INTERVAL
+                self._backoff = min(max(self._backoff * 2, INTERVAL * 2), MAX_BACKOFF)
                 self._s["error"] = friendly or str(e)
                 self._save()
-            return self._backoff
+                return self._backoff
         finally:
             with self._lock:
                 self._running = False
-        self._backoff = 0
         with self._lock:
+            retired = revision is not None and revision != self._revision
             if copied:
                 self._s.update(copied=copied, copied_time=self.clock())
+            if retired:
+                if copied:
+                    self._save()
+                return INTERVAL
+            self._backoff = 0
             self._s.update(checked=self.clock(), waiting=waiting)
             if done:
                 self._s["error"] = self._errors[0] if self._errors else None
