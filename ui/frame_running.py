@@ -84,26 +84,31 @@ def snapshot(proc="/proc"):
             # comm is in parentheses and may hold spaces or ')': split at the last ')'.
             comm = stat[stat.index("(") + 1:stat.rindex(")")]
             fields = stat[stat.rindex(")") + 2:].split()
+            state, ppid, start = fields[0], int(fields[1]), int(fields[19])
             uid = os.stat(f"{proc}/{d}").st_uid
-        except (AttributeError, ValueError, OSError):
+        except (AttributeError, IndexError, ValueError, OSError):
             continue
         argv = (read(f"{proc}/{d}/cmdline", "rb") or b"").split(b"\0")
-        out[int(d)] = {"ppid": int(fields[1]), "state": fields[0], "start": int(fields[19]), "uid": uid,
+        out[int(d)] = {"ppid": ppid, "state": state, "start": start, "uid": uid,
                        "comm": comm, "argv": [a.decode(errors="replace") for a in argv if a]}
     return out
 
 
 def launch_appid(argv):
     """The AppId of `reaper SteamLaunch AppId=<id> -- ...`, or None for any other process."""
-    if not argv or os.path.basename(argv[0]) != "reaper" or "SteamLaunch" not in argv:
+    if not argv or os.path.basename(argv[0]) != "reaper":
         return None
+    has_launch, appid = False, None
     for arg in argv[1:]:
         if arg == "--":
             break
+        if arg == "SteamLaunch":
+            has_launch = True
+            continue
         m = APPID_ARG.fullmatch(arg)
-        if m:
-            return int(m.group(1))
-    return None
+        if m and appid is None:
+            appid = int(m.group(1))
+    return appid if has_launch else None
 
 
 def reapers(procs, uid):
@@ -140,10 +145,20 @@ def protected(procs, me, uid):
 def tree(procs, roots, keep):
     """The roots and their descendants, deepest first, leaving out kept processes
     and everything under them."""
-    kids, out, level = children(procs), [], [r for r in roots if r not in keep]
+    kids, out, seen, level = children(procs), [], set(), []
+    for r in roots:
+        if r not in keep and r not in seen:
+            seen.add(r)
+            level.append(r)
     while level:
         out = level + out
-        level = [c for pid in level for c in kids.get(pid, ()) if c not in keep and procs[c]["state"] != "Z"]
+        next_level = []
+        for pid in level:
+            for c in kids.get(pid, ()):
+                if c not in keep and c not in seen and procs[c]["state"] != "Z":
+                    seen.add(c)
+                    next_level.append(c)
+        level = next_level
     return out
 
 
@@ -264,9 +279,15 @@ def running(procs=None, uid=None, steam=steam_view, android=android_apps, contai
         if f"lepton-steamlaunch-{m.get('instance')}" in up and str(m.get("shortcut") or "").isdigit():
             found.setdefault(int(m["shortcut"]), [])
     listed, names = steam(set(found))
-    for appid in listed or ():
-        if int(appid) not in NOT_GAMES:
-            found.setdefault(int(appid), [])
+    for raw in listed or ():
+        if isinstance(raw, bool):
+            continue
+        try:
+            appid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if appid > 0 and appid not in NOT_GAMES:
+            found.setdefault(appid, [])
     out = []
     for appid, roots in sorted(found.items()):
         pids = tree(procs, roots, set())

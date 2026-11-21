@@ -67,6 +67,7 @@ class Parsing(unittest.TestCase):
             ([REAPER, "SteamLaunch", "AppId=620", "--", "game"], 620),
             (["reaper", "SteamLaunch", "AppId=3346865537", "--", "lepton-app.sh"], 3346865537),
             ([REAPER, "AppId=620", "--", "game"], None),                       # no SteamLaunch
+            ([REAPER, "AppId=620", "--", "game", "SteamLaunch"], None),        # SteamLaunch after --
             ([REAPER, "SteamLaunch", "--", "game", "AppId=620"], None),         # the game's own arguments
             (["/usr/bin/steam", "SteamLaunch", "AppId=620"], None),             # not the reaper
             (["/tmp/reaper-ish", "SteamLaunch", "AppId=620"], None),
@@ -111,6 +112,25 @@ class Parsing(unittest.TestCase):
         self.assertEqual((got[42]["ppid"], got[42]["start"], got[42]["state"]), (7, 123456, "S"))
         self.assertEqual(got[42]["argv"], ["reaper", "SteamLaunch", "AppId=5", "--", "g"])
 
+    def test_snapshot_skips_truncated_stat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(f"{tmp}/42")
+            os.makedirs(f"{tmp}/44")
+            fields = " ".join(["S", "7"] + ["0"] * 17 + ["123456"])
+            Path(f"{tmp}/42/stat").write_text(f"42 (game) {fields}\n")
+            Path(f"{tmp}/44/stat").write_text("44 (short) S 7 0\n")
+            got = frame_running.snapshot(tmp)
+        self.assertEqual(list(got), [42])
+
+    def test_tree_terminates_on_cycle_and_deduplicates_roots(self):
+        procs = {
+            400: proc(401, "reaper"),
+            401: proc(400, "game"),
+            402: proc(402, "selfloop"),
+        }
+        self.assertEqual(frame_running.tree(procs, [400, 400], set()), [401, 400])
+        self.assertEqual(frame_running.tree(procs, [402], set()), [402])
+
 
 class Detection(unittest.TestCase):
     def run_list(self, procs, steam=(None, {}), android=None, containers=()):
@@ -139,6 +159,11 @@ class Detection(unittest.TestCase):
     def test_steam_only_listing_counts(self):
         # Steam says it's running but no reaper was found: listed, with no processes.
         got = self.run_list({1: proc(0, "systemd", uid=OTHER)}, steam=([620], {620: "Portal 2"}))
+        self.assertEqual(got, [{"appid": 620, "gameid": "620", "processes": 0, "kind": "steam", "name": "Portal 2"}])
+
+    def test_running_ignores_non_integer_steam_appids(self):
+        got = self.run_list({1: proc(0, "systemd", uid=OTHER)},
+                            steam=([None, "bad", True, -1, 620], {620: "Portal 2"}))
         self.assertEqual(got, [{"appid": 620, "gameid": "620", "processes": 0, "kind": "steam", "name": "Portal 2"}])
 
     def test_devkit_title_and_shortcut(self):
