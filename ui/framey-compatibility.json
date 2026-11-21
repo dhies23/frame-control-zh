@@ -5198,7 +5198,7 @@
         "https://github.com/your-username/PlayTime"
       ],
       "status": "partial",
-      "reason": "Statistics and routed settings render with the earlier detached Frame library/user snapshot. Published Decky 3.3.0 on native AMD64 and ARM64 verifies private session writes, paused-session refusal, per-user SQLite isolation and persistence across loader restart with the unmodified 3.2.5 backend. The two CI artifacts have independently audited RPC results, source hashes, saved databases and parent-only stops. Its private MobX running-app observation remains unsupported; automatic recording, live Frame backend and worn VR remain unverified.",
+      "reason": "Statistics and routed settings render with the earlier detached Frame library/user snapshot. Earlier published Decky 3.3.0 AMD64 and ARM64 runs verified private session writes, paused-session refusal, per-user SQLite isolation and persistence across loader restart on the unmodified 3.2.5 backend. Exact managed 3.2.5 now installs the shared child IPC EOF repair so Decky can run PlayTime's unload hook cleanly after a peer disconnect; existing copies need Update/reinstall. Local AMD64 verifies private session/SQLite isolation, RPC after peer EOF, restart persistence and two clean parent-only stops; restoring the published backend reproduces a forced kill after the same EOF. Fresh hosted architecture qualification of this repair is pending. Its private MobX running-app observation remains unsupported; automatic recording, live Frame backend and worn VR remain unverified.",
       "blockInstall": false,
       "verification": [
         "static archive",
@@ -5256,7 +5256,11 @@
         "evidence": "docs/evidence/framey-running-context-2026-10-26.json",
         "mode": "synthetic nonempty running/library replay; backend and network denied",
         "frontendReady": true
-      }
+      },
+      "requiredShims": [
+        "playtime-ipc-eof"
+      ],
+      "runtimeEvidence": "docs/evidence/framey-playtime-child-ipc-2026-11-21.md"
     },
     {
       "id": 67,

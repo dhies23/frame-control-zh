@@ -357,6 +357,15 @@ restart persistence, and restores the previous backend as a negative control.
 This does not establish the historical ARM64 migration timeout's cause or add
 real Frame or worn/controller proof.
 
+PlayTime 3.2.5 installs the shared child IPC EOF repair while preserving its
+original backend body and all other archive files. Existing copies need Update
+or reinstall. Local AMD64 Decky 3.3.0 probes verify private per-user SQLite
+sessions, paused-session refusal, RPC after peer disconnect, restart persistence
+and two clean parent-only stops running the original unload hook; restoring the
+published backend reproduces a forced kill after the same EOF. Automatic
+recording, live Frame execution and worn VR remain unverified; fresh hosted
+architecture qualification is pending.
+
 The store verifies each downloaded archive and the headset applies it with a
 rollback if Decky cannot start. The panel saves a random request ID before
 submitting a change. The server uses that ID as the job ID and returns the
