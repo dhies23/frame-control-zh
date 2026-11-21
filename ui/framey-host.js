@@ -1213,6 +1213,7 @@
     'framey/library-image': {LongTitles:'framey-long-title', GreyBackground:'framey-muted', Image:'framey-image'},
     'framey/library': {GamepadLibrary:'framey-library'},
     'framey/focus': {FocusRingRoot:'framey-focus', FocusRing:'framey-focus'},
+    'framey/achievements': {AchievementListItemBase:'framey-muted'},
   }).map(([id, classes]) => [id, Object.freeze(classes)]));
   const localModules = new Map(classModules);
   const moduleVariants = module => [module?.default, module].filter(value => value != null);
@@ -1307,6 +1308,7 @@
     ProgressBar, ProgressBarItem, ProgressBarWithInfo,
     gamepadDialogClasses:{}, quickAccessMenuClasses:{}, gamepadTabbedPageClasses:{},
     gamepadSliderClasses:{}, gamepadContextMenuClasses:{}, scrollPanelClasses:{},
+    achievementClasses:classModules.get('framey/achievements'),
     quickAccessControlsClasses:{}, mainMenuAppRunningClasses:{}, libraryAssetImageClasses:{},
     joinClassNames:(...names)=>names.filter(Boolean).join(' '),
     sleep:ms=>new Promise(resolve=>setTimeout(resolve,Math.max(0,Number(ms)||0))),
