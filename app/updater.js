@@ -22,6 +22,8 @@ const fs = require("fs");
 const https = require("https");
 const os = require("os");
 const path = require("path");
+const { Transform } = require("stream");
+const { pipeline } = require("stream/promises");
 
 const REPO = "saphid/frame-control";  // renamed from saphid/steam-frame; GitHub redirects the old name
 const LATEST = `https://api.github.com/repos/${REPO}/releases/latest`;
@@ -87,7 +89,8 @@ function get(url, { headers = {}, timeout = 20000, redirects = 5 } = {}) {
     const req = https.get(url, { headers: { "user-agent": "FrameControl-updater", ...headers }, timeout }, (res) => {
       if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
         res.resume();
-        const next = new URL(res.headers.location, url);
+        let next;
+        try { next = new URL(res.headers.location, url); } catch (e) { return reject(e); }
         if (next.protocol !== "https:") return reject(new Error("refusing a non-HTTPS redirect"));
         return resolve(get(next.href, { headers, timeout, redirects: redirects - 1 }));
       }
@@ -155,17 +158,32 @@ async function download(asset, dest, onProgress) {
   const hash = crypto.createHash("sha256");
   // "wx": a new file only, never through an existing file or symlink at that path.
   const out = fs.createWriteStream(dest, { mode: 0o755, flags: "wx" });
+  let opened = false;
+  out.on("open", () => { opened = true; });
   let done = 0;
-  await new Promise((resolve, reject) => {
-    res.on("data", (chunk) => { hash.update(chunk); done += chunk.length; onProgress && onProgress(done, total); });
-    res.on("error", reject);
-    out.on("error", reject);
-    out.on("finish", resolve);
-    res.pipe(out);
+  const meter = new Transform({
+    transform(chunk, _encoding, callback) {
+      try {
+        hash.update(chunk);
+        done += chunk.length;
+        if (onProgress) onProgress(done, total);
+        callback(null, chunk);
+      } catch (err) {
+        callback(err);
+      }
+    },
   });
-  if (hash.digest("hex") !== m[1]) {
-    fs.rmSync(dest, { force: true });
-    throw new Error(`${asset.name} didn't match its SHA-256; nothing was changed`);
+  try {
+    await pipeline(res, meter, out);
+    if (res.complete === false) {
+      throw new Error(`${asset.name} download was cut short; nothing was changed`);
+    }
+    if (hash.digest("hex") !== m[1]) {
+      throw new Error(`${asset.name} didn't match its SHA-256; nothing was changed`);
+    }
+  } catch (e) {
+    if (opened) fs.rmSync(dest, { force: true });
+    throw e;
   }
 }
 
@@ -215,10 +233,15 @@ async function applyNsis(release, onProgress) {
   const asset = release.assets.find((a) => a.name === assetName("win32", process.arch, "nsis"));
   if (!asset) throw new Error(`the release has no ${assetName("win32", process.arch, "nsis")}`);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "frame-control-update-"));
-  const exe = path.join(dir, asset.name);
-  await download(asset, exe, onProgress);
-  // /S: silent, into the existing install. --force-run: open the app afterwards.
-  return () => spawn(exe, ["--updated", "/S", "--force-run"], { detached: true, stdio: "ignore" }).unref();
+  try {
+    const exe = path.join(dir, asset.name);
+    await download(asset, exe, onProgress);
+    // /S: silent, into the existing install. --force-run: open the app afterwards.
+    return () => spawn(exe, ["--updated", "/S", "--force-run"], { detached: true, stdio: "ignore" }).unref();
+  } catch (e) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }
 }
 
 async function applyAppImage(release, appImage, onProgress) {
