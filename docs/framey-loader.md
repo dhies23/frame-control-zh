@@ -366,6 +366,18 @@ published backend reproduces a forced kill after the same EOF. Automatic
 recording, live Frame execution and worn VR remain unverified; fresh hosted
 architecture qualification is pending.
 
+Volume Boost 0.0.7 preserves the actual user's `XDG_RUNTIME_DIR` (falling back
+to `/run/user/<uid>` instead of hard-coded `/run/user/1000`) and installs the
+shared child IPC EOF repair while preserving every other archive file. Existing
+copies need Update or reinstall. Local AMD64 Decky 3.3.0 probes run under UID
+1100 without a `PULSE_SERVER` override against private silent PipeWire/Pulse
+null sinks and verify linked boost (`125%`/`150%`), separate left/right writes,
+re-link, an unrelated null sink, post-EOF RPC readback, restart and two strict
+parent-only stops. Two negative controls reproduce the original wrong-user Pulse
+failure and the pre-EOF forced `SIGKILL` shutdown. Audible output, Bluetooth
+sinks, adapted ARM64/Frame execution and worn VR remain unverified; see
+[the native evidence](evidence/framey-volume-boost-user-runtime-2026-11-21.md).
+
 The store verifies each downloaded archive and the headset applies it with a
 rollback if Decky cannot start. The panel saves a random request ID before
 submitting a change. The server uses that ID as the job ID and returns the

@@ -75,6 +75,8 @@ def main():
     parser.add_argument('--reproduce-localsend-unload-regression', action='store_true')
     parser.add_argument('--reproduce-download-all-unload-regression', action='store_true')
     parser.add_argument('--reproduce-volume-mixer-user-regression', action='store_true')
+    parser.add_argument('--reproduce-volume-boost-user-regression', action='store_true')
+    parser.add_argument('--reproduce-volume-boost-unload-regression', action='store_true')
     parser.add_argument('--reproduce-bound-method-regression', action='store_true')
     parser.add_argument('--reproduce-music-control-unload-regression', action='store_true')
     parser.add_argument('--reproduce-animation-unload-regression', action='store_true')
@@ -216,6 +218,19 @@ def main():
         assert record['id'] == 38
         with zipfile.ZipFile(io.BytesIO(data)) as original:
             (plugin/'main.py').write_bytes(original.read(record['folder']+'/main.py'))
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
+    if args.reproduce_volume_boost_user_regression:
+        assert record['id'] == 58
+        with zipfile.ZipFile(io.BytesIO(data)) as original:
+            (plugin/'main.py').write_bytes(original.read(record['folder']+'/main.py'))
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
+    if args.reproduce_volume_boost_unload_regression:
+        assert record['id'] == 58
+        prefix = (b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                  b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
+        managed = (plugin/'main.py').read_bytes()
+        assert managed.startswith(prefix)
+        (plugin/'main.py').write_bytes(managed[len(prefix):])
         (plugin/'py_modules/framey_decky_ipc.py').unlink()
     if args.reproduce_deck_shelves_unload_regression:
         assert record['id'] == 135
@@ -589,7 +604,8 @@ def main():
               'sha256': record['sha256'],
               'shim': None if (args.reproduce_alarme_pause_regression or args.reproduce_nonsteam_path_regression
                                or args.reproduce_pause_games_unload_regression
-                               or args.reproduce_playtime_unload_regression) else case['shim'], 'calls': []}
+                               or args.reproduce_playtime_unload_regression
+                               or args.reproduce_volume_boost_user_regression) else case['shim'], 'calls': []}
     if candidate is not None:
         report['candidate'] = candidate
     with (home/'runtime.log').open('w+') as log:
@@ -607,6 +623,9 @@ def main():
             if case['probe'] == 'volume-mixer-private-audio':
                 import volume_mixer_private
                 volume_fixture = volume_mixer_private.start(env, log, processes, until_ready)
+            if case['probe'] == 'volume-boost-private-audio':
+                import volume_boost_private
+                volume_boost_fixture = volume_boost_private.start(env, log, processes, until_ready)
             if case['probe'] == 'screensaver-private-bus':
                 import screensaver_private
                 screensaver_oracle = screensaver_private.start(env, log, processes, until_ready)
@@ -719,6 +738,18 @@ def main():
                     original=args.reproduce_volume_mixer_user_regression)
                 report['result'] = ('expected original wrong-user Pulse connection failure; negative only' if args.reproduce_volume_mixer_user_regression else
                     'private actual-user Pulse stream discovery and stereo volume readback, restart and two strict stops; Bluetooth/audio/UI/Frame unverified')
+            elif case['probe'] == 'volume-boost-private-audio':
+                report['volumeBoostRuntime'] = volume_boost_private.probe(backend, loader, env, log, processes,
+                    legacy, rpc, until_ready, volume_boost_fixture, plugin, discovered, data,
+                    original=args.reproduce_volume_boost_user_regression,
+                    unload_regression=args.reproduce_volume_boost_unload_regression)
+                report['result'] = (
+                    'expected original wrong-user Pulse connection failure; negative only'
+                    if args.reproduce_volume_boost_user_regression
+                    else 'expected original Volume Boost forced SIGKILL after IPC peer EOF; negative only'
+                    if args.reproduce_volume_boost_unload_regression
+                    else 'private actual-user default-sink boost/channel readback, post-EOF RPC, restart and two strict stops; Bluetooth/audio/UI/Frame unverified'
+                )
             elif case['probe'] == 'screensaver-private-bus':
                 import screensaver_private
                 report['screensaverRuntime'] = screensaver_private.probe(backend, loader, env, log, processes,
