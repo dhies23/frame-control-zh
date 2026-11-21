@@ -362,6 +362,9 @@ def apply_script(plugin_id, digest):
     if plugin_id == 84 and digest == 'f7ad2a0103c85bf308929b2e96ec9aeeb0d76bcc6ae97eb1e4b5f31ffba0cbb1':
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
         return 'FRAMEY_JUNK_STORE_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
+    if plugin_id == 74 and digest == '5f7decb4de48290f8eec15937486c9611aec0d25256515c97f98cf7ba30c79a4':
+        ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
+        return 'FRAMEY_KDE_CONNECT_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
     if plugin_id == 87 and digest == '5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822':
         source = Path(__file__).with_name('framey_screensaver.py').read_text(encoding='utf-8')
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
@@ -851,6 +854,207 @@ try:
                 main.write_bytes(updated)
                 compat_shims.append('junk-store-clean-unload')
                 compat_shims.append('junk-store-ipc-eof')
+            if (int(plugin_id)==74 and digest=='5f7decb4de48290f8eec15937486c9611aec0d25256515c97f98cf7ba30c79a4' and folder=='kdeconnect'):
+                main=unpacked/'main.py'
+                script=unpacked/'run_kde_connect.sh'
+                original=main.read_bytes()
+                original_script=script.read_bytes()
+                if (manifest.get('name')!='KDE Connect' or manifest.get('flags')!=['debug']
+                        or 'api_version' in manifest
+                        or hashlib.sha256(original).hexdigest()!='a29f89bb0d6092c00ccd29f2ef8840879fb24f3f68b7c544c278e772f5120a8b'
+                        or hashlib.sha256(original_script).hexdigest()!='75ce1c52d3277f6f601a5fec804a1e175c995891c4cd7edebbbae492b3b2b63c'):
+                    raise RuntimeError('KDE Connect manifest or backend differs from pinned archive')
+                replacements=(
+                    (b'from click import get_app_dir\n', b''),
+                    (b'std_out_file = open(Path(decky_plugin.DECKY_PLUGIN_LOG_DIR) / "std-out.log", "w")\n'
+                     b'std_err_file = open(Path(decky_plugin.DECKY_PLUGIN_LOG_DIR) / "std-err.log", "w")\n',
+                     b''),
+                    (b'class Plugin:\n    _enabled = False\n',
+                     b'class Plugin:\n'
+                     b'    _enabled = False\n'
+                     b'    _proc = None\n'
+                     b'    _runner_task = None\n'
+                     b'    _last_display = None\n'
+                     b'\n'
+                     b'    @classmethod\n'
+                     b'    def _stop_proc(cls):\n'
+                     b'        proc = cls._proc\n'
+                     b'        cls._proc = None\n'
+                     b'        if proc is None:\n'
+                     b'            return\n'
+                     b'        try:\n'
+                     b'            if proc.poll() is None:\n'
+                     b'                proc.terminate()\n'
+                     b'                try:\n'
+                     b'                    proc.wait(timeout=3)\n'
+                     b'                except subprocess.TimeoutExpired:\n'
+                     b'                    proc.kill()\n'
+                     b'                    proc.wait(timeout=2)\n'
+                     b'            else:\n'
+                     b'                proc.wait(timeout=1)\n'
+                     b'        except Exception:\n'
+                     b'            logger.info(traceback.format_exc())\n'),
+                    (b'    async def kdeconnect_runner(self):\n'
+                     b'        await asyncio.sleep(10)\n'
+                     b'        decky_plugin.logger.info("KDE Connecter started")\n'
+                     b'        script_path = str(Path(decky_plugin.DECKY_PLUGIN_DIR) / "run_kde_connect.sh")\n'
+                     b'        last_display = None\n'
+                     b'        proc = None\n'
+                     b'        while True:\n'
+                     b'            try:\n'
+                     b'                if not Plugin._enabled:\n'
+                     b'                    last_display = None\n'
+                     b'                    await asyncio.sleep(1.0)\n'
+                     b'                    continue\n'
+                     b'                display = ":0"\n'
+                     b'                ret = subprocess.run(["xprop","-d",":0","-root"], capture_output=True)\n'
+                     b'                app_id = None\n'
+                     b'                for line in ret.stdout.decode("utf-8").split("\\n"):\n'
+                     b'                    if "GAMESCOPE_FOCUSED_APP(CARDINAL)" in line:\n'
+                     b'                        app_id = line.split(" = ")[1]\n'
+                     b'\n'
+                     b'                if app_id is None:\n'
+                     b'                    await asyncio.sleep(0.5)\n'
+                     b'                    continue\n'
+                     b'\n'
+                     b'                if app_id != "769":\n'
+                     b'                    display = ":1"\n'
+                     b'\n'
+                     b'                if display != last_display:\n'
+                     b'                    last_display = display\n'
+                     b'                    ret = subprocess.run(["pkill","kdeconnectd"])\n'
+                     b'                    proc = subprocess.Popen([script_path, display, "&"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n'
+                     b'                    logger.info(proc)\n'
+                     b'                    logger.debug(f"Starting KDE connect on DISPLAY {last_display}")\n'
+                     b'            except Exception:\n'
+                     b'                logger.info(traceback.format_exc())\n'
+                     b'            await asyncio.sleep(0.5)\n',
+                     b'    async def kdeconnect_runner(self):\n'
+                     b'        decky_plugin.logger.info("KDE Connecter started")\n'
+                     b'        script_path = str(Path(decky_plugin.DECKY_PLUGIN_DIR) / "run_kde_connect.sh")\n'
+                     b'        while True:\n'
+                     b'            try:\n'
+                     b'                if not Plugin._enabled:\n'
+                     b'                    Plugin._last_display = None\n'
+                     b'                    await asyncio.sleep(0.5)\n'
+                     b'                    continue\n'
+                     b'                if Plugin._proc is not None and Plugin._proc.poll() is not None:\n'
+                     b'                    Plugin._proc = None\n'
+                     b'                display = ":0"\n'
+                     b'                ret = subprocess.run(["xprop", "-d", ":0", "-root"], capture_output=True, timeout=5)\n'
+                     b'                app_id = None\n'
+                     b'                for line in ret.stdout.decode("utf-8", errors="replace").split("\\n"):\n'
+                     b'                    if "GAMESCOPE_FOCUSED_APP(CARDINAL)" in line and " = " in line:\n'
+                     b'                        app_id = line.split(" = ", 1)[1].strip()\n'
+                     b'                if app_id is None:\n'
+                     b'                    await asyncio.sleep(0.5)\n'
+                     b'                    continue\n'
+                     b'                if app_id != "769":\n'
+                     b'                    display = ":1"\n'
+                     b'                if not Plugin._enabled:\n'
+                     b'                    Plugin._last_display = None\n'
+                     b'                    continue\n'
+                     b'                if display != Plugin._last_display or Plugin._proc is None:\n'
+                     b'                    Plugin._last_display = display\n'
+                     b'                    Plugin._stop_proc()\n'
+                     b'                    Plugin._proc = subprocess.Popen([script_path, display], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n'
+                     b'                    logger.info(Plugin._proc)\n'
+                     b'                    logger.debug(f"Starting KDE connect on DISPLAY {Plugin._last_display}")\n'
+                     b'            except asyncio.CancelledError:\n'
+                     b'                raise\n'
+                     b'            except Exception:\n'
+                     b'                logger.info(traceback.format_exc())\n'
+                     b'            await asyncio.sleep(0.5)\n'),
+                    (b'    async def set_enabled(self, enabled):\n'
+                     b'        logger.info(enabled)\n'
+                     b'        logger.info(type(enabled)) \n'
+                     b'        if Plugin._enabled == True and enabled == False:\n'
+                     b'            ret = subprocess.run(["pkill","kdeconnectd"])\n'
+                     b'        Plugin._enabled = enabled\n',
+                     b'    async def set_enabled(self, enabled):\n'
+                     b'        enabled = bool(enabled)\n'
+                     b'        logger.info(enabled)\n'
+                     b'        logger.info(type(enabled))\n'
+                     b'        Plugin._enabled = enabled\n'
+                     b'        if not enabled:\n'
+                     b'            Plugin._last_display = None\n'
+                     b'            Plugin._stop_proc()\n'),
+                    (b'    async def _main(self):\n'
+                     b'        try:\n'
+                     b'            loop = asyncio.get_event_loop()\n'
+                     b'            Plugin._runner_task = loop.create_task(Plugin.kdeconnect_runner(self))\n'
+                     b'            decky_plugin.logger.info("Initialized")\n'
+                     b'        except Exception:\n'
+                     b'            decky_plugin.logger.exception("main")\n',
+                     b'    async def _main(self):\n'
+                     b'        try:\n'
+                     b'            loop = asyncio.get_running_loop()\n'
+                     b'            Plugin._runner_task = loop.create_task(Plugin.kdeconnect_runner(self))\n'
+                     b'            decky_plugin.logger.info("Initialized")\n'
+                     b'        except Exception:\n'
+                     b'            decky_plugin.logger.exception("main")\n'
+                     b'\n'
+                     b'    async def _unload(self):\n'
+                     b'        Plugin._enabled = False\n'
+                     b'        Plugin._last_display = None\n'
+                     b'        task = Plugin._runner_task\n'
+                     b'        Plugin._runner_task = None\n'
+                     b'        if task is not None and not task.done():\n'
+                     b'            task.cancel()\n'
+                     b'            try:\n'
+                     b'                await task\n'
+                     b'            except asyncio.CancelledError:\n'
+                     b'                pass\n'
+                     b'        Plugin._stop_proc()\n'
+                     b'        decky_plugin.logger.info("KDE Connect unloaded")\n'),
+                )
+                body=original
+                for old,new in replacements:
+                    if body.count(old)!=1: raise RuntimeError('KDE Connect backend block differs')
+                    body=body.replace(old,new)
+                ipc=globals().get('FRAMEY_KDE_CONNECT_IPC_SOURCE')
+                if not isinstance(ipc,str) or not ipc: raise RuntimeError('Missing KDE Connect IPC helper')
+                helper=unpacked/'py_modules/framey_decky_ipc.py'
+                if helper.exists(): raise RuntimeError('KDE Connect IPC helper collides with archive')
+                helper.parent.mkdir(exist_ok=True)
+                compile(ipc,str(helper),'exec')
+                helper.write_text(ipc,encoding='utf-8')
+                prefix=(b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                        b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
+                updated=prefix+body
+                compile(updated,str(main),'exec')
+                main.write_bytes(updated)
+                script.write_text(
+                    '#!/bin/sh\n'
+                    'set -eu\n'
+                    'export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"\n'
+                    'export HOME="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"\n'
+                    'export SHELL="${SHELL:-/bin/bash}"\n'
+                    'export DISPLAY="${1:-:0}"\n'
+                    'if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -S "$XDG_RUNTIME_DIR/bus" ]; then\n'
+                    '  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"\n'
+                    'fi\n'
+                    'kdeconnectd_bin="$(command -v kdeconnectd 2>/dev/null || true)"\n'
+                    'if [ -z "$kdeconnectd_bin" ]; then\n'
+                    '  for candidate in /usr/lib/kdeconnectd /usr/libexec/kdeconnectd /usr/lib/x86_64-linux-gnu/libexec/kdeconnectd /usr/lib/aarch64-linux-gnu/libexec/kdeconnectd; do\n'
+                    '    if [ -x "$candidate" ]; then\n'
+                    '      kdeconnectd_bin="$candidate"\n'
+                    '      break\n'
+                    '    fi\n'
+                    '  done\n'
+                    'fi\n'
+                    'if [ -z "$kdeconnectd_bin" ]; then\n'
+                    '  echo "kdeconnectd binary not found" >&2\n'
+                    '  exit 127\n'
+                    'fi\n'
+                    'if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then\n'
+                    '  exec dbus-run-session -- "$kdeconnectd_bin" --replace\n'
+                    'fi\n'
+                    'exec "$kdeconnectd_bin" --replace\n',
+                    encoding='utf-8')
+                script.chmod(0o700)
+                compat_shims.append('kde-connect-user-runtime')
+                compat_shims.append('kde-connect-ipc-eof')
             if (int(plugin_id)==87 and digest=='5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822' and folder=='DeckyInhibitScreenSaver'):
                 main=unpacked/'main.py'
                 original=main.read_bytes()

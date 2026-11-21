@@ -419,6 +419,26 @@ shutdown. Legendary, login, game operations, RSS, WebSocket commands, adapted
 ARM64/Frame unload and worn VR remain unverified; see
 [the native evidence](evidence/framey-junk-store-unload-2026-11-21.md).
 
+KDE Connect 0.1.0-1 removes the unused `click` import and leaked module-level
+log handles, replaces the non-executable `run_kde_connect.sh` (`0o644`) with an
+executable unprivileged launcher (`0o700`) that preserves the actual user's
+`HOME`, `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` and `exec`s
+`kdeconnectd --replace` (instead of `sudo -u deck`, `/home/deck`,
+`/run/user/1000` and `dbus-launch`), tracks and terminates only its own managed
+daemon on disable, display change or `_unload` (instead of blind `pkill` and
+missing `_unload`), and installs the shared child IPC EOF repair while
+preserving all other archive files. Existing copies need Update or reinstall.
+Local AMD64 Decky 3.3.0 probes run under UID 1100 with `--network=none` against
+private `xprop` and `kdeconnectd` stubs and verify `DISPLAY=:0`/`:1` switching,
+preserved user runtime environment, disable and unload `SIGTERM` cleanup,
+post-EOF RPC, restart and two strict parent-only stops. Two negative controls
+reproduce the original `PermissionError` on non-executable `run_kde_connect.sh`
+with missing `_unload` and the pre-EOF forced `SIGKILL` shutdown that skips
+`_unload` and orphans `kdeconnectd` to PID 1. Live KDE Connect installation,
+device pairing, file transfers, real Gamescope X11/D-Bus on ARM64 Frame and
+worn VR remain unverified; see
+[the native evidence](evidence/framey-kde-connect-runtime-2026-11-21.md).
+
 The store verifies each downloaded archive and the headset applies it with a
 rollback if Decky cannot start. The panel saves a random request ID before
 submitting a change. The server uses that ID as the job ID and returns the
