@@ -459,6 +459,24 @@ shutdown skipping `_unload`. Real KeePassXC Flatpak installation, live KDBX
 vaults on ARM64 Frame, clipboard integration and worn VR remain unverified; see
 [the native evidence](evidence/framey-deckpass-runtime-2026-11-21.md).
 
+Decky Proton Launch 0.9.0 routes wrapper logs to private
+`~/.config/decky-proton-launch/proton-launch.log` (instead of shared
+`/tmp/proton-launch.log`), validates positive integer app IDs, shell-identifier
+variable names and single-line values in `profile.py`, refuses symlinks and
+unowned existing `~/proton-launch` scripts, restricts wrapper and profile
+permissions to owner-only (`0o700`/`0o600`), guards `SteamAppId` against path
+traversal in `~/proton-launch`, and installs the shared child IPC EOF repair
+while preserving all other archive files. Existing copies need Update or
+reinstall. Local AMD64 Decky 3.3.0 probes run under UID 1100 with
+`--network=none` and verify unowned-script and shell-injection refusals,
+private `~/proton-launch` execution and log reads, traversal refusal, post-EOF
+RPC, restart and two strict parent-only stops. Two negative controls reproduce
+the original unowned-script overwrite, shell injection and `/tmp` log write,
+and the pre-EOF forced `SIGKILL` shutdown. Live Steam `localconfig.vdf`/
+`shortcuts.vdf` edits, real Proton launches on ARM64 Frame and worn VR remain
+unverified; see
+[the native evidence](evidence/framey-proton-launch-runtime-2026-11-21.md).
+
 The store verifies each downloaded archive and the headset applies it with a
 rollback if Decky cannot start. The panel saves a random request ID before
 submitting a change. The server uses that ID as the job ID and returns the

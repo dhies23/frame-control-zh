@@ -368,6 +368,9 @@ def apply_script(plugin_id, digest):
     if plugin_id == 121 and digest == '4be32fd39ce406e2276b21537c98afc00a8ed1b82a23ff0e01af552352fa48f8':
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
         return 'FRAMEY_DECKPASS_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
+    if plugin_id == 137 and digest == 'e7b98a7ca8817ef08584ed0828eee8702631af33daccc229075a012eca91f731':
+        ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
+        return 'FRAMEY_PROTON_LAUNCH_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
     if plugin_id == 87 and digest == '5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822':
         source = Path(__file__).with_name('framey_screensaver.py').read_text(encoding='utf-8')
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
@@ -1219,6 +1222,138 @@ try:
                     target_path.write_bytes(content)
                 compat_shims.append('deckpass-user-runtime')
                 compat_shims.append('deckpass-ipc-eof')
+            if (int(plugin_id)==137 and digest=='e7b98a7ca8817ef08584ed0828eee8702631af33daccc229075a012eca91f731' and folder=='decky-proton-launch'):
+                main=unpacked/'main.py'
+                profile_py=unpacked/'py_modules/proton_launch/profile.py'
+                plugin_py=unpacked/'py_modules/proton_launch/plugin.py'
+                original_main=main.read_bytes()
+                original_profile=profile_py.read_bytes()
+                original_plugin=plugin_py.read_bytes()
+                if (manifest.get('name')!='Decky Proton Launch' or manifest.get('flags')!=['debug']
+                        or manifest.get('api_version')!=1
+                        or hashlib.sha256(original_main).hexdigest()!='f38bffe996b0173225294dd348d039ec4635bb3923d6dae9277bdaf5c998ad9d'
+                        or hashlib.sha256(original_profile).hexdigest()!='14d00577b8bff9ad85712d14719fbe32dcd8fd132dd3b1966b63ad83364cdeb3'
+                        or hashlib.sha256(original_plugin).hexdigest()!='6226dd9f4daf585c2b5feea1d2933524bacd27df99f2bac860af70033dc71a54'):
+                    raise RuntimeError('Decky Proton Launch manifest or backend differs from pinned archive')
+                def _patch_pl(src, reps, label):
+                    out=src
+                    for old,new in reps:
+                        if out.count(old)!=1: raise RuntimeError(label+' differs from pinned archive')
+                        out=out.replace(old,new)
+                    return out
+                updated_profile=_patch_pl(original_profile, (
+                    (b'from pathlib import Path\n',
+                     b'import os\nimport re\nfrom pathlib import Path\n'),
+                    (b'def profile_path(app_id: int) -> Path:\n    return profiles_dir() / f"{app_id}.env"\n',
+                     b'ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")\n\n\n'
+                     b'def profile_path(app_id: int) -> Path:\n'
+                     b'    if type(app_id) is not int or app_id <= 0:\n'
+                     b'        raise ValueError("Invalid app ID")\n'
+                     b'    return profiles_dir() / f"{app_id}.env"\n'),
+                    (b'def write_profile(app_id: int, env_vars: Dict[str, str], game_name: str) -> None:\n'
+                     b'    profiles_dir().mkdir(parents=True, exist_ok=True)\n'
+                     b'    safe_name = sanitize_comment(game_name)\n'
+                     b'    lines = [\n'
+                     b'        "#!/bin/bash",\n'
+                     b'        f"# decky-proton-launch \xe2\x80\x94 {safe_name} (appid: {app_id})",\n'
+                     b'        "",\n'
+                     b'    ]\n'
+                     b'    for key, value in env_vars.items():\n'
+                     b'        safe_val = value.replace("\'", "\'\\\\\'\'")\n'
+                     b'        lines.append(f"export {key}=\'{safe_val}\'")\n'
+                     b'    profile_path(app_id).write_text("\\n".join(lines) + "\\n", encoding="utf-8")\n',
+                     b'def write_profile(app_id: int, env_vars: Dict[str, str], game_name: str) -> None:\n'
+                     b'    pdir = profiles_dir()\n'
+                     b'    if pdir.is_symlink():\n'
+                     b'        raise ValueError("Refusing to write into symlinked profiles directory")\n'
+                     b'    pdir.mkdir(parents=True, exist_ok=True, mode=0o700)\n'
+                     b'    path = profile_path(app_id)\n'
+                     b'    if path.is_symlink():\n'
+                     b'        raise ValueError("Refusing to overwrite symlinked profile")\n'
+                     b'    if not isinstance(env_vars, dict):\n'
+                     b'        raise ValueError("Environment variables must be a mapping")\n'
+                     b'    safe_name = sanitize_comment(str(game_name))\n'
+                     b'    lines = [\n'
+                     b'        "#!/bin/bash",\n'
+                     b'        f"# decky-proton-launch \xe2\x80\x94 {safe_name} (appid: {app_id})",\n'
+                     b'        "",\n'
+                     b'    ]\n'
+                     b'    for key, value in env_vars.items():\n'
+                     b'        if not isinstance(key, str) or not ENV_KEY.fullmatch(key):\n'
+                     b'            raise ValueError(f"Invalid environment variable name: {key!r}")\n'
+                     b'        if not isinstance(value, str) or any(ch in value for ch in ("\\n", "\\r", "\\x00")):\n'
+                     b'            raise ValueError(f"Invalid environment variable value for {key}")\n'
+                     b'        safe_val = value.replace("\'", "\'\\\\\'\'")\n'
+                     b'        lines.append(f"export {key}=\'{safe_val}\'")\n'
+                     b'    path.write_text("\\n".join(lines) + "\\n", encoding="utf-8")\n'
+                     b'    os.chmod(path, 0o600)\n'),
+                    (b'def read_profile(app_id: int) -> Dict[str, str]:\n'
+                     b'    path = profile_path(app_id)\n'
+                     b'    if not path.is_file():\n',
+                     b'def read_profile(app_id: int) -> Dict[str, str]:\n'
+                     b'    path = profile_path(app_id)\n'
+                     b'    if path.is_symlink() or not path.is_file():\n'),
+                ), 'Decky Proton Launch profile.py')
+                updated_plugin=_patch_pl(original_plugin, (
+                    (b'            pd = profiles_dir()\n'
+                     b'            pd.mkdir(parents=True, exist_ok=True)\n'
+                     b'\n'
+                     b'            sp = script_path()\n',
+                     b'            pd = profiles_dir()\n'
+                     b'            if pd.is_symlink():\n'
+                     b'                raise RuntimeError("Refusing to use symlinked profiles directory")\n'
+                     b'            pd.mkdir(parents=True, exist_ok=True, mode=0o700)\n'
+                     b'\n'
+                     b'            sp = script_path()\n'
+                     b'            if sp.is_symlink():\n'
+                     b'                raise RuntimeError("Refusing to overwrite symlinked proton-launch")\n'
+                     b'            if sp.exists() and "# decky-proton-launch" not in sp.read_text(encoding="utf-8", errors="replace"):\n'
+                     b'                raise RuntimeError("Refusing to overwrite existing unowned proton-launch")\n'),
+                    (b'                "LOG=/tmp/proton-launch.log\\n"\n',
+                     b'                "LOG_DIR=\\"${HOME}/.config/decky-proton-launch\\"\\n"\n'
+                     b'                "mkdir -p -m 700 \\"${LOG_DIR}\\"\\n"\n'
+                     b'                "LOG=\\"${LOG_DIR}/proton-launch.log\\"\\n"\n'
+                     b'                "if [ -L \\"${LOG}\\" ]; then LOG=/dev/null; fi\\n"\n'),
+                    (b'                "if [ -n \\"${APPID}\\" ] && [ -f \\"${PROFILE}\\" ]; then\\n"\n',
+                     b'                "if [[ \\"${APPID}\\" =~ ^[0-9]+$ ]] && [ -f \\"${PROFILE}\\" ] && [ ! -L \\"${PROFILE}\\" ]; then\\n"\n'),
+                    (b'            os.chmod(sp, 0o755)\n',
+                     b'            os.chmod(sp, 0o700)\n'),
+                    (b'            path = profile_path(app_id)\n'
+                     b'            if path.is_file():\n'
+                     b'                path.unlink()\n',
+                     b'            path = profile_path(app_id)\n'
+                     b'            if path.is_symlink():\n'
+                     b'                raise ValueError("Refusing to remove symlinked profile")\n'
+                     b'            if path.is_file():\n'
+                     b'                path.unlink()\n'),
+                    (b'            log_path = Path("/tmp/proton-launch.log")\n'
+                     b'            if not log_path.is_file():\n'
+                     b'                return "(no log yet \xe2\x80\x94 launch a game first)"\n',
+                     b'            log_path = Path(decky.DECKY_USER_HOME) / ".config" / "decky-proton-launch" / "proton-launch.log"\n'
+                     b'            if log_path.is_symlink() or not log_path.is_file():\n'
+                     b'                return "(no log yet \xe2\x80\x94 launch a game first)"\n'),
+                    (b'            log_path = Path("/tmp/proton-launch.log")\n'
+                     b'            if not log_path.is_file():\n'
+                     b'                return 0\n',
+                     b'            log_path = Path(decky.DECKY_USER_HOME) / ".config" / "decky-proton-launch" / "proton-launch.log"\n'
+                     b'            if log_path.is_symlink() or not log_path.is_file():\n'
+                     b'                return 0\n'),
+                ), 'Decky Proton Launch plugin.py')
+                ipc=globals().get('FRAMEY_PROTON_LAUNCH_IPC_SOURCE')
+                if not isinstance(ipc,str) or not ipc: raise RuntimeError('Missing Decky Proton Launch IPC helper')
+                helper=unpacked/'py_modules/framey_decky_ipc.py'
+                if helper.exists(): raise RuntimeError('Decky Proton Launch IPC helper collides with archive')
+                compile(ipc,str(helper),'exec')
+                helper.write_text(ipc,encoding='utf-8')
+                prefix=(b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                        b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
+                updated_main=prefix+original_main
+                for target_path,content in (
+                        (profile_py, updated_profile), (plugin_py, updated_plugin), (main, updated_main)):
+                    compile(content,str(target_path),'exec')
+                    target_path.write_bytes(content)
+                compat_shims.append('proton-launch-safe-profiles')
+                compat_shims.append('proton-launch-ipc-eof')
             if (int(plugin_id)==87 and digest=='5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822' and folder=='DeckyInhibitScreenSaver'):
                 main=unpacked/'main.py'
                 original=main.read_bytes()

@@ -85,6 +85,8 @@ def main():
     parser.add_argument('--reproduce-kde-connect-ipc-regression', action='store_true')
     parser.add_argument('--reproduce-deckpass-runtime-regression', action='store_true')
     parser.add_argument('--reproduce-deckpass-ipc-regression', action='store_true')
+    parser.add_argument('--reproduce-proton-launch-safety-regression', action='store_true')
+    parser.add_argument('--reproduce-proton-launch-ipc-regression', action='store_true')
     parser.add_argument('--reproduce-bound-method-regression', action='store_true')
     parser.add_argument('--reproduce-music-control-unload-regression', action='store_true')
     parser.add_argument('--reproduce-animation-unload-regression', action='store_true')
@@ -297,6 +299,21 @@ def main():
         (plugin/'py_modules/framey_decky_ipc.py').unlink()
     if args.reproduce_deckpass_ipc_regression:
         assert record['id'] == 121
+        prefix = (b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                  b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
+        managed = (plugin/'main.py').read_bytes()
+        assert managed.startswith(prefix)
+        (plugin/'main.py').write_bytes(managed[len(prefix):])
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
+    if args.reproduce_proton_launch_safety_regression:
+        assert record['id'] == 137
+        with zipfile.ZipFile(io.BytesIO(data)) as original:
+            for rel in ('main.py', 'py_modules/proton_launch/profile.py',
+                        'py_modules/proton_launch/plugin.py'):
+                (plugin/rel).write_bytes(original.read(record['folder']+'/'+rel))
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
+    if args.reproduce_proton_launch_ipc_regression:
+        assert record['id'] == 137
         prefix = (b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
                   b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
         managed = (plugin/'main.py').read_bytes()
@@ -679,6 +696,7 @@ def main():
                                or args.reproduce_junk_store_unload_regression
                                or args.reproduce_kde_connect_runtime_regression
                                or args.reproduce_deckpass_runtime_regression
+                               or args.reproduce_proton_launch_safety_regression
                                or args.reproduce_playtime_unload_regression
                                or args.reproduce_volume_boost_user_regression
                                or args.reproduce_mixer_unload_regression) else case['shim'], 'calls': []}
@@ -733,6 +751,9 @@ def main():
             if case['probe'] == 'deckpass-private-cli':
                 import deckpass_private
                 deckpass_fixture = deckpass_private.start(home, env)
+            if case['probe'] == 'proton-launch-private-wrapper':
+                import proton_launch_private
+                proton_launch_fixture = proton_launch_private.start(home, env)
             backend = subprocess.Popen([str(loader)], env=env, stdout=log, stderr=log, start_new_session=True)
             processes.append(backend)
             discovered = until_ready(lambda: rpc('loader/get_plugins'), 'published Decky plugin discovery',
@@ -908,6 +929,23 @@ def main():
                         'expected DeckPass forced SIGKILL after IPC peer EOF skipping _unload; negative only'
                         if args.reproduce_deckpass_ipc_regression
                         else 'private flatpak/keepassxc-cli stub env preservation, empty-token and injection rejection, CRUD, active-vault and idle unload SIGTERM cleanup, post-EOF RPC, restart and two strict stops; real Flatpak/KeePassXC/clipboard/UI/Frame unverified'
+                    )
+            elif case['probe'] == 'proton-launch-private-wrapper':
+                if args.reproduce_proton_launch_safety_regression:
+                    report['protonLaunchRuntime'] = proton_launch_private.probe_original_safety_failure(
+                        backend, log, current, env, proton_launch_fixture)
+                    report['result'] = (
+                        'expected original Decky Proton Launch unowned-script overwrite, shell injection and /tmp log write; negative only'
+                    )
+                else:
+                    report['protonLaunchRuntime'] = proton_launch_private.probe(
+                        backend, loader, env, log, processes, current, rpc, until_ready,
+                        proton_launch_fixture, plugin, discovered, data,
+                        ipc_regression=args.reproduce_proton_launch_ipc_regression)
+                    report['result'] = (
+                        'expected Decky Proton Launch forced SIGKILL after IPC peer EOF; negative only'
+                        if args.reproduce_proton_launch_ipc_regression
+                        else 'private ~/proton-launch execution, unowned-script and shell-injection refusals, private log reads, post-EOF RPC, restart and two strict stops; real Steam/Proton/UI/Frame unverified'
                     )
             elif case['probe'] == 'screensaver-private-bus':
                 import screensaver_private
