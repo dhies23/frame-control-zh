@@ -623,6 +623,76 @@ class Recording(unittest.TestCase):
         self.assertFalse(self.here.exists() and any(self.here.iterdir()))
         self.assertEqual(list((self.frame / clips.WORK).iterdir()), [])
 
+    def test_start_cleanup_closes_error_file_and_releases_proc_on_unexpected_errors(self):
+        opened_files = []
+        orig_temp = clips.tempfile.TemporaryFile
+
+        def track_temp(*args, **kwargs):
+            fh = orig_temp(*args, **kwargs)
+            opened_files.append(fh)
+            return fh
+
+        # 1. open_channel raises: TemporaryFile must still be closed.
+        rec = clips.Recorder(mock.Mock(side_effect=OSError("spawn failed")), lambda cmd, t: "audio=1",
+                             self.fetch, lambda fn: fn(), release=self.released.append, folder=self.here)
+        with mock.patch.object(clips.tempfile, "TemporaryFile", side_effect=track_temp):
+            with self.assertRaises(OSError):
+                rec.start()
+        self.assertTrue(opened_files[-1].closed)
+        self.assertEqual(rec.status()["state"], "failed")
+
+        # 2. _next_line raises after open_channel succeeds: proc ended & released, temp file closed.
+        fake_proc = mock.Mock()
+        fake_proc.poll.return_value = None
+        fake_proc.stdin = mock.Mock()
+        fake_proc.stdout = mock.Mock()
+        rec2 = clips.Recorder(lambda cmd, err: fake_proc, lambda cmd, t: "audio=1",
+                              self.fetch, lambda fn: fn(), release=self.released.append, folder=self.here)
+        with mock.patch.object(clips.tempfile, "TemporaryFile", side_effect=track_temp), \
+                mock.patch.object(clips, "_line_reader", return_value=mock.Mock()), \
+                mock.patch.object(clips, "_next_line", side_effect=RuntimeError("reader failed")), \
+                mock.patch.object(clips, "_end") as end_mock:
+            with self.assertRaises(RuntimeError):
+                rec2.start()
+        end_mock.assert_called_once_with(fake_proc)
+        self.assertIn(fake_proc, self.released)
+        self.assertTrue(opened_files[-1].closed)
+        self.assertEqual(rec2.status()["state"], "failed")
+
+        # 3. start_thread raises: proc ended & released, temp file closed.
+        fake_proc2 = mock.Mock()
+        fake_proc2.poll.return_value = None
+        fake_proc2.stdin = mock.Mock()
+        fake_proc2.stdout = mock.Mock()
+        rec3 = clips.Recorder(lambda cmd, err: fake_proc2, lambda cmd, t: "audio=1",
+                              self.fetch, mock.Mock(side_effect=RuntimeError("no threads")),
+                              release=self.released.append, folder=self.here)
+        with mock.patch.object(clips.tempfile, "TemporaryFile", side_effect=track_temp), \
+                mock.patch.object(clips, "_line_reader", return_value=mock.Mock()), \
+                mock.patch.object(clips, "_next_line", return_value="started"), \
+                mock.patch.object(clips, "_end") as end_mock2:
+            with self.assertRaises(RuntimeError):
+                rec3.start()
+        end_mock2.assert_called_once_with(fake_proc2)
+        self.assertIn(fake_proc2, self.released)
+        self.assertTrue(opened_files[-1].closed)
+        self.assertEqual(rec3.status()["state"], "failed")
+
+    def test_shutdown_tolerates_state_transition_before_stop(self):
+        rec = clips.Recorder(mock.Mock(), lambda cmd, t: "audio=1", self.fetch, lambda fn: fn(), folder=self.here)
+        states = iter([
+            {"state": "recording", "started": time.time()},
+            {"state": "saving"},
+            {"state": "saved", "file": "x.mp4"},
+            {"state": "saved", "file": "x.mp4"},
+        ])
+        rec.status = lambda: next(states)
+        rec.stop = mock.Mock(side_effect=clips.ClipError("Not recording", 409))
+        with mock.patch.object(clips.time, "sleep"):
+            final = rec.shutdown(timeout=5)
+        rec.stop.assert_called_once_with()
+        self.assertEqual(final["state"], "saved")
+
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg and ffprobe")
 class RealFfmpeg(unittest.TestCase):
