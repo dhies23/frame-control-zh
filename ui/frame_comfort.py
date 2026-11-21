@@ -194,7 +194,9 @@ def watch():
         with locked('worker.lock', nonblocking=True) as worker:
             while True:
                 with locked():
-                    s = current(read_state(), clock())
+                    s = read_state()
+                    now = clock()
+                    current(s, now)
                     if not s.get('active'):
                         save(s)
                         # Release ownership before state.lock: a concurrent start
@@ -223,18 +225,26 @@ def watch():
 def command(body):
     validate(body)
     with locked():
-        s = current(read_state(), clock())
+        s = read_state()
+        now = clock()
+        was_active = bool(s.get('active'))
+        unreadable = bool(s.get('error')) and not (ROOT / 'session.json').exists()
+        view = current(s, now)
+        changed = (was_active and not s.get('active')) or unreadable
         if body['action'] == 'start':
             if s.get('active'):
                 raise ValueError('A session is already running. Cancel it before starting another.')
-            s = new_session(body, clock(), boot())
+            s = new_session(body, now, boot())
             event(s, 'started', 'Session started. Steam Home opens at the limit; games are not closed.')
+            changed = True
         elif body['action'] == 'cancel':
             s['active'] = False
             s['error'] = None
             if s.get('id'):
                 event(s, 'cancelled', 'Session timer and monitoring cancelled.')
-        save(s)
+            changed = True
+        if changed:
+            save(s)
         if body['action'] == 'start':
             try:
                 subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--watch'],
@@ -246,7 +256,7 @@ def command(body):
                 event(s, 'error', s['error'])
                 save(s)
                 raise
-        return current(s, clock())
+        return current(s, clock()) if changed else view
 
 
 if __name__ == '__main__':
