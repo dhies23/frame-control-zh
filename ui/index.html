@@ -2507,10 +2507,14 @@ function showDeckyStore() {
       button.disabled=deckyPluginBusy || !!deckyPluginRequest || !deckyInfo?.managed || !deckyInfo?.running || !$('deckyAck').checked;
       button.onclick=()=>changeDeckyPlugin(entry?'update':'install',{...plugin,installedSha256:entry?.sha256});
       row.append(button);
-      if(entry){const remove=document.createElement('button');remove.className='small danger';remove.textContent='Remove';
-        remove.disabled=deckyPluginBusy || !!deckyPluginRequest || !deckyInfo?.managed || !$('deckyAck').checked;
-        remove.onclick=()=>changeDeckyPlugin('remove',{...plugin,installedSha256:entry.sha256});row.append(remove);}
     }
+    // A new release's install restrictions must not strand an older managed
+    // copy. Remove the installed identity, even when Decky cannot start.
+    const managedEntry=(deckyInfo?.plugins||[]).find(p=>p.storeId===plugin.id);
+    if(managedEntry){const remove=document.createElement('button');remove.className='small danger';remove.textContent='Remove';
+      remove.disabled=deckyPluginBusy || !!deckyPluginRequest || !deckyInfo?.managed || !$('deckyAck').checked;
+      remove.onclick=()=>changeDeckyPlugin('remove',
+        {id:plugin.id,name:managedEntry.name,installedSha256:managedEntry.sha256});row.append(remove);}
     list.append(row);
   }
 }
