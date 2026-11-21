@@ -5838,12 +5838,17 @@
         "https://github.com/safijari/Decky-KDE-Connect"
       ],
       "status": "partial",
-      "reason": "Initializer succeeds; KDE Connect installation/pairing/file transfers unverified.",
+      "reason": "Initializer succeeds. Exact managed 0.1.0-1 installs remove the unused click import and leaked log handles, make run_kde_connect.sh executable and run kdeconnectd unprivileged with the actual user's HOME, XDG_RUNTIME_DIR and D-Bus session (instead of non-executable 0o644, sudo -u deck, /home/deck and /run/user/1000), track and terminate only the managed daemon on disable, display change or _unload, and repair Decky 3.3.0 child IPC EOF shutdown; isolated AMD64 private xprop/kdeconnectd stub switching, post-EOF RPC, restart and two strict stops are covered. Update/reinstall old copies. Live KDE Connect installation, device pairing, file transfers, real Gamescope X11/D-Bus on ARM64 Frame and worn VR remain unverified.",
+      "requiredShims": [
+        "kde-connect-user-runtime",
+        "kde-connect-ipc-eof"
+      ],
       "blockInstall": false,
       "verification": [
         "static archive",
         "local browser",
-        "fake-Frame"
+        "fake-Frame",
+        "isolated Linux backend"
       ],
       "browser": {
         "id": 74,

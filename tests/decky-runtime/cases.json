@@ -355,5 +355,13 @@
     "id": 144,
     "shim": "mixer-ipc-eof",
     "probe": "mixer-private-audio"
+  },
+  {
+    "id": 74,
+    "shim": "kde-connect-user-runtime",
+    "additionalShims": [
+      "kde-connect-ipc-eof"
+    ],
+    "probe": "kde-connect-private-daemon"
   }
 ]
