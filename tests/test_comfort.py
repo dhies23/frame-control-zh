@@ -169,6 +169,39 @@ class SessionTests(unittest.TestCase):
             self.assertIsNone(comfort.command({'action': 'status'})['error'])
 
     @unittest.skipUnless(os.name == "posix", "on-headset state uses POSIX flock")
+    def test_status_poll_does_not_persist_transient_worker_error_or_view_fields(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(comfort, 'ROOT', Path(tmp)), \
+             patch.object(comfort, 'boot', return_value='boot-one'):
+            # 1. Pure status read with no saved session should not create session.json.
+            with patch.object(comfort, 'clock', return_value=10):
+                idle = comfort.command({'action': 'status'})
+            self.assertFalse(idle['active'])
+            self.assertFalse((Path(tmp) / 'session.json').exists())
+
+            # 2. Stale-worker status read must report the warning without poisoning session.json.
+            with comfort.locked():
+                comfort.save(self.s)
+            with patch.object(comfort, 'clock', return_value=200):
+                stale = comfort.command({'action': 'status'})
+            self.assertIn('not responding', stale['error'])
+            persisted = json.loads((Path(tmp) / 'session.json').read_text())
+            self.assertIsNone(persisted['error'])
+            self.assertNotIn('time', persisted)
+            self.assertNotIn('remaining', persisted)
+
+            # 3. Reboot invalidation still persists active=False and error without derived view keys.
+            with patch.object(comfort, 'boot', return_value='boot-two'), \
+                 patch.object(comfort, 'clock', return_value=250):
+                restarted = comfort.command({'action': 'status'})
+            self.assertFalse(restarted['active'])
+            self.assertIn('restarted', restarted['error'])
+            persisted = json.loads((Path(tmp) / 'session.json').read_text())
+            self.assertFalse(persisted['active'])
+            self.assertIn('restarted', persisted['error'])
+            self.assertNotIn('time', persisted)
+            self.assertNotIn('remaining', persisted)
+
+    @unittest.skipUnless(os.name == "posix", "on-headset state uses POSIX flock")
     def test_failed_spawn_leaves_session_inactive_and_retryable(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(comfort, 'ROOT', Path(tmp)), \
              patch.object(comfort, 'boot', return_value='boot-one'), \
