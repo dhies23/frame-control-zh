@@ -99,12 +99,60 @@ try {
   next('/api/decky').resolve(status);await tick();await tick();
   assert(posts.length===4&&buttons().every(button=>!button.disabled),'Check result resubmitted or failed to recover');
   assert($('deckyPluginJobCheck').hidden&&jobsRunning===0,'recovery leaked pending job state');
+
+  // A newly blocked catalogue release must not hide recovery removal of an
+  // older managed copy. Use that installed copy's identity, never the release.
+  const prior={storeId:2,name:'Installed prior release',version:'0.9',sha256:'b'.repeat(64)};
+  for(const blocked of [
+    {...plugin,name:'New root release',version:'2',sha256:'c'.repeat(64),root:true},
+    {...plugin,name:'New hardware release',version:'2',sha256:'c'.repeat(64),
+      compatibility:{status:'na',reason:'Not supported on Frame: synthetic hardware.',blockInstall:true}},
+  ]) {
+    const stopped={...status,running:false,plugins:[prior]};
+    deckyInfo=stopped;deckyCatalog=[blocked];showDeckyStore();
+    const storeButtons=()=>[...$('deckyStoreList').querySelectorAll('button')];
+    assert(storeButtons().length===1&&storeButtons()[0].textContent==='Remove',
+      'blocked catalogue entry lost managed recovery removal or offered an install');
+    assert(!storeButtons()[0].disabled,'stopped loader blocked recovery removal');
+    assert($('deckyStoreList').textContent.includes(blocked.root?'Needs root':'Not supported on Frame'),
+      'recovery removal hid the compatibility warning');
+    const savedRemove=storeButtons()[0].onclick,before=posts.length;
+    $('deckyAck').checked=false;showDeckyStore();
+    assert(storeButtons()[0].disabled,'removal bypassed acknowledgement');
+    await savedRemove();assert(posts.length===before,'retained removal bypassed acknowledgement');
+    $('deckyAck').checked=true;deckyInfo={...stopped,managed:false};showDeckyStore();
+    assert(storeButtons()[0].disabled,'unmanaged loader enabled store removal');
+    await savedRemove();assert(posts.length===before,'retained removal bypassed managed status');
+    deckyInfo={...stopped,plugins:[],upstreamPlugins:[prior]};showDeckyStore();
+    assert(storeButtons().length===0,'upstream-only copy received managed removal');
+    deckyInfo=null;showDeckyStore();
+    assert(storeButtons().length===0,'unknown installed status received removal');
+    deckyInfo=stopped;showDeckyStore();
+    const removing=storeButtons()[0].onclick();
+    assert(posts.length===before+1,'managed removal did not submit once');
+    assert(posts.at(-1).body.action==='remove'&&posts.at(-1).body.id===prior.storeId&&
+      posts.at(-1).body.installedSha256===prior.sha256&&posts.at(-1).body.sha256===undefined,
+      'removal used the blocked catalogue archive instead of installed receipt');
+    assert(confirmations.at(-1).startsWith('remove '+prior.name+'?'),
+      'removal confirmation did not name the installed copy');
+    assert(storeButtons()[0].disabled,'active removal did not lock store control');
+    await savedRemove();assert(posts.length===before+1,'retained callback duplicated removal');
+    next('/api/decky/plugin').resolve({job:posts.at(-1).body.requestId});
+    await tick();await tick();
+    next(jobPath()).resolve({done:true,result:{},message:'Synthetic removal complete',queued:false});
+    await tick();await tick();
+    assert(storeButtons().every(button=>button.disabled),'removal unlocked before final installed refresh');
+    next('/api/decky').resolve({...stopped,plugins:[]});await removing;
+    assert(storeButtons().length===0,'removed copy still offered store removal');
+    assert(jobsRunning===0&&installing.size===0&&queued.size===0,'recovery removal leaked shared job state');
+  }
   document.getElementById('result').textContent=JSON.stringify({passed:true,realDOM:true,
     catalogueTailReachable:true,pageBoundariesPreserved:true,authorSearchResetsPage:true,
     actualRunJobExecuted:true,retainedCallbacksBlocked:true,disabledClicksBlocked:true,
     acknowledgementAndManualRefreshLocked:true,pollingAndFinalStatusLocked:true,
     failedStatusBlocked:true,explicitRecoveryPassed:true,reservedRequestId:true,
     lostPostReplyLocked:true,checkResultWithoutResubmitting:true,syntheticApiReplies:true,
+    blockedReleasesRemovable:true,installedRemovalIdentity:true,upstreamRemovalUnavailable:true,
     realFrameContacted:false,realMutationVerified:false});
 } catch(error) {document.getElementById('result').textContent=JSON.stringify({passed:false,error:String(error.stack||error)});}
 
