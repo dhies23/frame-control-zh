@@ -26,7 +26,7 @@ def descendants(parent):
         owned.update(added)
 
 
-def stop(backend, log, *, disconnect, after_disconnect=None):
+def stop(backend, log, *, disconnect, after_disconnect=None, version='1.0.2'):
     children = descendants(backend.pid)
     assert children, 'the private loader must own its plugin children'
     log.flush()
@@ -78,9 +78,9 @@ def stop(backend, log, *, disconnect, after_disconnect=None):
               'Task was destroyed but it is pending', 'Bad file descriptor') if m in console]
     # This published plugin has no _unload hook. Require the child's missing-hook
     # diagnostic and a normal framework stop; the parent also logs a stop after SIGKILL.
-    stopped = console.count('[plugin][INFO]: Plugin Games Prefix Manager (v1.0.2) has been stopped in ')
+    stopped = console.count(f'[plugin][INFO]: Plugin Games Prefix Manager (v{version}) has been stopped in ')
     unloads = int(stopped == 1 and not forced and
-        console.count('Could not find \"_unload\" in Games Prefix Manager (v1.0.2)\'s main.py') == 1)
+        console.count(f'Could not find "_unload" in Games Prefix Manager (v{version})\'s main.py') == 1)
     clean = (backend.returncode == 0 and elapsed < 5 and not remaining and not forced and not errors
              and all(c['returncode'] == 0 for c in adopted) and unloads == 1
              and console.count('[main][INFO]: Shutdown finished.') == 1)
@@ -94,7 +94,7 @@ def stop(backend, log, *, disconnect, after_disconnect=None):
         cleanShutdownVerified=clean)
 
 
-def probe(backend, loader, env, log, processes, legacy, rpc, until_ready, report, *, regression):
+def probe(backend, loader, env, log, processes, legacy, rpc, until_ready, report, *, regression, version='1.0.2'):
     import subprocess
     import sys
     home = Path.home()
@@ -116,7 +116,7 @@ def probe(backend, loader, env, log, processes, legacy, rpc, until_ready, report
     try:
         for cycle in range(1 if regression else 2):
             observation = stop(backend, log, disconnect=cycle == 0,
-                after_disconnect=readback if cycle == 0 and not regression else None)
+                after_disconnect=readback if cycle == 0 and not regression else None, version=version)
             evidence['stops'].append(observation)
             assert unrelated.poll() is None, 'unrelated sibling must survive loader shutdown'
             if regression:
@@ -132,7 +132,7 @@ def probe(backend, loader, env, log, processes, legacy, rpc, until_ready, report
                                            start_new_session=True)
                 processes.append(backend)
                 discovered = until_ready(lambda: rpc('loader/get_plugins'), 'restarted Prefix Manager discovery')
-                assert discovered == [dict(name='Games Prefix Manager', version='1.0.2', load_type=0, disabled=False)]
+                assert discovered == [dict(name='Games Prefix Manager', version=version, load_type=0, disabled=False)]
                 evidence['restartedDiscovery'] = discovered
                 readback()
         evidence.update(backupsPreserved=True, outsideMarkerPreserved=True,

@@ -211,6 +211,7 @@ def main():
             if args.terminal_candidate:
                 probes = [(65, None, '--terminal-candidate')]
             if args.case is None or args.case == 130:
+                probes.append((130, None, '--reproduce-prefix-manager-101-unload-regression'))
                 probes.append((130, '1.0.2', '--reproduce-prefix-manager-102-unload-regression'))
             for plugin_id, version, negative in probes:
                 name = 'framey-decky-'+uuid.uuid4().hex[:12]

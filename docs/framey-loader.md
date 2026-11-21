@@ -324,6 +324,16 @@ An explicit HTTP rejection before the request was accepted releases the request;
 a terminal job error also releases it after status refresh. These desktop paths
 are tested with synthetic API replies and real DOM controls, not live installs.
 
+Games Prefix Manager 1.0.1 installs the shared child IPC EOF repair alongside
+its existing user-home and bounded-prefix safeguards, preserving its prior
+managed backend body and other archive files. Existing copies need Update or
+reinstall. Local AMD64 Decky 3.3.0 probes verify disposable multi-library
+backup/delete, bulk-cleanup and symlink refusals, RPC after peer disconnect,
+backup preservation across restart and two clean parent-only stops; restoring
+the prior managed backend reproduces a forced kill after the same EOF. Real
+Steam prefix changes, complete non-Steam names, managed Frame execution and
+worn VR remain unverified. Fresh hosted architecture qualification is pending.
+
 Pause Games 1.0.3 installs the shared child IPC EOF repair while preserving all
 published process-control methods and other archive files. Existing copies need
 Update or reinstall. Local AMD64 checks private settings and exclusions, RPC
