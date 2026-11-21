@@ -200,12 +200,15 @@ def probe_original_runtime_failure(backend, log, legacy, until_ready, fixture):
     log.flush()
     shutdown_log = Path(log.name).read_text(encoding='utf-8', errors='replace')[len(previous):]
     assert backend.returncode == 0, (backend.returncode, shutdown_log)
-    assert 'Could not find "_unload" in KDE Connect (v0.1.0-1)\'s main.py' in shutdown_log, shutdown_log
+    missing_unload = 'Could not find "_unload" in KDE Connect (v0.1.0-1)\'s main.py' in shutdown_log
+    forced_sigkill = 'Sending SIGKILL!' in shutdown_log
+    assert (missing_unload or forced_sigkill) and 'KDE Connect unloaded' not in shutdown_log, shutdown_log
     return dict(
         **fixture,
         reproducedOriginalRuntimeFailure=True,
         matchedLaunchError='PermissionError: [Errno 13] Permission denied',
-        missingUnloadHook=True,
+        missingUnloadHook=missing_unload,
+        forcedSigkillOnShutdown=forced_sigkill,
         daemonEvents=_read_events(events_path),
         backendReturncode=backend.returncode,
     )

@@ -22,8 +22,8 @@
 - Enabling with Steam UI focused (`769`) launched stub `kdeconnectd` (PID `24`) with `args=['--replace']`, `DISPLAY=':0'`, `HOME='/home/tester'`, `XDG_RUNTIME_DIR='/run/user/1100'`, `DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/1100/bus'`, `uid=1100`.
 - Switching focus to a game (`12345`) cleanly stopped PID `24` via `SIGTERM` and launched PID `27` on `DISPLAY=':1'`.
 - Calling `set_enabled(enabled=False)` cleanly stopped PID `27` via `SIGTERM`.
-- Re-enabling launched PID `30`, then stopping Decky after an IPC peer EOF disconnect ran post-EOF `is_enabled() -> True`, executed `_unload`, stopped PID `30` via `SIGTERM`, and finished in `0.265 s` with `0` forced `SIGKILL`s and `0` surviving descendants.
-- Restarting Decky reported `is_enabled() -> False` and completed a second strict parent-only stop in `0.236 s` with `0` forced `SIGKILL`s.
+- Re-enabling launched PID `30`, then stopping Decky after an IPC peer EOF disconnect ran post-EOF `is_enabled() -> True`, executed `_unload`, stopped PID `30` via `SIGTERM`, and finished in `0.247 s` with `0` forced `SIGKILL`s and `0` surviving descendants.
+- Restarting Decky reported `is_enabled() -> False` and completed a second strict parent-only stop in `0.246 s` with `0` forced `SIGKILL`s.
 
 ### Negative control 1 (`--reproduce-kde-connect-runtime-regression`)
 - Restoring the unmodified `main.py` and `run_kde_connect.sh` (`0o644`) reproduced `PermissionError: [Errno 13] Permission denied` on `run_kde_connect.sh` with zero daemon launches and logged `Could not find "_unload" in KDE Connect (v0.1.0-1)'s main.py` on shutdown.
