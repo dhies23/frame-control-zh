@@ -545,57 +545,62 @@ class Handler(BaseHTTPRequestHandler):
 
     def stream(self, query):
         agent = self.server.agent
-        with agent.lock:
-            key = agent.grants.redeem(query.get('src'), query)
-            if not key:
-                return self.reply({'error': 'forbidden'}, 403)
-            source = agent.source(query.get('src'))
-            if self.headers.get('Upgrade', '').lower() != 'websocket' or self.headers.get('Sec-WebSocket-Version') != '13':
-                return self.reply({'error': 'expected WebSocket'}, 400)
-            wskey = self.headers.get('Sec-WebSocket-Key', '')
-            if len(base64.b64decode(wskey, validate=True)) != 16:
-                raise ValueError('Bad WebSocket key')
-            if len(agent.sessions) >= 8:
-                raise ValueError('At most eight panels may be open')
-            # Stop can revoke and close only a registered session. Register
-            # under the same lock as redemption, before any capture starts.
-            session = Session(agent, WebSocket(self), key, source, query)
-            for old in list(agent.sessions.values()):
-                if old.key == key or old.src == source['src']:
-                    if old.key != key:
-                        agent.grants.keys.pop(old.key, None)
-                        try:
-                            old.ws.send(dict(t='close'))
-                        except OSError:
-                            pass
-                    old.end()
-                    if old.writer:
-                        old.writer.join(6)
-                        if old.writer.is_alive():
-                            session.controller.close()
-                            raise ValueError('The previous capture is still stopping; retry shortly')
-            ident = agent.next_id
-            agent.next_id += 1
-            agent.sessions[ident] = session
-            accept = base64.b64encode(hashlib.sha1((wskey+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
-            self.send_response(101)
-            self.send_header('Upgrade', 'websocket')
-            self.send_header('Connection', 'Upgrade')
-            self.send_header('Sec-WebSocket-Accept', accept)
-            self.end_headers()
+        ident = None
         try:
+            with agent.lock:
+                key = agent.grants.redeem(query.get('src'), query)
+                if not key:
+                    return self.reply({'error': 'forbidden'}, 403)
+                source = agent.source(query.get('src'))
+                if self.headers.get('Upgrade', '').lower() != 'websocket' or self.headers.get('Sec-WebSocket-Version') != '13':
+                    return self.reply({'error': 'expected WebSocket'}, 400)
+                wskey = self.headers.get('Sec-WebSocket-Key', '')
+                if len(base64.b64decode(wskey, validate=True)) != 16:
+                    raise ValueError('Bad WebSocket key')
+                if len(agent.sessions) >= 8:
+                    raise ValueError('At most eight panels may be open')
+                # Stop can revoke and close only a registered session. Register
+                # under the same lock as redemption, before any capture starts.
+                session = Session(agent, WebSocket(self), key, source, query)
+                for old in list(agent.sessions.values()):
+                    if old.key == key or old.src == source['src']:
+                        if old.key != key:
+                            agent.grants.keys.pop(old.key, None)
+                            try:
+                                old.ws.send(dict(t='close'))
+                            except OSError:
+                                pass
+                        old.end()
+                        if old.writer:
+                            old.writer.join(6)
+                            if old.writer.is_alive():
+                                session.controller.close()
+                                raise ValueError('The previous capture is still stopping; retry shortly')
+                ident = agent.next_id
+                agent.next_id += 1
+                agent.sessions[ident] = session
+                # The registered session also owns failures while the upgrade
+                # response is written, before its capture thread exists.
+                accept = base64.b64encode(hashlib.sha1((wskey+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+                self.send_response(101)
+                self.send_header('Upgrade', 'websocket')
+                self.send_header('Connection', 'Upgrade')
+                self.send_header('Sec-WebSocket-Accept', accept)
+                self.end_headers()
             session.start()
         except (OSError, ValueError, RuntimeError):
-            session.end()
+            if ident is None:
+                raise  # validation failures still receive their HTTP error
         finally:
-            session.end()
-            if session.writer:
-                session.writer.join(6)
-            if not session.writer or not session.writer.is_alive():
-                session.controller.close()
-            with agent.lock:
-                agent.sessions.pop(ident, None)
-            self.close_connection = True
+            if ident is not None:
+                session.end()
+                if session.writer:
+                    session.writer.join(6)
+                if not session.writer or not session.writer.is_alive():
+                    session.controller.close()
+                with agent.lock:
+                    agent.sessions.pop(ident, None)
+                self.close_connection = True
 
 
 def main():

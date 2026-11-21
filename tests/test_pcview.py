@@ -9,6 +9,7 @@ failure; FRAME_PC_INSTALLER_BUNDLE=1 checks the installer's bundle instead.
 """
 import ctypes
 import http.client
+import io
 import json
 import os
 from pathlib import Path
@@ -148,6 +149,77 @@ class PageTests(unittest.TestCase):
         self.assertIn("const keys = ['mvSeparate', 'padUsed', 'pcView']", self.page)
         prefs = (ROOT / 'app' / 'preferences.js').read_text(encoding='utf-8')
         self.assertIn('const KEYS = ["mvSeparate", "padUsed", "pcView"];', prefs)
+
+
+class UpgradeCleanupTests(unittest.TestCase):
+    def request(self, host, output, *, path='/stream?src=test&k=master', headers=None):
+        # Exercise the production HTTP header flush, Session, controller
+        # and WebSocket lifecycle with private in-memory transport only.
+        handler = object.__new__(agent.Handler)
+        handler.server = mock.Mock(agent=host)
+        handler.connection = mock.Mock()
+        handler.rfile, handler.wfile = io.BytesIO(), output
+        handler.request_version, handler.command = 'HTTP/1.1', 'GET'
+        handler.path = path
+        handler.requestline = 'GET '+path+' HTTP/1.1'
+        handler.headers = {'Upgrade': 'websocket', 'Sec-WebSocket-Version': '13',
+                           'Sec-WebSocket-Key': 'MDEyMzQ1Njc4OWFiY2RlZg=='}
+        handler.headers.update(headers or {})
+        handler.close_connection = False
+        handler.dispatch('GET')
+        return handler
+
+    def test_failed_upgrade_releases_each_session_and_allows_a_fresh_viewer(self):
+        native = mock.Mock()
+        native.lib.fc_new.side_effect = range(1, 10)
+        with mock.patch.object(agent.sys, 'platform', 'linux'):
+            host = agent.Agent(native, 'master', ROOT/'ui/mac-view.html')
+
+        class DisconnectedViewer(io.BytesIO):
+            def write(self, data):
+                raise BrokenPipeError('viewer left during the HTTP upgrade')
+
+        # Eight failed upgrades used to retain all eight slots and controllers.
+        # No source capture or desktop input is permitted by this test.
+        with mock.patch.object(agent.Session, 'produce', side_effect=AssertionError('unexpected capture')):
+            for attempt in range(8):
+                with self.subTest(attempt=attempt):
+                    handler = self.request(host, DisconnectedViewer())
+                    self.assertTrue(handler.close_connection)
+                    self.assertEqual(host.sessions, {})
+                    self.assertEqual(native.lib.fc_free.call_args_list,
+                                     [mock.call(i) for i in range(1, attempt+2)])
+                    handler.connection.shutdown.assert_called()
+
+        # The next upgrade is admitted, then the private viewer immediately
+        # reaches EOF. Only its producer is a no-op; normal cleanup still runs.
+        output = io.BytesIO()
+        with mock.patch.object(agent.Session, 'produce') as produce:
+            handler = self.request(host, output)
+        self.assertTrue(output.getvalue().startswith(b'HTTP/1.1 101 '))
+        produce.assert_called_once_with()
+        self.assertTrue(handler.close_connection)
+        self.assertEqual(host.sessions, {})
+        self.assertEqual(native.lib.fc_free.call_args_list, [mock.call(i) for i in range(1, 10)])
+
+    def test_validation_errors_preserve_an_existing_session_and_http_status(self):
+        native, existing = mock.Mock(), mock.Mock()
+        with mock.patch.object(agent.sys, 'platform', 'linux'):
+            host = agent.Agent(native, 'master', ROOT/'ui/mac-view.html')
+        host.sessions[99] = existing
+        for path, headers, status in [
+                ('/stream?src=test&k=wrong', {}, 403),
+                ('/stream?src=test&k=master', {'Sec-WebSocket-Version': '12'}, 400),
+                ('/stream?src=test&k=master', {'Sec-WebSocket-Key': 'eA=='}, 400)]:
+            with self.subTest(status=status, headers=headers):
+                output = io.BytesIO()
+                handler = self.request(host, output, path=path, headers=headers)
+                self.assertTrue(output.getvalue().startswith(('HTTP/1.1 %s ' % status).encode()))
+                self.assertTrue(handler.close_connection)
+                self.assertEqual(host.sessions, {99: existing})
+                existing.end.assert_not_called()
+                native.lib.fc_new.assert_not_called()
+                native.lib.fc_free.assert_not_called()
 
 
 class AdapterTests(unittest.TestCase):
