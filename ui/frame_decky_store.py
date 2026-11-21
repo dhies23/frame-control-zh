@@ -365,6 +365,9 @@ def apply_script(plugin_id, digest):
     if plugin_id == 74 and digest == '5f7decb4de48290f8eec15937486c9611aec0d25256515c97f98cf7ba30c79a4':
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
         return 'FRAMEY_KDE_CONNECT_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
+    if plugin_id == 121 and digest == '4be32fd39ce406e2276b21537c98afc00a8ed1b82a23ff0e01af552352fa48f8':
+        ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
+        return 'FRAMEY_DECKPASS_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
     if plugin_id == 87 and digest == '5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822':
         source = Path(__file__).with_name('framey_screensaver.py').read_text(encoding='utf-8')
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
@@ -1055,6 +1058,167 @@ try:
                 script.chmod(0o700)
                 compat_shims.append('kde-connect-user-runtime')
                 compat_shims.append('kde-connect-ipc-eof')
+            if (int(plugin_id)==121 and digest=='4be32fd39ce406e2276b21537c98afc00a8ed1b82a23ff0e01af552352fa48f8' and folder=='DeckPass'):
+                main=unpacked/'main.py'
+                utils_py=unpacked/'py_modules/utils.py'
+                flatpak_py=unpacked/'py_modules/keypass_flatpak.py'
+                cli_py=unpacked/'py_modules/keypass_cli.py'
+                pm_py=unpacked/'py_modules/password_manager.py'
+                original_main=main.read_bytes()
+                original_utils=utils_py.read_bytes()
+                original_flatpak=flatpak_py.read_bytes()
+                original_cli=cli_py.read_bytes()
+                original_pm=pm_py.read_bytes()
+                if (manifest.get('name')!='DeckPass' or manifest.get('flags')!=[]
+                        or manifest.get('api_version')!=1
+                        or hashlib.sha256(original_main).hexdigest()!='f342d33fe61de91877a86ff5fa19f25a298b0a32761a756e0e96ca8cc93d8e61'
+                        or hashlib.sha256(original_utils).hexdigest()!='2e40f84d6ff24ff046c8a43cf55332059f707c5946f4b31f36ea07ac1f3d8e9e'
+                        or hashlib.sha256(original_flatpak).hexdigest()!='42ab3f115fd8cfdee809922fbabab1e0b62b89f8ffa76f5b3f4c7d039f253e20'
+                        or hashlib.sha256(original_cli).hexdigest()!='8b838a44bb70fa20b2f20ab4076a0a9961416d9fed8bebf54b9aab4b1a6591f4'
+                        or hashlib.sha256(original_pm).hexdigest()!='c76c3238a1dc5866bdbd42e7a6230b2eb7012effbeded7489c38c435e97ce5ab'):
+                    raise RuntimeError('DeckPass manifest or backend differs from pinned archive')
+                def _patch(src, reps, label):
+                    out=src
+                    for old,new in reps:
+                        if out.count(old)!=1: raise RuntimeError(label+' differs from pinned archive')
+                        out=out.replace(old,new)
+                    return out
+                updated_utils=(
+                    b'def escape_cli_input(input_str: str) -> str:\n'
+                    b'    if any(ch in input_str for ch in ("\\n", "\\r", "\\x00")):\n'
+                    b'        raise ValueError("CLI input must not contain newlines or NUL bytes")\n'
+                    b'    escaped = input_str.replace("\\\\", "\\\\\\\\").replace(\'"\', \'\\\\"\')\n'
+                    b'    return f\'"{escaped}"\'\n'
+                )
+                updated_flatpak=_patch(original_flatpak, (
+                    (b'import asyncio\n', b'import asyncio\nimport os\n'),
+                    (b'            env={ "LD_LIBRARY_PATH": "" }\n',
+                     b'            env={ **os.environ, "LD_LIBRARY_PATH": "" }\n'),
+                ), 'DeckPass keypass_flatpak.py')
+                updated_cli=_patch(original_cli, (
+                    (b'import asyncio\n', b'import asyncio\nimport os\n'),
+                    (b'    is_open: bool = False\n',
+                     b'    is_open: bool = False\n    process: asyncio.subprocess.Process | None = None\n'),
+                    (b'    def _get_env_variables(self):\n'
+                     b'        en_locale = self._get_english_utf8_locale()\n'
+                     b'        return {\n'
+                     b'            "LANG": en_locale,\n'
+                     b'            "LC_ALL": en_locale,\n'
+                     b'            "LD_LIBRARY_PATH": ""\n'
+                     b'        }\n',
+                     b'    def _get_env_variables(self):\n'
+                     b'        en_locale = self._get_english_utf8_locale()\n'
+                     b'        return {\n'
+                     b'            **os.environ,\n'
+                     b'            "LANG": en_locale,\n'
+                     b'            "LC_ALL": en_locale,\n'
+                     b'            "LD_LIBRARY_PATH": ""\n'
+                     b'        }\n'),
+                    (b'    async def _send(self, value: str):\n'
+                     b'        self.process.stdin.write((value + "\\n").encode())\n',
+                     b'    async def _send(self, value: str):\n'
+                     b'        if any(ch in value for ch in ("\\n", "\\r", "\\x00")):\n'
+                     b'            raise ValueError("CLI input must not contain newlines or NUL bytes")\n'
+                     b'        self.process.stdin.write((value + "\\n").encode())\n'),
+                    (b'        if self.is_open:\n            self.close()\n',
+                     b'        if self.is_open or self.process is not None:\n            await self.aclose()\n'),
+                    (b'    async def create_database(self, database_path: str, password: str):\n',
+                     b'    async def create_database(self, database_path: str, password: str):\n'
+                     b'        if any(ch in password for ch in ("\\n", "\\r", "\\x00")):\n'
+                     b'            raise ValueError("Database password must not contain newlines or NUL bytes")\n'),
+                    (b'        stdout = await result.communicate()\n'
+                     b'        if result.returncode != 0:\n'
+                     b'            error_output = stdout.decode() if stdout else "No output"\n'
+                     b'            raise ValueError(f"Failed to create database: {database_path}. Error: {error_output}")\n',
+                     b'        stdout, _stderr = await result.communicate()\n'
+                     b'        if result.returncode != 0:\n'
+                     b'            error_output = stdout.decode("utf-8", errors="replace") if stdout else "No output"\n'
+                     b'            raise ValueError(f"Failed to create database: {database_path}. Error: {error_output}")\n'),
+                    (b'    def close(self):\n'
+                     b'        self.is_open = False\n'
+                     b'        if self.process is None:\n'
+                     b'            return\n'
+                     b'\n'
+                     b'        if self.process.returncode is not None:\n'
+                     b'            return;\n'
+                     b'\n'
+                     b'        self.process.kill()\n',
+                     b'    def close(self):\n'
+                     b'        self.is_open = False\n'
+                     b'        proc = self.process\n'
+                     b'        self.process = None\n'
+                     b'        if proc is None or proc.returncode is not None:\n'
+                     b'            return\n'
+                     b'        try:\n'
+                     b'            proc.terminate()\n'
+                     b'        except ProcessLookupError:\n'
+                     b'            return\n'
+                     b'\n'
+                     b'    async def aclose(self):\n'
+                     b'        self.is_open = False\n'
+                     b'        proc = self.process\n'
+                     b'        self.process = None\n'
+                     b'        if proc is None:\n'
+                     b'            return\n'
+                     b'        if proc.returncode is None:\n'
+                     b'            try:\n'
+                     b'                proc.terminate()\n'
+                     b'            except ProcessLookupError:\n'
+                     b'                pass\n'
+                     b'            try:\n'
+                     b'                await asyncio.wait_for(proc.wait(), 3)\n'
+                     b'            except asyncio.TimeoutError:\n'
+                     b'                try:\n'
+                     b'                    proc.kill()\n'
+                     b'                except ProcessLookupError:\n'
+                     b'                    pass\n'
+                     b'                await asyncio.wait_for(proc.wait(), 2)\n'
+                     b'        else:\n'
+                     b'            await proc.wait()\n'),
+                ), 'DeckPass keypass_cli.py')
+                updated_pm=_patch(original_pm, (
+                    (b'    def close(self):\n'
+                     b'        self.entries = []\n'
+                     b'        self.security_token = ""\n'
+                     b'        self.keepass_cli.close()\n',
+                     b'    def close(self):\n'
+                     b'        self.entries = []\n'
+                     b'        self.security_token = ""\n'
+                     b'        self.keepass_cli.close()\n'
+                     b'\n'
+                     b'    async def aclose(self):\n'
+                     b'        self.entries = []\n'
+                     b'        self.security_token = ""\n'
+                     b'        await self.keepass_cli.aclose()\n'),
+                    (b'    def _validate_security_token(self, security_token: str):\n'
+                     b'        is_valid = hmac.compare_digest(self.security_token, security_token)\n'
+                     b'        if not is_valid:\n'
+                     b'            raise ValueError("Invalid security token!")',
+                     b'    def _validate_security_token(self, security_token: str):\n'
+                     b'        if (not self.security_token or not isinstance(security_token, str)\n'
+                     b'                or not hmac.compare_digest(self.security_token, security_token)):\n'
+                     b'            raise ValueError("Invalid security token!")\n'),
+                ), 'DeckPass password_manager.py')
+                updated_main_body=_patch(original_main, (
+                    (b'        try:\n            self.pm.close()\n',
+                     b'        try:\n            await self.pm.aclose()\n'),
+                ), 'DeckPass main.py')
+                ipc=globals().get('FRAMEY_DECKPASS_IPC_SOURCE')
+                if not isinstance(ipc,str) or not ipc: raise RuntimeError('Missing DeckPass IPC helper')
+                helper=unpacked/'py_modules/framey_decky_ipc.py'
+                if helper.exists(): raise RuntimeError('DeckPass IPC helper collides with archive')
+                compile(ipc,str(helper),'exec')
+                helper.write_text(ipc,encoding='utf-8')
+                prefix=(b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                        b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
+                updated_main=prefix+updated_main_body
+                for target_path,content in (
+                        (utils_py, updated_utils), (flatpak_py, updated_flatpak),
+                        (cli_py, updated_cli), (pm_py, updated_pm), (main, updated_main)):
+                    compile(content,str(target_path),'exec')
+                    target_path.write_bytes(content)
+                compat_shims.append('deckpass-user-runtime')
+                compat_shims.append('deckpass-ipc-eof')
             if (int(plugin_id)==87 and digest=='5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822' and folder=='DeckyInhibitScreenSaver'):
                 main=unpacked/'main.py'
                 original=main.read_bytes()

@@ -439,6 +439,26 @@ device pairing, file transfers, real Gamescope X11/D-Bus on ARM64 Frame and
 worn VR remain unverified; see
 [the native evidence](evidence/framey-kde-connect-runtime-2026-11-21.md).
 
+DeckPass 1.1.1 preserves the active user's environment (`HOME`, `PATH`,
+`XDG_RUNTIME_DIR`, `XDG_DATA_HOME`, `DBUS_SESSION_BUS_ADDRESS`) while clearing
+`LD_LIBRARY_PATH` for `flatpak` and `keepassxc-cli` subprocesses (instead of
+wiping `os.environ`), initializes `KeypassCli.process = None` so idle unload
+does not raise `AttributeError`, rejects empty security tokens and
+newline/carriage-return/NUL CLI input injection, fixes `create_database()`
+calling `.decode()` on the `(stdout, stderr)` tuple, awaits and reaps its
+vault subprocess cleanly on close and `_unload`, and installs the shared child
+IPC EOF repair while preserving all other archive files. Existing copies need
+Update or reinstall. Local AMD64 Decky 3.3.0 probes run under UID 1100 with
+`--network=none` against a private `flatpak`/`keepassxc-cli` stub and verify
+preserved user environment, empty-token and injection rejection, vault
+creation/error handling, entry CRUD, active-vault and idle unload `SIGTERM`
+cleanup, post-EOF RPC, restart and two strict parent-only stops. Two negative
+controls reproduce the original wiped-environment `flatpak` failure and idle
+`close_password_manager()` `AttributeError`, and the pre-EOF forced `SIGKILL`
+shutdown skipping `_unload`. Real KeePassXC Flatpak installation, live KDBX
+vaults on ARM64 Frame, clipboard integration and worn VR remain unverified; see
+[the native evidence](evidence/framey-deckpass-runtime-2026-11-21.md).
+
 The store verifies each downloaded archive and the headset applies it with a
 rollback if Decky cannot start. The panel saves a random request ID before
 submitting a change. The server uses that ID as the job ID and returns the

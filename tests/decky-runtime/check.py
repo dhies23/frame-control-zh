@@ -83,6 +83,8 @@ def main():
     parser.add_argument('--reproduce-junk-store-ipc-regression', action='store_true')
     parser.add_argument('--reproduce-kde-connect-runtime-regression', action='store_true')
     parser.add_argument('--reproduce-kde-connect-ipc-regression', action='store_true')
+    parser.add_argument('--reproduce-deckpass-runtime-regression', action='store_true')
+    parser.add_argument('--reproduce-deckpass-ipc-regression', action='store_true')
     parser.add_argument('--reproduce-bound-method-regression', action='store_true')
     parser.add_argument('--reproduce-music-control-unload-regression', action='store_true')
     parser.add_argument('--reproduce-animation-unload-regression', action='store_true')
@@ -280,6 +282,21 @@ def main():
         (plugin/'py_modules/framey_decky_ipc.py').unlink()
     if args.reproduce_kde_connect_ipc_regression:
         assert record['id'] == 74
+        prefix = (b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                  b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
+        managed = (plugin/'main.py').read_bytes()
+        assert managed.startswith(prefix)
+        (plugin/'main.py').write_bytes(managed[len(prefix):])
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
+    if args.reproduce_deckpass_runtime_regression:
+        assert record['id'] == 121
+        with zipfile.ZipFile(io.BytesIO(data)) as original:
+            for rel in ('main.py', 'py_modules/utils.py', 'py_modules/keypass_flatpak.py',
+                        'py_modules/keypass_cli.py', 'py_modules/password_manager.py'):
+                (plugin/rel).write_bytes(original.read(record['folder']+'/'+rel))
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
+    if args.reproduce_deckpass_ipc_regression:
+        assert record['id'] == 121
         prefix = (b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
                   b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
         managed = (plugin/'main.py').read_bytes()
@@ -661,6 +678,7 @@ def main():
                                or args.reproduce_tailscale_runtime_regression
                                or args.reproduce_junk_store_unload_regression
                                or args.reproduce_kde_connect_runtime_regression
+                               or args.reproduce_deckpass_runtime_regression
                                or args.reproduce_playtime_unload_regression
                                or args.reproduce_volume_boost_user_regression
                                or args.reproduce_mixer_unload_regression) else case['shim'], 'calls': []}
@@ -712,6 +730,9 @@ def main():
             if case['probe'] == 'kde-connect-private-daemon':
                 import kde_connect_private
                 kde_connect_fixture = kde_connect_private.start(home, env)
+            if case['probe'] == 'deckpass-private-cli':
+                import deckpass_private
+                deckpass_fixture = deckpass_private.start(home, env)
             backend = subprocess.Popen([str(loader)], env=env, stdout=log, stderr=log, start_new_session=True)
             processes.append(backend)
             discovered = until_ready(lambda: rpc('loader/get_plugins'), 'published Decky plugin discovery',
@@ -870,6 +891,23 @@ def main():
                         'expected KDE Connect forced SIGKILL after IPC peer EOF; negative only'
                         if args.reproduce_kde_connect_ipc_regression
                         else 'private xprop/kdeconnectd stub DISPLAY=:0/:1 switching, preserved user HOME/XDG_RUNTIME_DIR/D-Bus, disable and unload SIGTERM cleanup, post-EOF RPC, restart and two strict stops; real kdeconnectd/pairing/Gamescope/UI/Frame unverified'
+                    )
+            elif case['probe'] == 'deckpass-private-cli':
+                if args.reproduce_deckpass_runtime_regression:
+                    report['deckPassRuntime'] = deckpass_private.probe_original_runtime_failure(
+                        backend, log, current, deckpass_fixture)
+                    report['result'] = (
+                        'expected original DeckPass wiped-env flatpak failure and idle close AttributeError; negative only'
+                    )
+                else:
+                    report['deckPassRuntime'] = deckpass_private.probe(
+                        backend, loader, env, log, processes, current, rpc, until_ready,
+                        deckpass_fixture, plugin, discovered, data,
+                        ipc_regression=args.reproduce_deckpass_ipc_regression)
+                    report['result'] = (
+                        'expected DeckPass forced SIGKILL after IPC peer EOF skipping _unload; negative only'
+                        if args.reproduce_deckpass_ipc_regression
+                        else 'private flatpak/keepassxc-cli stub env preservation, empty-token and injection rejection, CRUD, active-vault and idle unload SIGTERM cleanup, post-EOF RPC, restart and two strict stops; real Flatpak/KeePassXC/clipboard/UI/Frame unverified'
                     )
             elif case['probe'] == 'screensaver-private-bus':
                 import screensaver_private
