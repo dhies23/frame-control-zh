@@ -2618,31 +2618,57 @@ for (const action of ['Install', 'Update', 'Remove']) {
   };
 }
 let headsetInfo = null;
+let headsetBusy = false, headsetStatusRequest = 0;
 async function loadHeadsetPanel() {
+  const request = ++headsetStatusRequest;
+  headsetInfo = null;
+  $('headsetState').textContent = 'Checking…';
+  headsetButtons();
   try {
-    const d = headsetInfo = await api('/api/headset');
+    const d = await api('/api/headset');
+    if (request !== headsetStatusRequest) return;
+    if (!d || typeof d.managed !== 'boolean' || typeof d.running !== 'boolean')
+      throw Error('Headset panel status is incomplete');
+    headsetInfo = d;
     $('headsetState').textContent = `${d.os || 'Unknown Frame OS'} · ${d.arch} · ${d.managed ? `installed ${d.version || ''}` : 'not installed'} · ${d.running ? d.overlayRegistered ? 'SteamVR panel registered' : 'service starting' : 'stopped'}`;
-  } catch (error) { headsetInfo = null; $('headsetState').textContent = error.message; }
+  } catch (error) {
+    if (request !== headsetStatusRequest) return;
+    headsetInfo = null;
+    $('headsetState').textContent = error.message;
+  }
   headsetButtons();
 }
 function headsetButtons() {
   const d = headsetInfo, ready = !!d && d.arch === 'aarch64' && d.variant === 'vr';
-  $('headsetInstall').disabled = !ready || !!d.managed || !$('headsetAck').checked;
-  $('headsetUpdate').disabled = !ready || !d.managed || !$('headsetAck').checked;
-  $('headsetOpen').disabled = !ready || !d.managed;
-  $('headsetClose').disabled = !d?.running;
-  $('headsetRemove').disabled = !d?.managed || !$('headsetAck').checked;
+  const locked = headsetBusy, ack = $('headsetAck').checked;
+  $('headsetInstall').disabled = locked || !ready || !!d.managed || !ack;
+  $('headsetUpdate').disabled = locked || !ready || !d.managed || !ack;
+  $('headsetOpen').disabled = locked || !ready || !d.managed;
+  $('headsetClose').disabled = locked || !d?.managed || !d?.running;
+  $('headsetRemove').disabled = locked || !d?.managed || !ack;
 }
 $('headsetAck').onchange = headsetButtons;
 $('headsetRefresh').onclick = loadHeadsetPanel;
 for (const action of ['Install', 'Update', 'Open', 'Close', 'Remove']) {
   $(`headset${action}`).onclick = async () => {
-    if (!headsetInfo) return;
+    if (headsetBusy || !headsetInfo) return;
     const verb = action.toLowerCase();
+    const ready = headsetInfo.arch === 'aarch64' && headsetInfo.variant === 'vr';
+    const ack = $('headsetAck').checked;
+    if ((verb === 'install' && (!ready || headsetInfo.managed || !ack)) ||
+        (verb === 'update' && (!ready || !headsetInfo.managed || !ack)) ||
+        (verb === 'open' && (!ready || !headsetInfo.managed)) ||
+        (verb === 'close' && (!headsetInfo.managed || !headsetInfo.running)) ||
+        (verb === 'remove' && (!headsetInfo.managed || !ack))) return;
     if (verb === 'remove' && !confirm('Remove the Frame Control headset user service and app bundle? Your extensions and browser profile will stay.')) return;
-    await runJob(`${action} Frame Control in VR`, 'headset-panel',
-      () => api('/api/headset', {action:verb, acknowledged:$('headsetAck').checked}));
-    loadHeadsetPanel();
+    headsetBusy = true; headsetButtons();
+    try {
+      await runJob(`${action} Frame Control in VR`, 'headset-panel',
+        () => api('/api/headset', {action:verb, acknowledged:ack}));
+    } finally {
+      await loadHeadsetPanel();
+      headsetBusy = false; headsetButtons();
+    }
   };
 }
 window.addEventListener('message', event => {
