@@ -14,7 +14,7 @@ const context=vm.createContext({document:{getElementById:el},location:{hash:'',p
   setInterval:()=>1,clearInterval(){},console,
   fetch:(path,options)=>new Promise(resolve=>requests.push({path,body:JSON.parse(options.body),resolve}))});
 vm.runInContext(source,context);
-const open=()=>vm.runInContext('deckyState={managed:true,running:true,plugins:[{storeId:131,sha256:"'+'a'.repeat(64)+'",version:"1.1.0"}]};openFrameyPanel(131,"Downloads")',context);
+const open=()=>vm.runInContext('deckyState={running:true,plugins:[{storeId:131,sha256:"'+'a'.repeat(64)+'",version:"1.1.0"}]};openFrameyPanel(131,"Downloads")',context);
 open();
 const send=(data,origin=frame)=>listeners.find(x=>x.type==='message').fn({source:origin,data});
 const session=vm.runInContext('frameySession',context);

@@ -19,7 +19,7 @@ const context=vm.createContext({document:{getElementById:el,createElement:()=>({
   clearInterval(id){intervals.delete(id);},console,
   fetch:(path,options)=>new Promise(resolve=>requests.push({path,body:JSON.parse(options.body),resolve}))});
 vm.runInContext(source,context);
-vm.runInContext('deckyState={managed:true,running:true,plugins:[{storeId:96,sha256:"'+'a'.repeat(64)+'",version:"1"}]};openFrameyPanel(96,"Timer")',context);
+vm.runInContext('deckyState={running:true,plugins:[{storeId:96,sha256:"'+'a'.repeat(64)+'",version:"1"}]};openFrameyPanel(96,"Timer")',context);
 let session=vm.runInContext('frameySession',context);
 const onMessage=listeners.find(x=>x.type==='message').fn;
 const send=(data,origin=frame)=>onMessage({source:origin,data});
@@ -162,7 +162,7 @@ el('frameyScrollUp').onclick();
 assert.equal(replies.length,replyCount);
 
 // Terminal output names survive the production parent unchanged and receipt-bound.
-vm.runInContext('deckyState={managed:true,running:true,plugins:[{storeId:65,sha256:"'+'a'.repeat(64)+'",version:"0.5.3"}]};openFrameyPanel(65,"Decky Terminal")',context);
+vm.runInContext('deckyState={running:true,plugins:[{storeId:65,sha256:"'+'a'.repeat(64)+'",version:"0.5.3"}]};openFrameyPanel(65,"Decky Terminal")',context);
 session=vm.runInContext('frameySession',context);
 const terminalEvent='terminal_output#private-pty';
 const terminalSubscription=send({type:'framey:events',id:90,session,args:[[terminalEvent],0]});

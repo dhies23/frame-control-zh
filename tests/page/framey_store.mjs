@@ -716,8 +716,10 @@ for(const action of ['install','update','remove']){
   assert.equal(get('deckyInstalled').children.length,0);
   assert.ok(storeButtons().every(b=>b.disabled));
 
-  // Unmanaged Decky (even with leftover managed plugin folders or running:true)
-  // must close an open panel, disable Remove/Open/Install/Update, and block retained callbacks.
+  // Unmanaged Decky must disable Remove and store mutations (Install/Update)
+  // and block retained mutation callbacks. When stopped it also closes any open
+  // panel and disables Open panel; when running without a release receipt, Open
+  // panel stays available for receipt-owned plugins while mutations stay locked.
   statusReply={managed:true,running:true,plugins:[installedPlugin]};
   await run('refreshDecky()');
   const retainedOpen=installedButtons().find(b=>b.textContent==='Open panel').onclick;
@@ -725,17 +727,27 @@ for(const action of ['install','update','remove']){
   const retainedUpdate=storeButtons()[0].onclick;
   run('openFrameyPanel(2,"Installed fixture")');
   assert.equal(get('frameyPanel').hidden,false);
-  for(const running of [false,true]){
-    statusReply={managed:false,running,plugins:[installedPlugin]};
-    await run('refreshDecky()');
-    assert.equal(get('frameyPanel').hidden,true,'unmanaged status must close open panel');
-    assert.match(get('deckyState').textContent,/Install it from Frame Control/);
-    assert.ok(installedButtons().every(b=>b.disabled),'unmanaged status must disable Open panel and Remove');
-    assert.ok(storeButtons().every(b=>b.disabled),'unmanaged status must disable store actions');
-    const beforeConfirms=confirms,beforePosts=posts;
-    retainedOpen();await retainedRemove();await retainedUpdate();
-    assert.equal(get('frameyPanel').hidden,true);
-    assert.equal(confirms,beforeConfirms,'retained callbacks must not prompt when unmanaged');
-    assert.equal(posts,beforePosts,'retained callbacks must not post when unmanaged');
-  }
+  statusReply={managed:false,running:false,plugins:[installedPlugin]};
+  await run('refreshDecky()');
+  assert.equal(get('frameyPanel').hidden,true,'stopped unmanaged status must close open panel');
+  assert.match(get('deckyState').textContent,/Install it from Frame Control/);
+  assert.ok(installedButtons().every(b=>b.disabled),'stopped unmanaged status must disable Open panel and Remove');
+  assert.ok(storeButtons().every(b=>b.disabled),'stopped unmanaged status must disable store actions');
+  let beforeConfirms=confirms,beforePosts=posts;
+  retainedOpen();await retainedRemove();await retainedUpdate();
+  assert.equal(get('frameyPanel').hidden,true);
+  assert.equal(confirms,beforeConfirms,'retained callbacks must not prompt when unmanaged');
+  assert.equal(posts,beforePosts,'retained callbacks must not post when unmanaged');
+
+  statusReply={managed:false,running:true,plugins:[installedPlugin]};
+  await run('refreshDecky()');
+  assert.equal(installedButtons().find(b=>b.textContent==='Open panel').disabled,false,
+    'running loader keeps Open panel available for receipt-owned plugins');
+  assert.equal(installedButtons().find(b=>b.textContent==='Remove').disabled,true,
+    'unmanaged running status must keep Remove disabled');
+  assert.ok(storeButtons().every(b=>b.disabled),'unmanaged running status must keep store actions disabled');
+  beforeConfirms=confirms;beforePosts=posts;
+  await retainedRemove();await retainedUpdate();
+  assert.equal(confirms,beforeConfirms,'retained mutations must not prompt when unmanaged');
+  assert.equal(posts,beforePosts,'retained mutations must not post when unmanaged');
 }

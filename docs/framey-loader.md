@@ -392,9 +392,9 @@ While installed status is being refreshed, the headset page clears old
 installed rows and disables store changes. Callbacks retained from those rows
 cannot prompt or submit until a complete status read succeeds. Failed or
 incomplete reads (including a missing managed flag) keep changes blocked; an
-unmanaged loader state also closes any open panel and disables Open panel,
-Remove and store actions, while a successful stopped managed status keeps
-recovery removal available and requires Decky to run for installs and updates.
+unmanaged loader state disables Remove and store actions (while Open panel
+requires Decky to be running), and a successful stopped managed status keeps
+recovery removal available while requiring Decky to run for installs and updates.
 Active store changes and **Check result** polls keep installed controls, store
 actions and **Check result** disabled until the final installed-status refresh
 finishes. These headset-panel guards are tested with synthetic status and job
