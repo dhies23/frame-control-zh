@@ -183,6 +183,28 @@ class MacView:
     def agent_environment(self):
         return {**os.environ, "FRAME_MAC_VIEW_TOKEN": self.token}
 
+    @staticmethod
+    def _reap_agent(proc):
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.wait(5)
+        except subprocess.TimeoutExpired:
+            pass
+        if proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+
     def ensure_agent(self):
         with self.lock:
             if self.agent and self.agent.poll() is None:
@@ -194,22 +216,39 @@ class MacView:
             env = self.agent_environment()
             # The same port as before when restarting, so a running tunnel still
             # fits; otherwise (or if it's gone) whatever the system gives.
+            proc = None
+            m = None
+            line = ""
             for port in dict.fromkeys([self.port or 0, 0]):
-                self.agent = subprocess.Popen([*self.agent_command(), "serve", "--port", str(port), "--page", str(PAGE),
-                                               "--exit-on-eof"], env=env, stdin=subprocess.PIPE,
-                                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                line = self.agent.stdout.readline()
+                candidate = subprocess.Popen([*self.agent_command(), "serve", "--port", str(port), "--page", str(PAGE),
+                                              "--exit-on-eof"], env=env, stdin=subprocess.PIPE,
+                                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                try:
+                    line = candidate.stdout.readline()
+                except Exception:
+                    self._reap_agent(candidate)
+                    self.agent = None
+                    raise
                 m = re.search(r"listening on 127\.0\.0\.1:(\d+)", line)
                 if m:
+                    proc = candidate
                     break
-                self.agent.kill()
+                self._reap_agent(candidate)
             else:
+                self.agent = None
                 raise MacViewError(f"The streaming helper didn't start: {line.strip() or 'no output'}")
-            if self.port != int(m.group(1)):
+            new_port = int(m.group(1))
+            try:
+                threading.Thread(target=proc.stdout.read, daemon=True).start()  # drain
+            except Exception:
+                self._reap_agent(proc)
+                self.agent = None
+                raise
+            if self.port != new_port:
                 self._drop_tunnel()
-            self.port = int(m.group(1))
-            self.track(self.agent)
-            threading.Thread(target=self.agent.stdout.read, daemon=True).start()  # drain
+            self.agent = proc
+            self.port = new_port
+            self.track(proc)
 
     def call(self, path, method="GET", **query):
         """A request to the agent; starts it if needed."""
