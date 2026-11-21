@@ -564,6 +564,41 @@ class Local(unittest.TestCase):
         self.assertEqual([b['name'] for b in listed], ['2026-10-23-120000'])
         self.assertEqual(listed[0]['build'], '20260925.6191901')
 
+    def test_restore_plan_and_restore_survive_android_unavailable_and_deduplicate_ids(self):
+        self.make()
+        self.reset()
+        manifest(self.home, 1234, 'Test Game')
+        (self.home / (USER % 1234)).mkdir(parents=True)
+        with patch.object(android, 'list_apps', side_effect=android.FrameError('Android container is not running')):
+            plan = {p['id']: p for p in backup.restore_plan('2026-10-23-120000')['parts']}
+            self.assertEqual(plan['saves:1234']['status'], 'ok')
+            self.assertEqual(plan['android:org.example.game']['status'], 'unavailable')
+            self.assertEqual(plan['android:org.example.game']['reason'], 'Android container is not running')
+            result = backup.restore(
+                '2026-10-23-120000',
+                ['saves:1234', 'saves:1234', 'android:org.example.game'],
+                confirmed=True,
+            )
+        self.assertEqual([r['id'] for r in result['restored']], ['saves:1234'])
+        self.assertEqual(len(result['skipped']), 1)
+        self.assertEqual(result['skipped'][0]['id'], 'android:org.example.game')
+        self.assertEqual(result['skipped'][0]['reason'], 'Android container is not running')
+        self.assertEqual((self.home / (USER % 1234) / 'AppData/Roaming/Studio/Game/save1.dat').read_bytes(), b'save one')
+
+    def test_failed_android_backup_removes_partial_archive_from_completed_backup(self):
+        def partial_then_fail(pkg, dest):
+            Path(dest).write_bytes(b'partial-android-data')
+            raise android.FrameError('adb stream cut off')
+
+        with patch.object(backup.time, 'strftime', return_value='2026-10-23-120001'), \
+                patch.object(android, 'list_apps',
+                             return_value=[{'package': 'org.example.broken', 'label': 'Broken', 'running': False}]), \
+                patch.object(android, 'backup_data', side_effect=partial_then_fail):
+            result = backup.backup(kinds=['saves', 'android'])
+        folder = Path(result['path'])
+        self.assertFalse((folder / 'android' / 'org.example.broken.tar.gz').exists())
+        self.assertEqual([s['id'] for s in result['skipped']], ['android:org.example.broken'])
+
 
 class Ssh(unittest.TestCase):
     def test_bytes_go_as_input_and_files_as_stdin(self):

@@ -194,6 +194,48 @@ class ConfigBlock(unittest.TestCase):
         self.assertNotIn("frame.local", text)
         self.assertTrue(text.endswith("Host other\n  User me\n"))
 
+    def test_configured_host_preserves_custom_port_on_reconnect(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            saved = fc.SSH_DIR, fc.CONFIG
+            fc.SSH_DIR, fc.CONFIG = Path(d), Path(d) / "config"
+            try:
+                fc.write_config("10.0.0.5", 2222, "deck")
+                self.assertEqual(fc.configured_host(), "10.0.0.5:2222")
+                seen = []
+                with mock.patch.object(fc, "reachable", side_effect=lambda h, p: seen.append((h, p)) or (h, p) == ("10.0.0.5", 2222)), \
+                        mock.patch.object(fc, "say"):
+                    self.assertEqual(fc.pick_host(None), ("10.0.0.5", 2222))
+                self.assertEqual(seen, [("10.0.0.5", 2222)])
+            finally:
+                fc.SSH_DIR, fc.CONFIG = saved
+
+    def test_pick_host_rejects_out_of_range_ports_without_crashing(self):
+        from unittest import mock
+        said = []
+        with mock.patch.object(fc, "say", side_effect=said.append):
+            for bad in ("127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:99999"):
+                self.assertIsNone(fc.pick_host(bad), bad)
+        self.assertEqual(len(said), 3)
+        self.assertTrue(all("1-65535" in line for line in said))
+
+    def test_write_config_cleans_tmp_file_on_oserror(self):
+        import errno
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            saved = fc.SSH_DIR, fc.CONFIG
+            fc.SSH_DIR, fc.CONFIG = Path(d), Path(d) / "config"
+            try:
+                with mock.patch.object(fc.os, "replace", side_effect=OSError(errno.ENOSPC, "no space")):
+                    with self.assertRaises(OSError):
+                        fc.write_config("10.0.0.5", 22, "steamos")
+                leftovers = [p.name for p in Path(d).iterdir() if ".tmp" in p.name]
+                self.assertEqual(leftovers, [])
+            finally:
+                fc.SSH_DIR, fc.CONFIG = saved
+
 
 class MdnsParsers(unittest.TestCase):
     def test_dns_sd(self):

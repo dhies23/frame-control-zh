@@ -353,6 +353,9 @@ def apply_script(plugin_id, digest):
     if plugin_id == 38 and digest == '11b259ad234d0e97cfef4e6a2af3f1edfb0908d5482765af56b86b0a4601c5f3':
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
         return 'FRAMEY_VOLUME_MIXER_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
+    if plugin_id == 58 and digest == '2cc576a7f60751306d690268e227df626e59d3733680ced753de4c116629a9cc':
+        ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
+        return 'FRAMEY_VOLUME_BOOST_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
     if plugin_id == 87 and digest == '5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822':
         source = Path(__file__).with_name('framey_screensaver.py').read_text(encoding='utf-8')
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
@@ -742,6 +745,29 @@ try:
                 main.write_bytes(prefix+original.replace(old,b'    pass  # Preserve configured user HOME and Pulse runtime.'))
                 compat_shims.append('volume-mixer-user-audio')
                 compat_shims.append('volume-mixer-ipc-eof')
+            if (int(plugin_id)==58 and digest=='2cc576a7f60751306d690268e227df626e59d3733680ced753de4c116629a9cc' and folder=='volume-boost'):
+                main=unpacked/'main.py'
+                original=main.read_bytes()
+                if (manifest.get('name')!='Volume Boost' or manifest.get('flags')!=[]
+                        or 'api_version' in manifest
+                        or hashlib.sha256(original).hexdigest()!='ddb7fc5c00cac5a4560819dad597aed4302afafff6c05408566441063f5ae97c'):
+                    raise RuntimeError('Volume Boost manifest or backend differs from pinned archive')
+                old=b"os.environ['XDG_RUNTIME_DIR'] = '/run/user/1000'\r\n"
+                if original.count(old)!=1: raise RuntimeError('Volume Boost environment block differs')
+                ipc=globals().get('FRAMEY_VOLUME_BOOST_IPC_SOURCE')
+                if not isinstance(ipc,str) or not ipc: raise RuntimeError('Missing Volume Boost IPC helper')
+                helper=unpacked/'py_modules/framey_decky_ipc.py'
+                if helper.exists(): raise RuntimeError('Volume Boost IPC helper collides with archive')
+                helper.parent.mkdir(exist_ok=True)
+                compile(ipc,str(helper),'exec')
+                helper.write_text(ipc,encoding='utf-8')
+                prefix=(b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                        b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
+                updated=prefix+original.replace(old,b"os.environ['XDG_RUNTIME_DIR'] = os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}'\r\n")
+                compile(updated,str(main),'exec')
+                main.write_bytes(updated)
+                compat_shims.append('volume-boost-user-audio')
+                compat_shims.append('volume-boost-ipc-eof')
             if (int(plugin_id)==87 and digest=='5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822' and folder=='DeckyInhibitScreenSaver'):
                 main=unpacked/'main.py'
                 original=main.read_bytes()

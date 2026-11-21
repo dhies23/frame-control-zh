@@ -194,6 +194,10 @@ def backup(report=lambda stage, percent=None: None, kinds=KINDS, headset=None):
             try:
                 result = android.backup_data(app['package'], dest)
             except android.FrameError as error:
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
                 skipped.append({'id': part_id, 'label': app['label'], 'reason': str(error)})
                 continue
             entries.append({'id': part_id, 'kind': 'android', 'label': app['label'] + ' (Android app data)',
@@ -271,8 +275,14 @@ def restore_plan(name):
         state = None
         if not archive.is_file():
             state = 'missing'
-        elif _sha256(archive) != part.get('sha256'):
-            state = 'damaged'
+        else:
+            try:
+                digest = _sha256(archive)
+            except OSError:
+                state = 'damaged'
+            else:
+                if digest != part.get('sha256'):
+                    state = 'damaged'
         plans[part['id']] = {'id': part['id'], 'kind': part.get('kind'), 'label': part.get('label'),
                              'bytes': part.get('bytes'), 'status': state}
         if state is None and part['kind'] != 'android':
@@ -286,14 +296,20 @@ def restore_plan(name):
                             new=result.get('new', 0), held=result.get('held', {}))
     android_parts = [p for p in plans.values() if p['kind'] == 'android' and p['status'] is None]
     if android_parts:
-        installed = {a['package']: a for a in android.list_apps()}
-        for plan in android_parts:
-            app = installed.get(plan['id'].split(':', 1)[1])
-            plan['status'] = 'not_installed' if not app else 'running' if app.get('running') else 'ok'
-            if plan['status'] == 'not_installed':
-                plan['reason'] = 'Install the app first, then restore its data'
-            elif plan['status'] == 'ok':
-                plan['replace'] = 1  # the app's whole private data folder, kept beside it
+        apps, android_error = _android_apps()
+        if android_error:
+            for plan in android_parts:
+                plan['status'] = 'unavailable'
+                plan['reason'] = android_error
+        else:
+            installed = {a['package']: a for a in apps}
+            for plan in android_parts:
+                app = installed.get(plan['id'].split(':', 1)[1])
+                plan['status'] = 'not_installed' if not app else 'running' if app.get('running') else 'ok'
+                if plan['status'] == 'not_installed':
+                    plan['reason'] = 'Install the app first, then restore its data'
+                elif plan['status'] == 'ok':
+                    plan['replace'] = 1  # the app's whole private data folder, kept beside it
     for plan in plans.values():
         plan.setdefault('reason', REASONS.get(plan['status']) if plan['status'] != 'ok' else None)
     return {'name': name, 'headset': manifest.get('headset'), 'parts': list(plans.values())}
@@ -305,6 +321,7 @@ def restore(name, ids, confirmed=False, report=lambda stage, percent=None: None)
         raise BackupError('choose what to restore')
     if confirmed is not True:
         raise BackupError('confirm the restore first: it replaces files on the headset')
+    ids = list(dict.fromkeys(ids))
     path, manifest = read_manifest(name)
     by_id = {p['id']: p for p in manifest['parts']}
     plan = {p['id']: p for p in restore_plan(name)['parts']}

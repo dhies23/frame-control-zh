@@ -4204,7 +4204,7 @@
         "https://github.com/saumya-banthia/volume-boost.git"
       ],
       "status": "works",
-      "reason": "Default-sink controls pass in local Chromium through real Decky 3.3.0 ARM64: linked slider/keyboard and numeric writes, separate channels, re-link and reopen, with independent Pulse readback including 125%/150% while muted. Exact original volume/mute restored. Audible output, Bluetooth sinks and worn VR unverified.",
+      "reason": "Default-sink controls passed historically in local Chromium through real Decky 3.3.0 ARM64: linked slider/keyboard and numeric writes, separate channels, re-link and reopen, with independent Pulse readback including 125%/150% while muted. Exact managed installs now preserve actual user XDG_RUNTIME_DIR and repair child IPC EOF shutdown; native AMD64 private default-sink boost/channel readback, post-EOF RPC, restart and two strict stops are covered. Update/reinstall old copies. This adapted backend on ARM64/Frame, audible output, Bluetooth sinks and worn VR remain unverified.",
       "blockInstall": false,
       "verification": [
         "static archive",
@@ -4234,7 +4234,7 @@
         "folder": "volume-boost"
       },
       "backend": "Python",
-      "hardware": "PulseAudio/PipeWire and pactl; hard-coded /run/user/1000",
+      "hardware": "PulseAudio/PipeWire and pactl; managed install preserves user XDG_RUNTIME_DIR",
       "uiSurfaces": [],
       "fakeFrame": {
         "id": 58,
@@ -4247,6 +4247,15 @@
         "evidence": "docs/evidence/framey-audio-backends-2026-10-26.json",
         "audio": "private silent virtual targets",
         "realFrame": false
+      },
+      "requiredShims": [
+        "volume-boost-user-audio",
+        "volume-boost-ipc-eof"
+      ],
+      "volumeBoostRuntime": {
+        "evidence": "docs/evidence/framey-volume-boost-user-runtime-2026-11-21.md",
+        "runtime": "published Decky 3.3.0 native AMD64; private silent PipeWire/Pulse null sinks and D-Bus; actual UID 1100; no PULSE_SERVER override",
+        "realFrameContacted": false
       }
     },
     {
