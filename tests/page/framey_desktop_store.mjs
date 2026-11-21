@@ -242,3 +242,88 @@ await el('deckyStoreList').children[0].children.find(c=>c.textContent==='Install
 assert.equal(bodies.at(-1).action,'install');
 assert.equal(bodies.at(-1).installedSha256,undefined);
 }
+
+// Decky service Install/Update/Remove locks all Decky and store controls through
+// status refresh, validates readiness/managed state, and blocked/root plugins
+// cannot be installed or updated via direct changeDeckyPlugin calls.
+{
+const source=html.slice(html.indexOf('function deckyCompatibilityText('),html.indexOf('let headsetInfo = null;'));
+class Element {
+  constructor(tag='div'){this.tag=tag;this.children=[];this.textContent='';this.checked=true;this.value='';this.disabled=false;this.hidden=false;}
+  append(...nodes){this.children.push(...nodes);}
+  replaceChildren(...nodes){this.children=nodes;this.textContent='';}
+  querySelectorAll(tag){return this.children.flatMap(node=>[
+    ...(node.tag===tag?[node]:[]),...node.querySelectorAll(tag)]);}
+}
+const elements=new Map(),statusQueue=[],serviceJobs=[];
+let servicePosts=0,pluginPosts=0,confirms=0;
+const el=id=>{if(!elements.has(id))elements.set(id,new Element('button'));return elements.get(id);};
+const ctx=vm.createContext({$:el,document:{createElement:tag=>new Element(tag)},crypto:webcrypto,
+  confirm:()=>{confirms++;return true;},
+  runJob:(_title,kind,send)=>{
+    if(kind==='decky'){servicePosts++;return new Promise((resolve,reject)=>serviceJobs.push({resolve,reject,send}));}
+    pluginPosts++;return send();
+  },
+  api:(path,body)=>{
+    if(path==='/api/decky'&&!body)return new Promise((resolve,reject)=>statusQueue.push({resolve,reject}));
+    if(path==='/api/decky'&&body)return Promise.resolve({job:'decky-job'});
+    if(path==='/api/decky/plugin')return Promise.resolve({job:body.requestId});
+    throw Error(`unexpected ${path}`);
+  }});
+vm.runInContext(source,ctx);
+const managedState=(overrides={})=>({managed:true,running:true,arch:'aarch64',variant:'vr',cef:true,upstreamInstall:false,
+  plugins:[{storeId:2,name:'Plugin',version:'1',sha256:'a'.repeat(64)}],upstreamPlugins:[],...overrides});
+const load=async overrides=>{
+  const p=vm.runInContext('loadDecky()',ctx);
+  statusQueue.shift().resolve(managedState(overrides));
+  await p;
+};
+await load();
+vm.runInContext('deckyCatalog=[{id:2,name:"Plugin",version:"2",sha256:"d".repeat(64),root:false}];showDeckyStore()',ctx);
+
+// Direct/retained calls on root or blocked plugins must not install or update.
+await vm.runInContext('changeDeckyPlugin("install",{id:9,name:"Root",sha256:"'+"c".repeat(64)+'",root:true})',ctx);
+await vm.runInContext('changeDeckyPlugin("update",{id:2,name:"Blocked",sha256:"'+"d".repeat(64)+'",compatibility:{blockInstall:true,reason:"Blocked"}})',ctx);
+assert.equal(pluginPosts,0);assert.equal(confirms,0);
+
+// Invalid service transitions (e.g. Install while already managed) must not post.
+await el('deckyInstall').onclick();
+assert.equal(servicePosts,0);
+
+// Update Decky Loader locks loader buttons, managed Remove buttons and store buttons
+// through both runJob and the trailing loadDecky() status refresh.
+const updating=el('deckyUpdate').onclick();
+assert.equal(servicePosts,1);
+assert.equal(el('deckyInstall').disabled,true);
+assert.equal(el('deckyUpdate').disabled,true);
+assert.equal(el('deckyRemove').disabled,true);
+assert.ok(el('deckyManagedList').querySelectorAll('button').every(b=>b.disabled),'managed Remove locked during Decky update');
+assert.ok(el('deckyStoreList').querySelectorAll('button').every(b=>b.disabled),'store buttons locked during Decky update');
+await el('deckyUpdate').onclick();
+await el('deckyRemove').onclick();
+await vm.runInContext('changeDeckyPlugin("update",{id:2,name:"Plugin",sha256:"'+"d".repeat(64)+'"})',ctx);
+assert.equal(servicePosts,1,'second Decky service click blocked while busy');
+assert.equal(pluginPosts,0,'plugin change blocked while Decky service job is busy');
+
+// Lock persists after runJob resolves until the trailing loadDecky() finishes.
+serviceJobs.shift().resolve();
+await new Promise(resolve=>setImmediate(resolve));
+assert.equal(statusQueue.length,1,'trailing loadDecky started after service job');
+assert.equal(el('deckyUpdate').disabled,true,'stays locked during trailing status refresh');
+statusQueue.shift().resolve(managedState());
+await updating;
+assert.equal(el('deckyUpdate').disabled,false,'unlocks after trailing status refresh');
+assert.equal(el('deckyRemove').disabled,false);
+assert.ok(el('deckyManagedList').querySelectorAll('button').every(b=>!b.disabled));
+assert.ok(el('deckyStoreList').querySelectorAll('button').every(b=>!b.disabled));
+
+// A failed service runJob still refreshes status and releases the lock.
+const failingRemove=el('deckyRemove').onclick();
+assert.equal(servicePosts,2);
+assert.equal(el('deckyRemove').disabled,true);
+serviceJobs.shift().reject(Error('service stop failed'));
+await new Promise(resolve=>setImmediate(resolve));
+statusQueue.shift().resolve(managedState());
+await assert.rejects(failingRemove,/service stop failed/);
+assert.equal(el('deckyRemove').disabled,false,'lock released after failed service job');
+}
