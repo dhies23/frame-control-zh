@@ -205,6 +205,94 @@ class Helpers(unittest.TestCase):
         self.assertEqual(tried, [["-o", "HostName=10.86.200.233"], []])
         self.assertEqual(mv.route, "network")
 
+    def test_ensure_agent_reaps_failed_candidates_and_clears_state(self):
+        tracked = []
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame", track=tracked.append)
+        mv.unavailable = lambda: None
+        mv.build = lambda: None
+        mv.port = 47000
+        old_tunnel = mock.Mock(poll=lambda: None)
+        mv.tunnel = old_tunnel
+
+        class FakeProc:
+            def __init__(self, line=None, read_error=None):
+                self.stdin = io.StringIO()
+                self.stdout = mock.Mock()
+                if read_error is not None:
+                    self.stdout.readline.side_effect = read_error
+                else:
+                    self.stdout.readline.return_value = line
+                self.stdout.read.return_value = ""
+                self.stdout.closed = False
+                def close_out():
+                    self.stdout.closed = True
+                self.stdout.close.side_effect = close_out
+                self.killed = False
+                self.waited = False
+
+            def poll(self):
+                return -9 if self.killed else None
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                self.waited = True
+                return -9
+
+        # 1. Non-matching banner on both port attempts: kill, wait, close pipes, clear agent.
+        bad_procs = [FakeProc(line="bind error\n"), FakeProc(line="still failed\n")]
+        with mock.patch.object(frame_macview.subprocess, "Popen", side_effect=bad_procs):
+            with self.assertRaises(frame_macview.MacViewError):
+                mv.ensure_agent()
+        for p in bad_procs:
+            self.assertTrue(p.killed)
+            self.assertTrue(p.waited)
+            self.assertTrue(p.stdin.closed)
+            self.assertTrue(p.stdout.closed)
+        self.assertIsNone(mv.agent)
+        self.assertEqual(mv.port, 47000)
+        self.assertIs(mv.tunnel, old_tunnel)
+        self.assertEqual(tracked, [])
+
+        # 2. Exception during readline(): reap live process and clear agent.
+        err_proc = FakeProc(read_error=OSError("pipe read failed"))
+        with mock.patch.object(frame_macview.subprocess, "Popen", return_value=err_proc):
+            with self.assertRaises(OSError):
+                mv.ensure_agent()
+        self.assertTrue(err_proc.killed)
+        self.assertTrue(err_proc.waited)
+        self.assertTrue(err_proc.stdin.closed)
+        self.assertTrue(err_proc.stdout.closed)
+        self.assertIsNone(mv.agent)
+        self.assertEqual(tracked, [])
+
+        # 3. Exception starting stdout drain thread: reap live process, keep old tunnel/port, do not track.
+        drain_fail_proc = FakeProc(line="listening on 127.0.0.1:47111\n")
+        with mock.patch.object(frame_macview.subprocess, "Popen", return_value=drain_fail_proc), \
+                mock.patch.object(frame_macview.threading.Thread, "start", side_effect=RuntimeError("thread limit")):
+            with self.assertRaises(RuntimeError):
+                mv.ensure_agent()
+        self.assertTrue(drain_fail_proc.killed)
+        self.assertTrue(drain_fail_proc.waited)
+        self.assertTrue(drain_fail_proc.stdin.closed)
+        self.assertTrue(drain_fail_proc.stdout.closed)
+        self.assertIsNone(mv.agent)
+        self.assertEqual(mv.port, 47000)
+        self.assertIs(mv.tunnel, old_tunnel)
+        old_tunnel.terminate.assert_not_called()
+        self.assertEqual(tracked, [])
+
+        # 4. Subsequent clean startup succeeds and updates port/agent/tunnel/tracked.
+        good_proc = FakeProc(line="listening on 127.0.0.1:47222\n")
+        with mock.patch.object(frame_macview.subprocess, "Popen", return_value=good_proc):
+            mv.ensure_agent()
+        self.assertIs(mv.agent, good_proc)
+        self.assertEqual(mv.port, 47222)
+        self.assertIsNone(mv.tunnel)
+        old_tunnel.terminate.assert_called_once_with()
+        self.assertEqual(tracked, [good_proc])
+
 
 class WS:
     """A minimal WebSocket client (masked frames out, plain frames in)."""
