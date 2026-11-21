@@ -166,7 +166,10 @@ def split_port(arg):
     """"host:2222" -> ("host", 2222); anything else (IPv6 too) keeps port 22."""
     host, sep, port = arg.rpartition(":")
     if sep and port.isdigit() and ":" not in host:
-        return host, int(port)
+        num = int(port)
+        if 1 <= num <= 65535:
+            return host, num
+        raise ValueError(f"port must be 1-65535, not {port}")
     return arg, 22
 
 
@@ -253,7 +256,11 @@ def pick_host(arg):
     for cand in candidates:
         if not cand:
             continue
-        host, port = split_port(cand)
+        try:
+            host, port = split_port(cand)
+        except ValueError as e:
+            say(f"  - {cand}: {e}")
+            continue
         if reachable(host, port):
             return host, port
         say(f"  - {cand}: not resolvable, or ports {port} and {DEVKIT_PORT} closed")
@@ -337,23 +344,26 @@ def _write_config(host, port, user):
             kept.append(line)
     block = config_block(host, port, user)
     tmp = CONFIG.with_name(f"config.frame-control.{os.getpid()}.tmp")
-    tmp.write_text("\n".join(block + kept) + "\n", encoding="utf-8")
-    if not frame_host.make_private(tmp):
-        say("    couldn't make ~/.ssh/config private; if ssh says \"Bad owner or permissions\", "
-            "Frame Control repairs it when it next connects")
-    # On Windows a running ssh.exe (Frame Control's own, say) keeps the config open
-    # and locked, so the swap can fail for a moment; keep trying for a while.
-    for attempt in range(60):
-        try:
-            os.replace(tmp, CONFIG)
-            return
-        except PermissionError:
-            if attempt == 0:
-                say("    ~/.ssh/config is in use by another ssh; waiting for it...")
-            time.sleep(0.5)
-    tmp.unlink(missing_ok=True)
-    raise SystemExit("~/.ssh/config stayed locked by another program. Quit Frame Control "
-                     "and any ssh windows, then run the setup again.")
+    try:
+        tmp.write_text("\n".join(block + kept) + "\n", encoding="utf-8")
+        if not frame_host.make_private(tmp):
+            say("    couldn't make ~/.ssh/config private; if ssh says \"Bad owner or permissions\", "
+                "Frame Control repairs it when it next connects")
+        # On Windows a running ssh.exe (Frame Control's own, say) keeps the config open
+        # and locked, so the swap can fail for a moment; keep trying for a while.
+        for attempt in range(60):
+            try:
+                os.replace(tmp, CONFIG)
+                return
+            except PermissionError:
+                if attempt == 0:
+                    say("    ~/.ssh/config is in use by another ssh; waiting for it...")
+                time.sleep(0.5)
+        raise SystemExit("~/.ssh/config stayed locked by another program. Quit Frame Control "
+                         "and any ssh windows, then run the setup again.")
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def key_login_works():
@@ -367,8 +377,12 @@ def configured_user():
     """The User in our managed block, so a re-run keeps one the headset named earlier."""
     if not CONFIG.exists():
         return None
+    try:
+        lines = CONFIG.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
     inside = False
-    for line in CONFIG.read_text(encoding="utf-8").splitlines():
+    for line in lines:
         if line in (BEGIN, END):
             inside = line == BEGIN
         elif inside and line.startswith("  User "):
@@ -378,17 +392,30 @@ def configured_user():
 
 
 def configured_host():
-    """Reuse the last configured route before trying a deprecated .local name."""
+    """Reuse the last configured route (including custom port) before trying .local."""
     if not CONFIG.exists():
         return None
-    inside = False
-    for line in CONFIG.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = CONFIG.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    inside, host, port = False, None, None
+    for line in lines:
         if line in (BEGIN, END):
             inside = line == BEGIN
         elif inside and line.startswith("  HostName "):
-            host = line[11:].strip()
-            return host if HOST_RE.fullmatch(host) else None
-    return None
+            cand = line[11:].strip()
+            if HOST_RE.fullmatch(cand):
+                host = cand
+        elif inside and line.startswith("  Port "):
+            cand = line[7:].strip()
+            if cand.isdigit() and 1 <= int(cand) <= 65535:
+                port = int(cand)
+    if not host:
+        return None
+    if port and port != 22 and ":" not in host:
+        return f"{host}:{port}"
+    return host
 
 
 def pair_with_devkit(host, port, user):
