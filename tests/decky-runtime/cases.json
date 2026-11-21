@@ -363,5 +363,13 @@
       "kde-connect-ipc-eof"
     ],
     "probe": "kde-connect-private-daemon"
+  },
+  {
+    "id": 121,
+    "shim": "deckpass-user-runtime",
+    "additionalShims": [
+      "deckpass-ipc-eof"
+    ],
+    "probe": "deckpass-private-cli"
   }
 ]

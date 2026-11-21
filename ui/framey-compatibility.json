@@ -11026,12 +11026,17 @@
         "https://github.com/aarron-lee/SimpleDeckyTDP"
       ],
       "status": "partial",
-      "reason": "Initializer succeeds; KeePass Flatpak discovery and secrets integration were not exercised.",
+      "reason": "Initializer succeeds. Exact managed 1.1.1 installs preserve the active user environment (HOME, PATH, XDG_RUNTIME_DIR, XDG_DATA_HOME, D-Bus) while clearing LD_LIBRARY_PATH for Flatpak/KeePassXC CLI calls, initialize KeypassCli.process so idle unload does not error, reject empty security tokens and newline/NUL CLI input injection, fix create_database() tuple decode errors, terminate and reap the vault child on close/_unload, and repair Decky 3.3.0 child IPC EOF shutdown; isolated AMD64 private flatpak/keepassxc-cli stub open/list/show/create/edit/remove/unload/post-EOF RPC, restart and two strict stops are covered. Update/reinstall old copies. Real KeePassXC Flatpak installation, live KDBX vaults on ARM64 Frame, clipboard integration and worn VR remain unverified.",
+      "requiredShims": [
+        "deckpass-user-runtime",
+        "deckpass-ipc-eof"
+      ],
       "blockInstall": false,
       "verification": [
         "static archive",
         "local browser",
-        "fake-Frame"
+        "fake-Frame",
+        "isolated Linux backend"
       ],
       "browser": {
         "id": 121,
