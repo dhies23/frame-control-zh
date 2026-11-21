@@ -375,6 +375,8 @@ def restore(part, stamp, source):
                 if not member.isfile() or not safe_rel(member.name) or member.name in names:
                     raise ValueError('backup has an unsafe, duplicate or non-file entry: %r' % member.name[:200])
                 names.add(member.name)
+                if member.size < 0 or member.size > MAX_FILE:
+                    raise ValueError('backup file is too big')
                 total += member.size
                 if len(names) > MAX_FILES or total > MAX_PART:
                     raise ValueError('backup part is too big')
@@ -392,21 +394,29 @@ def restore(part, stamp, source):
                 target = HOME / member.name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 part_file = target.parent / ('.frame-restore-%d.part' % os.getpid())
-                with archive.extractfile(member) as src, open(str(part_file), 'wb') as dst:
-                    shutil.copyfileobj(src, dst, 1024 * 1024)
-                os.chmod(str(part_file), (member.mode & 0o755) | 0o600)
-                os.utime(str(part_file), (member.mtime, member.mtime))
-                if target.exists():
-                    if _sha256(target) == _sha256(part_file):
-                        os.unlink(str(part_file))
-                        held['same'] = held.get('same', 0) + 1
-                        continue
-                    keep_copy = previous / member.name
-                    keep_copy.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(str(target), str(keep_copy))
-                    replaced.append(member.name)
-                os.replace(str(part_file), str(target))
-                written.append(member.name)
+                moved = False
+                try:
+                    with archive.extractfile(member) as src, open(str(part_file), 'wb') as dst:
+                        shutil.copyfileobj(src, dst, 1024 * 1024)
+                    os.chmod(str(part_file), (member.mode & 0o755) | 0o600)
+                    os.utime(str(part_file), (member.mtime, member.mtime))
+                    if target.exists():
+                        if _sha256(target) == _sha256(part_file):
+                            held['same'] = held.get('same', 0) + 1
+                            continue
+                        keep_copy = previous / member.name
+                        keep_copy.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(str(target), str(keep_copy))
+                        replaced.append(member.name)
+                    os.replace(str(part_file), str(target))
+                    moved = True
+                    written.append(member.name)
+                finally:
+                    if not moved:
+                        try:
+                            os.unlink(str(part_file))
+                        except OSError:
+                            pass
     return {'id': part, 'written': len(written), 'replaced': len(replaced), 'held': held,
             'previous': (PREVIOUS + '/' + stamp) if replaced else None}
 
@@ -462,9 +472,12 @@ def session():
             text = Path(path).read_text(errors='replace')
         except OSError:
             continue
-        m = re.search(r'^\s*Session\s*=\s*(\S+)', text, re.M)
-        conf, configured = path, (m.group(1) if m else None)
-        break
+        if conf is None:
+            conf = path
+        m = re.search(r'^[ \t]*Session[ \t]*=[ \t]*(\S*)', text, re.M)
+        if m:
+            conf, configured = path, (m.group(1) or None)
+            break
     selector = next((s for s in ('steamosctl', 'holo-session-select', 'steamos-session-select') if shutil.which(s)), None)
     # On the Frame gamescope's process is named gamescope-wl (seen on build 20261015.6141207),
     # under the start-gamescope-session script.
