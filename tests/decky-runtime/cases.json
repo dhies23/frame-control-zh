@@ -58,6 +58,14 @@
     ]
   },
   {
+    "id": 58,
+    "shim": "volume-boost-user-audio",
+    "probe": "volume-boost-private-audio",
+    "additionalShims": [
+      "volume-boost-ipc-eof"
+    ]
+  },
+  {
     "id": 87,
     "shim": "screensaver-user-bus",
     "additionalShims": [
