@@ -173,3 +173,60 @@ assert.deepEqual(Array.from(requests.at(-1).body.events),[terminalEvent]);
 requests.at(-1).resolve({ok:true,json:async()=>({events:[{event:terminalEvent,args:['private output']}],cursor:1})});
 await terminalSubscription;
 assert.equal(replies.at(-1).result.events[0].event,terminalEvent);
+
+// Closing backend event listeners must not tear down active running-app or
+// downloads subscriptions in the same open panel.
+vm.runInContext('deckyState={running:true,plugins:[{storeId:131,sha256:"'+'b'.repeat(64)+'",version:"1.1.0"}]};openFrameyPanel(131,"Download All")',context);
+session=vm.runInContext('frameySession',context);
+const dlRead=send({type:'framey:downloads',id:100,session,method:'read',args:[]});
+requests.at(-1).resolve({ok:true,json:async()=>({result:{revision:1,queue:[]}})});
+await dlRead;
+const runRead=send({type:'framey:running',id:101,session,args:[0]});
+requests.at(-1).resolve({ok:true,json:async()=>({result:{apps:[],events:[],cursor:0}})});
+await runRead;
+const evtRead=send({type:'framey:events',id:102,session,args:[['progress'],0]});
+requests.at(-1).resolve({ok:true,json:async()=>({events:[],cursor:0})});
+await evtRead;
+const beforeEventsClose=requests.length;
+await send({type:'framey:events:close',session});
+assert.equal(requests.length,beforeEventsClose+1,'events:close sends only the events teardown');
+assert.equal(requests.at(-1).path,'/api/framey/events');
+assert.equal(requests.at(-1).body.events.length,0);
+assert.equal(vm.runInContext('frameyEventsActive',context),false);
+assert.equal(vm.runInContext('frameyRunningActive',context),true,'running subscription stays active');
+assert.equal(vm.runInContext('frameyDownloadsActive',context),true,'downloads subscription stays active');
+await send({type:'framey:events:close',session});
+assert.equal(requests.length,beforeEventsClose+1,'repeated events:close is a no-op');
+el('frameyClose').onclick();
+const closedPaths=requests.slice(beforeEventsClose+1).map(r=>r.path).sort();
+assert.deepEqual(closedPaths,['/api/framey/downloads','/api/framey/running'],
+  'closing the panel still tears down remaining running and downloads subscriptions');
+
+// Stale load timeouts must be cancelled on reopen, ready, error and close so
+// an earlier open of the same plugin cannot mark its replacement failed.
+vm.runInContext('openFrameyPanel(131,"Download All")',context);
+const firstLoadTimer=nextTimer;
+const firstLoadCallback=timeouts.get(firstLoadTimer);
+assert.equal(typeof firstLoadCallback,'function');
+vm.runInContext('openFrameyPanel(131,"Download All")',context);
+const secondLoadTimer=nextTimer;
+assert.equal(timeouts.has(firstLoadTimer),false,'reopening cancels previous load timer');
+assert.equal(timeouts.has(secondLoadTimer),true);
+firstLoadCallback();
+assert.equal(el('frameyPanelStatus').textContent,'Loading plugin panel…',
+  'a stale timer callback for the same plugin ID must not overwrite the new session');
+session=vm.runInContext('frameySession',context);
+await send({type:'framey:ready',session});
+assert.equal(timeouts.has(secondLoadTimer),false,'framey:ready cancels active load timer');
+vm.runInContext('openFrameyPanel(131,"Download All")',context);
+const errorLoadTimer=nextTimer;
+session=vm.runInContext('frameySession',context);
+await send({type:'framey:error',session,message:'boom'});
+assert.equal(timeouts.has(errorLoadTimer),false,'framey:error cancels active load timer');
+vm.runInContext('openFrameyPanel(131,"Download All")',context);
+const closeLoadTimer=nextTimer;
+vm.runInContext('frameyCacheFallback.set(131,"{}");showFrameyCacheStatus()',context);
+assert.equal(el('frameyCacheWarning').hidden,false);
+el('frameyClose').onclick();
+assert.equal(timeouts.has(closeLoadTimer),false,'closing the panel cancels active load timer');
+assert.equal(el('frameyCacheWarning').hidden,true,'closing the panel hides the cache warning');
