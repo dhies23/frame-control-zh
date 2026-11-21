@@ -324,6 +324,14 @@ An explicit HTTP rejection before the request was accepted releases the request;
 a terminal job error also releases it after status refresh. These desktop paths
 are tested with synthetic API replies and real DOM controls, not live installs.
 
+Pause Games 1.0.3 installs the shared child IPC EOF repair while preserving all
+published process-control methods and other archive files. Existing copies need
+Update or reinstall. Local AMD64 checks private settings and exclusions, RPC
+after peer disconnect, restart persistence and two clean parent-only stops;
+restoring the published backend reproduces a forced kill after the same EOF.
+Actual game pausing, automatic pause, suspend integration and worn VR remain
+unverified/unsupported. Fresh hosted architecture qualification is pending.
+
 Network Sentinel 1.0.4 installs a child IPC EOF repair while preserving its
 original monitoring and unload code. Existing managed copies need Update or
 reinstall to receive it. The isolated runtime gate requires a settings RPC after

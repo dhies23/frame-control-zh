@@ -111,6 +111,7 @@ def main():
     parser.add_argument('--reproduce-deckyparty-unload-regression', action='store_true')
     parser.add_argument('--reproduce-storage-cleaner-unload-regression', action='store_true')
     parser.add_argument('--reproduce-notebook-unload-regression', action='store_true')
+    parser.add_argument('--reproduce-pause-games-unload-regression', action='store_true')
     args = parser.parse_args()
     if args.terminal_browser_candidate:
         assert args.terminal_candidate
@@ -156,6 +157,11 @@ def main():
         capture_output=True, text=True, env=env, timeout=30)
     assert install.returncode == 0, install.stderr
     plugin = base/'plugins'/record['folder']
+    if args.reproduce_pause_games_unload_regression:
+        assert record['id'] == 13
+        with zipfile.ZipFile(io.BytesIO(data)) as original:
+            (plugin/'main.py').write_bytes(original.read(record['folder']+'/main.py'))
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
     if args.reproduce_notebook_unload_regression:
         assert record['id'] == 19
         with zipfile.ZipFile(io.BytesIO(data)) as original:
@@ -564,7 +570,8 @@ def main():
     processes = []
     report = {'id': record['id'], 'name': record['name'], 'version': record['version'],
               'sha256': record['sha256'],
-              'shim': None if (args.reproduce_alarme_pause_regression or args.reproduce_nonsteam_path_regression) else case['shim'], 'calls': []}
+              'shim': None if (args.reproduce_alarme_pause_regression or args.reproduce_nonsteam_path_regression
+                               or args.reproduce_pause_games_unload_regression) else case['shim'], 'calls': []}
     if candidate is not None:
         report['candidate'] = candidate
     with (home/'runtime.log').open('w+') as log:
@@ -2569,6 +2576,19 @@ def main():
                     'byte preservation, original unload hook and restart passed; '
                     'real Steam saves, automatic triggers, Frame and VR unverified')
             elif case['probe'] == 'toggle-settings':
+                prefix = (b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                          b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
+                with zipfile.ZipFile(io.BytesIO(data)) as original:
+                    for entry in original.infolist():
+                        if entry.is_dir():
+                            continue
+                        relative = entry.filename.split('/', 1)[1]
+                        expected = original.read(entry)
+                        if relative == 'main.py' and not args.reproduce_pause_games_unload_regression:
+                            expected = prefix+expected
+                        assert (plugin/relative).read_bytes() == expected, relative
+                report['originalArchiveFilesPreserved'] = True
+
                 def call(method, *values):
                     result = rpc('loader/call_plugin_method', record['name'], method, *values)
                     report['calls'].append({'method': method, 'result': result})
@@ -2585,7 +2605,14 @@ def main():
                 assert call('load_settings')['noAutoPauseSet'] == []
                 settings = json.loads((base/'settings'/record['folder']/'settings.json').read_text())
                 assert settings['autoPause'] is True and settings['noAutoPauseSet'] == []
-                report['result'] = 'discovery and Toggle-backed private settings persistence passed; no process actions'
+                from pause_games_private import probe
+                report['pauseGamesLifecycle'] = probe(backend, loader, env, log, processes, call, rpc,
+                    until_ready, base/'settings'/record['folder']/'settings.json',
+                    regression=args.reproduce_pause_games_unload_regression)
+                report['result'] = ('expected original child IPC forced-kill shutdown; negative only'
+                    if args.reproduce_pause_games_unload_regression else
+                    'private settings/exclusions, RPC after peer EOF, restart persistence and two '
+                    'clean parent-only stops passed; no process actions, Frame or VR test')
             elif case['probe'] == 'timer-lifecycle':
                 from timer_lifecycle import probe
 
