@@ -141,6 +141,7 @@ def main():
               'tests/decky-runtime/mangopeel.py',
               'tests/framey_official.py', 'ui/frame_decky_store.py',
               'tests/decky-runtime/playtime_private.py',
+              'tests/decky-runtime/mixer_private.py',
               'tests/decky-runtime/ludusavi_private.py',
               'tests/decky-runtime/notebook_pages.py',
               'tests/decky-runtime/protondb_private.py',
@@ -170,6 +171,7 @@ def main():
                 (plugin_id, None, negative) for plugin_id, negative in [
                     (13, '--reproduce-pause-games-unload-regression'),
                     (66, '--reproduce-playtime-unload-regression'),
+                    (144, '--reproduce-mixer-unload-regression'),
                     (19, '--reproduce-notebook-unload-regression'),
                     (23, '--reproduce-animation-unload-regression'),
                     (143, '--reproduce-desktop-apps-unload-regression'),

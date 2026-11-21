@@ -349,6 +349,17 @@ peer disconnect, the original unload save, restart persistence and two clean
 parent-only stops; a negative control restores the previous managed backend.
 External network quality, the real headset and worn VR remain unverified.
 
+Mixer 0.1.0 installs the shared child IPC EOF repair while preserving its
+original backend body and all other archive files. Existing copies need Update
+or reinstall. Local AMD64 Decky 3.3.0 probes run under UID 1100 without a
+`PULSE_SERVER` override against private silent PipeWire/WirePlumber streams and
+verify per-stream volume readback, invalid regex rejection, filter and boost
+limit persistence across restart, `reset_volumes`, post-EOF RPC and two strict
+parent-only stops; restoring the published backend reproduces a forced
+`SIGKILL` after peer EOF. Internal audio nodes, audible output, Bluetooth
+playback, adapted ARM64/Frame execution and worn VR remain unverified; see
+[the native evidence](evidence/framey-mixer-child-ipc-2026-11-21.md).
+
 DeckyFileServer 1.2.0 also installs the child IPC EOF repair. Its managed
 backend, HTTPS helper and original unload hook are preserved; existing copies
 need Update or reinstall. The native runtime gate closes a private IPC peer,

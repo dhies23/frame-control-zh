@@ -71,6 +71,7 @@ returned HTTP 403; no new listing/version claim follows from that download.
 | `26.zip` | HLTB for Deck | 2.0.12 | `bd54a23b0b8ec0798aa590e5be236522a593529d7680e77fb888e2971bf3d558` |
 | `36.zip` | SteamGridDB | 1.8.1 | `e84f5b1f111af8862b06218479491fbf61036e1bfd9f16f93f9901e9b9ebc5e0` |
 | `135.zip` | Deck Shelves | 2.0.0 | `b566280ad38fd3ecd584b5b46a855f301539eb9a86063834c64b7045f7063f91` |
+| `144.zip` | Mixer | 0.1.0 | `4b3546170e5fbd5f9afad3b24555498ee51caac7cec9e4c86321b18cdd4b5106` |
 
 The matching source projects include [Simple Timer](https://github.com/decktools-xyz/simple-timer) and
 [Games Prefix Manager](https://github.com/Saad-Alareqi/GamesPrefixManager),
@@ -198,6 +199,7 @@ real Frame or physical controllers. These remain separate verification gates.
 `75.zip` (Reshadeck 0.2.0) was added from the digest-verified full-catalog audit cache on 2026-11-01, without changing its catalog pin. Its upstream LICENSE is retained.
 `87.zip` is the existing pinned ScreenSaver 1.1.2 store archive (87), SHA-256 `5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822`, copied from the previously verified full-catalog cache on 2026-11-01. No fresh live-store version claim.
 `23.zip` was added on 2026-11-01 from the existing digest-verified catalog cache; no fresh store metadata is claimed.
+`144.zip` is Mixer 0.1.0, SHA-256 `4b3546170e5fbd5f9afad3b24555498ee51caac7cec9e4c86321b18cdd4b5106`, downloaded from the official CDN on 2026-11-21 and matched to the existing catalog digest; its upstream GPLv3 `LICENSE` is retained. This does not claim a fresh full-store metadata lookup. The native case uses UID 1100, private D-Bus and silent PipeWire/WirePlumber playback streams without `PULSE_SERVER` overriding runtime discovery. It checks stream volume readback, invalid regex rejection, filter + boost persistence across restart, `reset_volumes`, post-EOF RPC and two strict stops; its negative control reproduces the unmodified pre-EOF forced `SIGKILL`. Internal audio nodes, audible output, Bluetooth playback, adapted ARM64/Frame and worn/controller use remain unverified.
 
 
 `38.zip` is Volume Mixer 1.2.1-1, SHA-256 `11b259ad234d0e97cfef4e6a2af3f1edfb0908d5482765af56b86b0a4601c5f3`, copied from the previously verified catalog cache on 2026-11-01. This does not claim a fresh live-store version lookup. The native case uses UID 1100, private D-Bus and silent Pulse streams, without PULSE_SERVER overriding runtime discovery. It checks real stereo volume readback, an unrelated stream, restart and strict shutdown including an extra child IPC EOF. Its original-source negative must fail Pulse discovery. Bluetooth, audible output, adapted ARM64/Frame and worn/controller use are unverified.
