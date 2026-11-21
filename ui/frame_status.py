@@ -107,7 +107,13 @@ def memory():
     info = {}
     for line in (read("/proc/meminfo") or "").splitlines():
         k, _, v = line.partition(":")
-        info[k] = int(v.split()[0]) * 1024 if v.split() else 0
+        parts = v.split()
+        if not parts:
+            continue
+        try:
+            info[k] = int(parts[0]) * 1024
+        except ValueError:
+            continue
     if "MemTotal" not in info:
         return None
     return {"total": info["MemTotal"], "available": info.get("MemAvailable", 0)}
@@ -116,9 +122,9 @@ def memory():
 def max_temp():
     temps = []
     for z in glob.glob("/sys/class/thermal/thermal_zone*/temp"):
-        t = read(z)
-        if t and t.lstrip("-").isdigit():
-            temps.append(int(t) / 1000)
+        t = num(z, 0.001)
+        if t is not None and math.isfinite(t):
+            temps.append(t)
     return max(temps) if temps else None
 
 
@@ -159,7 +165,13 @@ def volume():
     m = re.search(r"Volume:\s*([\d.]+)(.*)", run("wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"))
     if not m:
         return None
-    return {"level": float(m.group(1)), "muted": "MUTED" in m.group(2)}
+    try:
+        level = float(m.group(1))
+    except ValueError:
+        return None
+    if not math.isfinite(level):
+        return None
+    return {"level": level, "muted": "MUTED" in m.group(2)}
 
 
 def process_names():
@@ -281,12 +293,23 @@ def positive(value):
 
 def timing_values(before, after):
     dt, frames = after.time - before.time, after.index - before.index
-    if dt <= 0 or frames <= 0 or frames / dt > 1000:
+    if not math.isfinite(dt) or dt <= 0 or frames <= 0 or frames / dt > 1000:
         return {}  # standby or old data; never present stale timings as live
     return {'compositorFps': positive(frames / dt),
             'frameMs': positive(1000 * dt / frames),
             'appFps': positive(1000 / after.interval) if after.interval > 0 else None,
             'gpuMs': positive(after.gpu), 'compositorCpuMs': positive(after.compositorCpu)}
+
+
+def uptime():
+    parts = (read("/proc/uptime") or "").split()
+    if not parts:
+        return None
+    try:
+        value = float(parts[0])
+    except ValueError:
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
 
 
 def performance():
@@ -310,14 +333,13 @@ def performance():
 
 
 def status():
-    uptime = read("/proc/uptime")
     procs = process_names()
     return {
         "time": time.time(),
         "performance": performance(),
         "hostname": socket.gethostname(),
         "os": os_release(),
-        "uptime": float(uptime.split()[0]) if uptime else None,
+        "uptime": uptime(),
         "battery": battery(),
         "power": power_source(),
         "disk": {"root": disk("/"), "home": disk("/home")},
