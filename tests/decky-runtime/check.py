@@ -77,6 +77,8 @@ def main():
     parser.add_argument('--reproduce-volume-mixer-user-regression', action='store_true')
     parser.add_argument('--reproduce-volume-boost-user-regression', action='store_true')
     parser.add_argument('--reproduce-volume-boost-unload-regression', action='store_true')
+    parser.add_argument('--reproduce-tailscale-runtime-regression', action='store_true')
+    parser.add_argument('--reproduce-tailscale-unload-regression', action='store_true')
     parser.add_argument('--reproduce-bound-method-regression', action='store_true')
     parser.add_argument('--reproduce-music-control-unload-regression', action='store_true')
     parser.add_argument('--reproduce-animation-unload-regression', action='store_true')
@@ -232,6 +234,19 @@ def main():
         (plugin/'py_modules/framey_decky_ipc.py').unlink()
     if args.reproduce_volume_boost_unload_regression:
         assert record['id'] == 58
+        prefix = (b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                  b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
+        managed = (plugin/'main.py').read_bytes()
+        assert managed.startswith(prefix)
+        (plugin/'main.py').write_bytes(managed[len(prefix):])
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
+    if args.reproduce_tailscale_runtime_regression:
+        assert record['id'] == 43
+        with zipfile.ZipFile(io.BytesIO(data)) as original:
+            (plugin/'main.py').write_bytes(original.read(record['folder']+'/main.py'))
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
+    if args.reproduce_tailscale_unload_regression:
+        assert record['id'] == 43
         prefix = (b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
                   b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
         managed = (plugin/'main.py').read_bytes()
@@ -610,6 +625,7 @@ def main():
               'sha256': record['sha256'],
               'shim': None if (args.reproduce_alarme_pause_regression or args.reproduce_nonsteam_path_regression
                                or args.reproduce_pause_games_unload_regression
+                               or args.reproduce_tailscale_runtime_regression
                                or args.reproduce_playtime_unload_regression
                                or args.reproduce_volume_boost_user_regression
                                or args.reproduce_mixer_unload_regression) else case['shim'], 'calls': []}
@@ -633,6 +649,9 @@ def main():
             if case['probe'] == 'volume-boost-private-audio':
                 import volume_boost_private
                 volume_boost_fixture = volume_boost_private.start(env, log, processes, until_ready)
+            if case['probe'] == 'tailscale-private-cli':
+                import tailscale_control_private
+                tailscale_fixture = tailscale_control_private.start(home, env)
             if case['probe'] == 'screensaver-private-bus':
                 import screensaver_private
                 screensaver_oracle = screensaver_private.start(env, log, processes, until_ready)
@@ -769,6 +788,19 @@ def main():
                     else 'expected original Volume Boost forced SIGKILL after IPC peer EOF; negative only'
                     if args.reproduce_volume_boost_unload_regression
                     else 'private actual-user default-sink boost/channel readback, post-EOF RPC, restart and two strict stops; Bluetooth/audio/UI/Frame unverified'
+                )
+            elif case['probe'] == 'tailscale-private-cli':
+                report['tailscaleControlRuntime'] = tailscale_control_private.probe(
+                    backend, loader, env, log, processes, legacy, rpc, until_ready,
+                    tailscale_fixture, plugin, discovered, data,
+                    original=args.reproduce_tailscale_runtime_regression,
+                    unload_regression=args.reproduce_tailscale_unload_regression)
+                report['result'] = (
+                    'expected original ~/.local/bin tailscale discovery failure; negative only'
+                    if args.reproduce_tailscale_runtime_regression
+                    else 'expected original Tailscale Control forced SIGKILL after IPC peer EOF; negative only'
+                    if args.reproduce_tailscale_unload_regression
+                    else 'private ~/.local/bin tailscale stub state/exit-node/device/up/down readback, preserved XDG_RUNTIME_DIR, post-EOF RPC, restart and two strict stops; real tailscaled/network/UI/Frame unverified'
                 )
             elif case['probe'] == 'screensaver-private-bus':
                 import screensaver_private

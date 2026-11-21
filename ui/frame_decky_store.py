@@ -356,6 +356,9 @@ def apply_script(plugin_id, digest):
     if plugin_id == 58 and digest == '2cc576a7f60751306d690268e227df626e59d3733680ced753de4c116629a9cc':
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
         return 'FRAMEY_VOLUME_BOOST_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
+    if plugin_id == 43 and digest == '06411711b27101d438339000da3d91202d682862710b02ef3ddf2462e642448a':
+        ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
+        return 'FRAMEY_TAILSCALE_CONTROL_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
     if plugin_id == 87 and digest == '5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822':
         source = Path(__file__).with_name('framey_screensaver.py').read_text(encoding='utf-8')
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
@@ -768,6 +771,41 @@ try:
                 main.write_bytes(updated)
                 compat_shims.append('volume-boost-user-audio')
                 compat_shims.append('volume-boost-ipc-eof')
+            if (int(plugin_id)==43 and digest=='06411711b27101d438339000da3d91202d682862710b02ef3ddf2462e642448a' and folder=='tailscale-control'):
+                main=unpacked/'main.py'
+                original=main.read_bytes()
+                if (manifest.get('name')!='Tailscale Control' or manifest.get('flags')!=['debug']
+                        or 'api_version' in manifest
+                        or hashlib.sha256(original).hexdigest()!='6bcd210c62b638c87c923e271086a2b6706ddf532c4e169e486e63486ea24481'):
+                    raise RuntimeError('Tailscale Control manifest or backend differs from pinned archive')
+                replacements=(
+                    (b'os.environ["XDG_RUNTIME_DIR"] = "/run/user/1000"\n',
+                     b'os.environ["XDG_RUNTIME_DIR"] = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"\n'),
+                    (b'user_dirs = ["/opt/tailscale", "/home/deck/.nix-profile/bin"]\n',
+                     b'user_dirs = [os.path.expanduser("~/.local/bin"), "/opt/tailscale", os.path.expanduser("~/.nix-profile/bin")]\n'),
+                    (b'return not subprocess.run(cmd_list, timeout=10, check=False)\n',
+                     b'return subprocess.run(cmd_list, timeout=10, check=False).returncode == 0\n'),
+                    (b'            subprocess.run(["tailscale", "down"], timeout=10, check=False)\n            return True\n',
+                     b'            return subprocess.run(["tailscale", "down"], timeout=10, check=False).returncode == 0\n'),
+                )
+                body=original
+                for old,new in replacements:
+                    if body.count(old)!=1: raise RuntimeError('Tailscale Control backend block differs')
+                    body=body.replace(old,new)
+                ipc=globals().get('FRAMEY_TAILSCALE_CONTROL_IPC_SOURCE')
+                if not isinstance(ipc,str) or not ipc: raise RuntimeError('Missing Tailscale Control IPC helper')
+                helper=unpacked/'py_modules/framey_decky_ipc.py'
+                if helper.exists(): raise RuntimeError('Tailscale Control IPC helper collides with archive')
+                helper.parent.mkdir(exist_ok=True)
+                compile(ipc,str(helper),'exec')
+                helper.write_text(ipc,encoding='utf-8')
+                prefix=(b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                        b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
+                updated=prefix+body
+                compile(updated,str(main),'exec')
+                main.write_bytes(updated)
+                compat_shims.append('tailscale-control-user-runtime')
+                compat_shims.append('tailscale-control-ipc-eof')
             if (int(plugin_id)==87 and digest=='5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822' and folder=='DeckyInhibitScreenSaver'):
                 main=unpacked/'main.py'
                 original=main.read_bytes()
