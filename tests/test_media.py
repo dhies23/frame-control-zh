@@ -501,7 +501,7 @@ class Media(unittest.TestCase):
 
     def test_start_failure_reports_systemd_error(self):
         with tempfile.TemporaryDirectory() as d, patch.object(remote, 'ROOT', Path(d)), \
-                patch.object(remote, 'STATUS', Path(d)/'status.json'), \
+                patch.object(remote, 'STATUS', Path(d)/'missing-dir'/'status.json'), \
                 patch.object(remote, 'active', return_value=False), \
                 patch.object(remote.subprocess, 'run') as run:
             identity = 'b'*32+'/still_SBS.png'
@@ -512,6 +512,24 @@ class Media(unittest.TestCase):
                     self.assertRaisesRegex(RuntimeError, 'Unit already exists'):
                 remote.run({'action': 'play', 'id': identity})
             self.assertEqual(run.call_args.args[0][0], 'systemd-run')  # reset-failed's result is ignored
+            reported = remote.status()
+            self.assertEqual(reported['state'], 'error')
+            self.assertIn('Unit already exists', reported['error'])
+            self.assertEqual(reported['file'], 'still_SBS.png')
+
+    def test_remote_status_handles_non_dict_json_and_bounded_active(self):
+        with tempfile.TemporaryDirectory() as d:
+            status_path = Path(d)/'status.json'
+            with patch.object(remote, 'STATUS', status_path), patch.object(remote, 'active', return_value=False):
+                for raw in ('null', '[]', '"idle"'):
+                    status_path.write_text(raw)
+                    self.assertEqual(remote.status(), {'state': 'idle', 'running': False}, raw)
+        with patch.object(remote.subprocess, 'run', return_value=unittest.mock.Mock(returncode=0)) as run:
+            self.assertTrue(remote.active())
+            self.assertIsNotNone(run.call_args.kwargs.get('timeout'))
+        for exc in (OSError('no systemctl'), remote.subprocess.TimeoutExpired('systemctl', 10)):
+            with patch.object(remote.subprocess, 'run', side_effect=exc):
+                self.assertFalse(remote.active())
 
     def test_upload_rejects_unplayable_names_and_keeps_copy_error(self):
         with patch.object(server, 'ssh') as ssh, patch.object(server, 'push_file') as push:

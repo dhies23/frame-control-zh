@@ -34,7 +34,18 @@ def media_path(identity):
 
 
 def active():
-    return subprocess.run(['systemctl', '--user', 'is-active', '--quiet', UNIT]).returncode == 0
+    try:
+        return subprocess.run(['systemctl', '--user', 'is-active', '--quiet', UNIT],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def write_status(**values):
+    STATUS.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATUS.with_suffix('.tmp')
+    tmp.write_text(json.dumps(values))
+    tmp.replace(STATUS)
 
 
 def status():
@@ -42,6 +53,8 @@ def status():
     try:
         state = json.loads(STATUS.read_text())
     except (OSError, ValueError):
+        state = {'state': 'idle'}
+    if not isinstance(state, dict):
         state = {'state': 'idle'}
     if not running and state.get('state') in ('playing', 'starting', 'paused'):
         state = {'state': 'stopped', 'message': 'Player exited; check the media log if this was unexpected'}
@@ -82,7 +95,7 @@ def run(body):
     # The runtime cap also cleans up if the controlling computer disconnects.
     subprocess.run(['systemctl', '--user', 'reset-failed', UNIT], stdout=subprocess.DEVNULL,
                    stderr=subprocess.DEVNULL, timeout=10)
-    STATUS.write_text(json.dumps({'state': 'starting', 'file': path.name}))
+    write_status(state='starting', file=path.name)
     command = ['systemd-run', '--user', '--quiet', '--collect', '--unit='+UNIT,
                '--property=RuntimeMaxSec=14400', '--property=TimeoutStopSec=8',
                '--property=StandardOutput=append:'+str(RUNTIME/'player.log'),
@@ -91,9 +104,16 @@ def run(body):
                '--layout', body.get('layout', 'auto'), '--status', str(STATUS)]
     if body.get('theatre'):
         command.append('--theatre')
-    started = subprocess.run(command, capture_output=True, text=True, timeout=15)
+    try:
+        started = subprocess.run(command, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        msg = 'Could not start the media player: ' + str(e)
+        write_status(state='error', file=path.name, error=msg)
+        raise RuntimeError(msg)
     if started.returncode:
-        raise RuntimeError('Could not start the media player: ' + (started.stderr.strip() or 'systemd-run exited %s' % started.returncode))
+        msg = 'Could not start the media player: ' + (started.stderr.strip() or 'systemd-run exited %s' % started.returncode)
+        write_status(state='error', file=path.name, error=msg)
+        raise RuntimeError(msg)
     return {'message': 'Starting Frame Control media', 'plan': plan}
 
 
