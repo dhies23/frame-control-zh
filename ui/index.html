@@ -2444,7 +2444,7 @@ async function loadDecky(reviewUnknown = false) {
       const row=document.createElement('div');row.className='hint';
       const label=document.createElement('span');label.textContent=`${plugin.name} ${plugin.version||''} · ${deckyCompatibilityText(plugin)}`;
       const remove=document.createElement('button');remove.className='small danger';remove.textContent='Remove plugin';
-      remove.disabled=deckyPluginBusy||!d.managed||!$('deckyAck').checked;
+      remove.disabled=deckyPluginBusy||!!deckyPluginRequest||!d.managed||!$('deckyAck').checked;
       remove.onclick=()=>changeDeckyPlugin('remove',
         {id:plugin.storeId,name:plugin.name,installedSha256:plugin.sha256});
       row.append(label,remove);managedList.append(row);}
@@ -2520,6 +2520,7 @@ function showDeckyStore() {
 }
 async function changeDeckyPlugin(action, plugin) {
   if (deckyPluginBusy || deckyPluginRequest || !$('deckyAck').checked) return;
+  if (action !== 'remove' && (plugin.root || plugin.compatibility?.blockInstall)) return;
   if (!deckyInfo?.managed || (action !== 'remove' && !deckyInfo.running)) {
     $('deckyStoreState').textContent = 'Refresh plugins to check Decky status before changing plugins.';
     return;
@@ -2602,9 +2603,18 @@ for (const action of ['Install', 'Update', 'Remove']) {
   $(`decky${action}`).onclick = async () => {
     if (deckyPluginBusy || deckyPluginRequest || !$('deckyAck').checked || !deckyInfo) return;
     const verb = action.toLowerCase();
+    const ready = deckyInfo.arch === 'aarch64' && deckyInfo.variant === 'vr' && deckyInfo.cef && !deckyInfo.upstreamInstall;
+    if ((verb === 'install' && (!ready || deckyInfo.managed)) ||
+        (verb === 'update' && (!ready || !deckyInfo.managed)) ||
+        (verb === 'remove' && !deckyInfo.managed)) return;
     if (verb === 'remove' && !confirm('Remove the Frame Control managed Decky service and binary? Plugin files will stay.')) return;
-    await runJob(`${action} Decky Loader`, 'decky', () => api('/api/decky', {action:verb, acknowledged:true}));
-    loadDecky();
+    deckyPluginBusy = true; deckyButtons(); showDeckyStore();
+    try {
+      await runJob(`${action} Decky Loader`, 'decky', () => api('/api/decky', {action:verb, acknowledged:true}));
+    } finally {
+      await loadDecky();
+      deckyPluginBusy = false; deckyButtons(); showDeckyStore();
+    }
   };
 }
 let headsetInfo = null;
