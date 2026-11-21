@@ -1,0 +1,76 @@
+<!doctype html><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<div id="framey-root"></div><div id="framey-error"></div><div id="framey-toasts"></div><div id="framey-modal"></div>
+<div id="fixture"></div><pre id="result">Pending</pre>
+<script>
+window.fixtureFailures=[];
+addEventListener('error',event=>fixtureFailures.push(event.message));
+addEventListener('unhandledrejection',event=>fixtureFailures.push(String(event.reason)));
+</script>
+<script>__REACT__</script><script>__REACT_DOM__</script><script>__HOST__</script>
+<script>
+(() => {
+  const assert=(value,message)=>{if(!value)throw Error(message);};
+  const container=document.getElementById('fixture'),root=ReactDOM.createRoot(container),SP_REACT=React;
+  const render=element=>ReactDOM.flushSync(()=>root.render(element));
+  // Private stand-ins only. Do not initialize TabMaster, MicroSDeck, a Steam
+  // library, backend settings, or the published icon dependency graph.
+  let microSDeckAvailable=false;
+  const MicroSDeckInterop={isInstallOk:()=>microSDeckAvailable},microSDeckLibVersion='0.11.0-fixture';
+  __PUBLISHED_ROWS__
+  const FilterIcons=Object.fromEntries(Object.keys(FilterDescriptions).map(type=>[
+    type,({size})=>React.createElement('span',{'data-icon':type,style:{fontSize:size}},'icon')]));
+  try {
+    let count=0;
+    for(const type of Object.keys(FilterDescriptions)){
+      // Each complete published row must render before assertions about the
+      // class map, so a missing namespace reproduces its original failure.
+      microSDeckAvailable=true;
+      let actions=0;
+      const row=focusable=>React.createElement(FilterSelectElement,{filterType:type,focusable,onClick:()=>actions++});
+      render(row(true));
+      const control=container.querySelector('[role=button]'),entry=control?.firstElementChild;
+      assert(entry?.classList.contains(DFL.achievementClasses.AchievementListItemBase),type+' lost local entry class');
+      assert(entry.style.display==='flex'&&entry.style.height==='60px',type+' lost author layout');
+      assert(container.querySelector('.entry-desc')?.textContent===FilterDescriptions[type],type+' lost description');
+      assert(container.querySelector('.entry-label')?.textContent.includes(capitalizeEachWord(type)),type+' lost title');
+      assert(container.querySelector('[data-icon]')?.dataset.icon===type,type+' lost supplied icon');
+      assert(control.tabIndex===0,type+' missing native tab stop');
+      control.focus();assert(document.activeElement===control,type+' missing local focus');
+      ReactDOM.flushSync(()=>control.click());
+      for(const key of ['Enter',' '])ReactDOM.flushSync(()=>control.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true})));
+      assert(actions===3,type+' native activation did not reach the original callback once');
+      render(row(false));
+      const inactive=container.firstElementChild;
+      ReactDOM.flushSync(()=>inactive.click());
+      ReactDOM.flushSync(()=>inactive.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})));
+      assert(actions===3&&!inactive.hasAttribute('tabindex')&&!inactive.hasAttribute('role'),type+' retained an inactive action');
+      render(null);count++;
+    }
+    microSDeckAvailable=false;
+    let disabledActions=0;
+    const sdRow=()=>React.createElement(FilterSelectElement,{filterType:'sd card',focusable:true,onClick:()=>disabledActions++});
+    render(sdRow());
+    const disabled=container.firstElementChild;
+    assert(disabled.firstElementChild.classList.contains('entry-disabled'),'published MicroSDeck gate lost disabled marker');
+    assert(disabled.textContent.includes('requires MicroSDeck 0.11'),'published dependency version text missing');
+    ReactDOM.flushSync(()=>disabled.click());
+    ReactDOM.flushSync(()=>disabled.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})));
+    assert(disabledActions===0&&!disabled.hasAttribute('tabindex'),'unavailable MicroSDeck row remained actionable');
+    microSDeckAvailable=true;render(sdRow());
+    ReactDOM.flushSync(()=>container.querySelector('[role=button]').click());
+    assert(disabledActions===1,'published dependency gate did not enable its local row');
+    assert(Object.isFrozen(DFL.achievementClasses),'class map must remain immutable');
+    assert(Object.keys(DFL.achievementClasses).join(',')==='AchievementListItemBase','unexpected class exports');
+    assert(DFL.findClassModule(classes=>classes.AchievementListItemBase)===DFL.achievementClasses,'class lookup diverged from export');
+    assert(DFL.findClass('framey/achievements','AchievementListItemBase')===DFL.achievementClasses.AchievementListItemBase,'local module lookup failed');
+    assert(DFL.achievementClasses.UnknownSteamClass===undefined,'unknown Steam classes must stay unavailable');
+    assert(fixtureFailures.length===0,fixtureFailures.join('; '));
+    ReactDOM.flushSync(()=>root.unmount());
+    document.getElementById('result').textContent=JSON.stringify({passed:true,realReactDOM:true,
+      publishedFilterRowCount:count,syntheticIconsAndMicroSDeck:true,nativeFocusAndSyntheticActivation:true,
+      disabledDependencyGate:true,realLibraryChanged:false,realBackendContacted:false,realFrameContacted:false,
+      controllerInputVerified:false,wornVisibilityVerified:false,vrKeyboardVerified:false});
+  }catch(error){document.getElementById('result').textContent=JSON.stringify({passed:false,error:String(error.stack||error)});}
+})();
+</script>
