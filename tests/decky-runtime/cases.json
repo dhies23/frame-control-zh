@@ -66,6 +66,14 @@
     ]
   },
   {
+    "id": 43,
+    "shim": "tailscale-control-user-runtime",
+    "probe": "tailscale-private-cli",
+    "additionalShims": [
+      "tailscale-control-ipc-eof"
+    ]
+  },
+  {
     "id": 87,
     "shim": "screensaver-user-bus",
     "additionalShims": [

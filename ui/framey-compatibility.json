@@ -3271,12 +3271,13 @@
         "https://github.com/tailscale-dev/deck-tailscale"
       ],
       "status": "partial",
-      "reason": "Settings render locally after the SuspensefulImage fallback. On the real Frame, exact official read-only backend status calls returned live state, exit-node and device entries when ~/.local/bin was in PATH; a transient user unit found the CLI with the proposed managed-service PATH. Live Framey Decky RPC, connection/exit-node changes and worn VR remain unverified; the bundled localhost QR asset is unavailable. No network settings were changed.",
+      "reason": "Settings render locally after the SuspensefulImage fallback. On the real Frame, exact official read-only backend status calls returned live state, exit-node and device entries when ~/.local/bin was in PATH; a transient user unit found the CLI with the proposed managed-service PATH. Exact managed installs now preserve actual user XDG_RUNTIME_DIR, add ~/.local/bin and ~/.nix-profile/bin to PATH, return truthful up/down exit status booleans and repair child IPC EOF shutdown; native AMD64 private ~/.local/bin stub CLI readbacks, post-EOF RPC, restart and two strict stops are covered. Update/reinstall old copies. Live Framey Decky RPC, real tailscaled connection/exit-node changes, adapted ARM64/Frame execution and worn VR remain unverified; the bundled localhost QR asset is unavailable.",
       "blockInstall": false,
       "verification": [
         "static archive",
         "local browser",
         "fake-Frame",
+        "isolated Linux backend",
         "real Frame read-only backend"
       ],
       "browser": {
@@ -3295,13 +3296,22 @@
         "folder": "tailscale-control"
       },
       "backend": "Python",
-      "hardware": "No specific hardware requirement detected statically; runtime requirements unverified.",
+      "hardware": "tailscale CLI (~/.local/bin, /opt/tailscale or ~/.nix-profile/bin); managed install preserves user XDG_RUNTIME_DIR",
       "uiSurfaces": [],
       "fakeFrame": {
         "id": 43,
         "sha256": "06411711b27101d438339000da3d91202d682862710b02ef3ddf2462e642448a",
         "archiveValidation": "accepted",
         "result": "installed-removed"
+      },
+      "requiredShims": [
+        "tailscale-control-user-runtime",
+        "tailscale-control-ipc-eof"
+      ],
+      "tailscaleControlRuntime": {
+        "evidence": "docs/evidence/framey-tailscale-control-runtime-2026-11-21.md",
+        "runtime": "published Decky 3.3.0 native AMD64; private ~/.local/bin/tailscale stub; actual UID 1100; network none",
+        "realFrameContacted": false
       }
     },
     {

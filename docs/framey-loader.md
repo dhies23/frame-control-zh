@@ -378,6 +378,22 @@ failure and the pre-EOF forced `SIGKILL` shutdown. Audible output, Bluetooth
 sinks, adapted ARM64/Frame execution and worn VR remain unverified; see
 [the native evidence](evidence/framey-volume-boost-user-runtime-2026-11-21.md).
 
+Tailscale Control 0.1.3 preserves the actual user's `XDG_RUNTIME_DIR` (falling
+back to `/run/user/<uid>` instead of hard-coded `/run/user/1000`), adds the
+active user's `~/.local/bin` and `~/.nix-profile/bin` alongside `/opt/tailscale`
+to `PATH`, fixes `up()` and `down()` to return `returncode == 0` instead of
+`not CompletedProcess` / unconditional `True`, and installs the shared child IPC
+EOF repair while preserving every other archive file. Existing copies need
+Update or reinstall. Local AMD64 Decky 3.3.0 probes run under UID 1100 with
+`--network=none` against a private disposable `~/.local/bin/tailscale` stub
+without `~/.local/bin` in the initial `PATH` and verify state/exit-node/device
+readbacks, truthful `up()`/`down()` exit booleans, preserved `XDG_RUNTIME_DIR`,
+post-EOF RPC, restart and two strict parent-only stops. Two negative controls
+reproduce the original `~/.local/bin` CLI discovery failure and pre-EOF forced
+`SIGKILL` shutdown. Real `tailscaled`, live tailnet/exit-node changes, bundled
+localhost QR asset, adapted ARM64/Frame execution and worn VR remain unverified;
+see [the native evidence](evidence/framey-tailscale-control-runtime-2026-11-21.md).
+
 The store verifies each downloaded archive and the headset applies it with a
 rollback if Decky cannot start. The panel saves a random request ID before
 submitting a change. The server uses that ID as the job ID and returns the
