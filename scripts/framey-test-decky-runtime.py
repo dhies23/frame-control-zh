@@ -168,6 +168,7 @@ def main():
             probes = [(case['id'], case.get('version'), None) for case in cases] + [
                 (plugin_id, None, negative) for plugin_id, negative in [
                     (13, '--reproduce-pause-games-unload-regression'),
+                    (66, '--reproduce-playtime-unload-regression'),
                     (19, '--reproduce-notebook-unload-regression'),
                     (23, '--reproduce-animation-unload-regression'),
                     (143, '--reproduce-desktop-apps-unload-regression'),
@@ -222,7 +223,7 @@ def main():
                     '--mount', f'type=bind,source={ROOT},target=/repo,readonly',
                     '--mount', f'type=bind,source={loader},target=/input/PluginLoader,readonly',
                     ]
-                if plugin_id in (13, 19, 50, 79, 143) and negative:
+                if plugin_id in (13, 19, 50, 66, 79, 143) and negative:
                     # The original EOF spin allocates tasks without yielding.
                     # Keep this negative below OOM pressure until Decky's own
                     # five-second forced-stop deadline proves the regression.

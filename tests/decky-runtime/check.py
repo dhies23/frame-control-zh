@@ -113,6 +113,7 @@ def main():
     parser.add_argument('--reproduce-storage-cleaner-unload-regression', action='store_true')
     parser.add_argument('--reproduce-notebook-unload-regression', action='store_true')
     parser.add_argument('--reproduce-pause-games-unload-regression', action='store_true')
+    parser.add_argument('--reproduce-playtime-unload-regression', action='store_true')
     args = parser.parse_args()
     if args.terminal_browser_candidate:
         assert args.terminal_candidate
@@ -158,6 +159,11 @@ def main():
         capture_output=True, text=True, env=env, timeout=30)
     assert install.returncode == 0, install.stderr
     plugin = base/'plugins'/record['folder']
+    if args.reproduce_playtime_unload_regression:
+        assert record['id'] == 66
+        with zipfile.ZipFile(io.BytesIO(data)) as original:
+            (plugin/'main.py').write_bytes(original.read(record['folder']+'/main.py'))
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
     if args.reproduce_pause_games_unload_regression:
         assert record['id'] == 13
         with zipfile.ZipFile(io.BytesIO(data)) as original:
@@ -582,7 +588,8 @@ def main():
     report = {'id': record['id'], 'name': record['name'], 'version': record['version'],
               'sha256': record['sha256'],
               'shim': None if (args.reproduce_alarme_pause_regression or args.reproduce_nonsteam_path_regression
-                               or args.reproduce_pause_games_unload_regression) else case['shim'], 'calls': []}
+                               or args.reproduce_pause_games_unload_regression
+                               or args.reproduce_playtime_unload_regression) else case['shim'], 'calls': []}
     if candidate is not None:
         report['candidate'] = candidate
     with (home/'runtime.log').open('w+') as log:
@@ -686,10 +693,14 @@ def main():
                 import playtime_private
                 report['privateSessions'] = playtime_private.exercise(
                     current, plugin, data, record, base, backend, loader, env, log,
-                    processes, until_ready, rpc)
-                report['result'] = ('published Decky API1 private session writes, pause/resume, '
-                    'per-user SQLite isolation and loader restart persistence passed; '
-                    'automatic recording, browser, real Frame and VR unverified')
+                    processes, until_ready, rpc,
+                    regression=args.reproduce_playtime_unload_regression)
+                report['result'] = (
+                    'expected original PlayTime child IPC forced-kill shutdown; negative only'
+                    if args.reproduce_playtime_unload_regression else
+                    'published Decky API1 private session writes, pause/resume, per-user SQLite '
+                    'isolation, RPC after peer EOF, restart persistence and two clean parent-only '
+                    'stops passed; automatic recording, browser, real Frame and VR unverified')
             elif case['probe'] == 'reshadeck-private-x11':
                 import reshadeck_private
                 report['reshadeckRuntime'] = reshadeck_private.probe(backend, loader, env, log, processes,

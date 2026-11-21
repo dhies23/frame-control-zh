@@ -285,6 +285,9 @@ DECK_PROGRESS_DIGEST = '784c59e7e2a344eb6803d00e341c7d5f10d42cea7b60cc4332f4c368
 
 def apply_script(plugin_id, digest):
     """Deliver verified offline dependencies only to exact managed archives."""
+    if plugin_id == 66 and digest == '10fc3beea48991c77cb02867e919b618d4cd6d5e9c6a6d0ccd5266c13214039f':
+        ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
+        return 'FRAMEY_PLAYTIME_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
     if plugin_id == 13 and digest == '4aefdfb0ef25dea9c6d9fd037731c8b99ee8a1be966c2f7d5b0602112ef29f62':
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
         return 'FRAMEY_PAUSE_GAMES_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
@@ -2364,6 +2367,25 @@ def split_by_app(data):
                 crypto.write_bytes(crypto_data.replace(env_dump,b''))
                 compat_shims.append('notifications-private-logs')
                 compat_shims.append('notifications-ipc-eof')
+            if (int(plugin_id)==66 and digest=='10fc3beea48991c77cb02867e919b618d4cd6d5e9c6a6d0ccd5266c13214039f'
+                    and folder=='SDH-PlayTime'):
+                main=unpacked/'main.py'
+                original=main.read_bytes()
+                if hashlib.sha256(original).hexdigest()!='a29c2898e40cc51c8d6559c89fc502042ca2ceafa000f6d95722311bd90d98dd':
+                    raise RuntimeError('PlayTime backend differs from pinned archive')
+                ipc=globals().get('FRAMEY_PLAYTIME_IPC_SOURCE')
+                if not isinstance(ipc,str) or not ipc:
+                    raise RuntimeError('Missing PlayTime child IPC EOF repair')
+                helper=unpacked/'py_modules/framey_decky_ipc.py'
+                if helper.exists(): raise RuntimeError('PlayTime child IPC helper collides with archive')
+                compile(ipc,str(helper),'exec')
+                helper.parent.mkdir(exist_ok=True)
+                helper.write_text(ipc,encoding='utf-8')
+                source=(b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                        b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')+original
+                compile(source,str(main),'exec')
+                main.write_bytes(source)
+                compat_shims.append('playtime-ipc-eof')
             if (int(plugin_id)==13 and digest=='4aefdfb0ef25dea9c6d9fd037731c8b99ee8a1be966c2f7d5b0602112ef29f62'
                     and folder=='SDH-PauseGames'):
                 main=unpacked/'main.py'

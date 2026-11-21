@@ -30,7 +30,7 @@
   },
   {
     "id": 66,
-    "shim": null,
+    "shim": "playtime-ipc-eof",
     "probe": "playtime-private-sessions"
   },
   {
