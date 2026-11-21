@@ -52,6 +52,24 @@ class Telemetry(unittest.TestCase):
         self.assertEqual(status.timing_values(a, b), {})
         b.index = 5  # compositor restart / wrap
         self.assertEqual(status.timing_values(a, b), {})
+        b.index = 118
+        for bad_time in (float('nan'), float('inf'), float('-inf')):
+            b.time = bad_time
+            self.assertEqual(status.timing_values(a, b), {}, bad_time)
+
+    def test_best_effort_probes_handle_malformed_inputs(self):
+        meminfo = "MemTotal:       16384 kB\nWeirdField: N/A\nMemAvailable:   8192 kB\n"
+        with mock.patch.object(status, 'read', return_value=meminfo):
+            self.assertEqual(status.memory(), {"total": 16384 * 1024, "available": 8192 * 1024})
+        with mock.patch.object(status.glob, 'glob', return_value=['/z0/temp', '/z1/temp']), \
+             mock.patch.object(status, 'read', side_effect=['--5', '42500']):
+            self.assertEqual(status.max_temp(), 42.5)
+        for bad_vol in ('Volume: .', 'Volume: 1.2.3 [MUTED]'):
+            with mock.patch.object(status, 'run', return_value=bad_vol):
+                self.assertIsNone(status.volume(), bad_vol)
+        for bad_up in ('not-a-number 10.0', 'nan 10.0', 'inf 10.0'):
+            with mock.patch.object(status, 'read', return_value=bad_up):
+                self.assertIsNone(status.uptime(), bad_up)
 
     def test_missing_openvr_keeps_sensor_values(self):
         with mock.patch.object(status, 'OpenVR', side_effect=OSError('missing')), \
