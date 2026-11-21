@@ -288,6 +288,9 @@ def apply_script(plugin_id, digest):
     if plugin_id == 66 and digest == '10fc3beea48991c77cb02867e919b618d4cd6d5e9c6a6d0ccd5266c13214039f':
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
         return 'FRAMEY_PLAYTIME_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
+    if plugin_id == 144 and digest == '4b3546170e5fbd5f9afad3b24555498ee51caac7cec9e4c86321b18cdd4b5106':
+        ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
+        return 'FRAMEY_MIXER_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
     if plugin_id == 13 and digest == '4aefdfb0ef25dea9c6d9fd037731c8b99ee8a1be966c2f7d5b0602112ef29f62':
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
         return 'FRAMEY_PAUSE_GAMES_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
@@ -2386,6 +2389,27 @@ def split_by_app(data):
                 compile(source,str(main),'exec')
                 main.write_bytes(source)
                 compat_shims.append('playtime-ipc-eof')
+            if (int(plugin_id)==144 and digest=='4b3546170e5fbd5f9afad3b24555498ee51caac7cec9e4c86321b18cdd4b5106'
+                    and folder=='decky-volume-mixer'):
+                main=unpacked/'main.py'
+                original=main.read_bytes()
+                if (manifest.get('name')!='Mixer' or manifest.get('flags')!=[]
+                        or manifest.get('api_version')!=1
+                        or hashlib.sha256(original).hexdigest()!='44ee48a007d7ef10853bec9e157ffa057c4f0cc2250f402be6352912e386a1b4'):
+                    raise RuntimeError('Mixer manifest or backend differs from pinned archive')
+                ipc=globals().get('FRAMEY_MIXER_IPC_SOURCE')
+                if not isinstance(ipc,str) or not ipc:
+                    raise RuntimeError('Missing Mixer child IPC EOF repair')
+                helper=unpacked/'py_modules/framey_decky_ipc.py'
+                if helper.exists(): raise RuntimeError('Mixer child IPC helper collides with archive')
+                compile(ipc,str(helper),'exec')
+                helper.parent.mkdir(exist_ok=True)
+                helper.write_text(ipc,encoding='utf-8')
+                source=(b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                        b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')+original
+                compile(source,str(main),'exec')
+                main.write_bytes(source)
+                compat_shims.append('mixer-ipc-eof')
             if (int(plugin_id)==13 and digest=='4aefdfb0ef25dea9c6d9fd037731c8b99ee8a1be966c2f7d5b0602112ef29f62'
                     and folder=='SDH-PauseGames'):
                 main=unpacked/'main.py'

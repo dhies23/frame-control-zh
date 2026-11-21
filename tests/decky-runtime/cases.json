@@ -326,5 +326,10 @@
       "surround-ipc-eof"
     ],
     "probe": "surround-private-audio"
+  },
+  {
+    "id": 144,
+    "shim": "mixer-ipc-eof",
+    "probe": "mixer-private-audio"
   }
 ]

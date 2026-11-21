@@ -102,6 +102,8 @@ PLUGINS = (
      'folder': 'free-loader', 'sha256': '05208aee6f6ba824391d8ddc81b1168b2599a9711e7528cdaa789f6cc710b42a'},
     {'id': 135, 'name': 'Deck Shelves', 'version': '2.0.0', 'api_version': 1,
      'folder': 'Deck-Shelves', 'sha256': 'b566280ad38fd3ecd584b5b46a855f301539eb9a86063834c64b7045f7063f91'},
+    {'id': 144, 'name': 'Mixer', 'version': '0.1.0', 'api_version': 1,
+     'folder': 'decky-volume-mixer', 'sha256': '4b3546170e5fbd5f9afad3b24555498ee51caac7cec9e4c86321b18cdd4b5106'},
 )
 
 # Upstream GitHub release asset, not the version currently listed by Decky's

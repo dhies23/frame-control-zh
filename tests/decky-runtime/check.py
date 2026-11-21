@@ -114,6 +114,7 @@ def main():
     parser.add_argument('--reproduce-notebook-unload-regression', action='store_true')
     parser.add_argument('--reproduce-pause-games-unload-regression', action='store_true')
     parser.add_argument('--reproduce-playtime-unload-regression', action='store_true')
+    parser.add_argument('--reproduce-mixer-unload-regression', action='store_true')
     args = parser.parse_args()
     if args.terminal_browser_candidate:
         assert args.terminal_candidate
@@ -161,6 +162,11 @@ def main():
     plugin = base/'plugins'/record['folder']
     if args.reproduce_playtime_unload_regression:
         assert record['id'] == 66
+        with zipfile.ZipFile(io.BytesIO(data)) as original:
+            (plugin/'main.py').write_bytes(original.read(record['folder']+'/main.py'))
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
+    if args.reproduce_mixer_unload_regression:
+        assert record['id'] == 144
         with zipfile.ZipFile(io.BytesIO(data)) as original:
             (plugin/'main.py').write_bytes(original.read(record['folder']+'/main.py'))
         (plugin/'py_modules/framey_decky_ipc.py').unlink()
@@ -589,7 +595,8 @@ def main():
               'sha256': record['sha256'],
               'shim': None if (args.reproduce_alarme_pause_regression or args.reproduce_nonsteam_path_regression
                                or args.reproduce_pause_games_unload_regression
-                               or args.reproduce_playtime_unload_regression) else case['shim'], 'calls': []}
+                               or args.reproduce_playtime_unload_regression
+                               or args.reproduce_mixer_unload_regression) else case['shim'], 'calls': []}
     if candidate is not None:
         report['candidate'] = candidate
     with (home/'runtime.log').open('w+') as log:
@@ -626,6 +633,9 @@ def main():
             if case['probe'] == 'surround-private-audio':
                 import surround_private
                 surround_fixture = surround_private.start(env, log, processes, until_ready)
+            if case['probe'] == 'mixer-private-audio':
+                import mixer_private
+                mixer_fixture = mixer_private.start(env, log, processes, until_ready)
             backend = subprocess.Popen([str(loader)], env=env, stdout=log, stderr=log, start_new_session=True)
             processes.append(backend)
             discovered = until_ready(lambda: rpc('loader/get_plugins'), 'published Decky plugin discovery',
@@ -701,6 +711,16 @@ def main():
                     'published Decky API1 private session writes, pause/resume, per-user SQLite '
                     'isolation, RPC after peer EOF, restart persistence and two clean parent-only '
                     'stops passed; automatic recording, browser, real Frame and VR unverified')
+            elif case['probe'] == 'mixer-private-audio':
+                report['mixerRuntime'] = mixer_private.probe(
+                    backend, loader, env, log, processes, current, rpc, until_ready,
+                    mixer_fixture, plugin, discovered, data,
+                    regression=args.reproduce_mixer_unload_regression)
+                report['result'] = (
+                    'expected original Mixer child IPC forced-kill shutdown; negative only'
+                    if args.reproduce_mixer_unload_regression else
+                    'published Decky API1 private PipeWire stream volume, regex filter rejection/persistence, '
+                    'boost limit, reset, post-EOF RPC, restart and two strict stops; Bluetooth/audio/UI/Frame unverified')
             elif case['probe'] == 'reshadeck-private-x11':
                 import reshadeck_private
                 report['reshadeckRuntime'] = reshadeck_private.probe(backend, loader, env, log, processes,

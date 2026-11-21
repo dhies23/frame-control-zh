@@ -13883,7 +13883,7 @@
         "https://github.com/allmazz/decky-volume-mixer.git"
       ],
       "status": "works",
-      "reason": "Per-app discovery and numeric volume changes pass in local Chromium through real Decky 3.3.0 ARM64 on the Frame audio session, independently read back on a silent test stream. Filters persist on amd64; ARM64 filter persistence, Reset, internal audio nodes, audible output and worn VR unverified.",
+      "reason": "Per-app discovery and numeric volume changes passed historically in local Chromium through real Decky 3.3.0 ARM64 on the Frame audio session, independently read back on a silent test stream. Exact managed installs now repair child IPC EOF shutdown; native AMD64 private PipeWire stream volume, regex filter rejection/persistence, boost limit, Reset, post-EOF RPC, restart and two strict stops are covered. Update/reinstall old copies. This adapted backend on ARM64/Frame, internal audio nodes, audible output and worn VR remain unverified.",
       "blockInstall": false,
       "verification": [
         "static archive",
@@ -13933,6 +13933,14 @@
         "evidence": "docs/evidence/framey-audio-backends-2026-10-26.json",
         "audio": "private silent virtual targets",
         "realFrame": false
+      },
+      "requiredShims": [
+        "mixer-ipc-eof"
+      ],
+      "mixerRuntime": {
+        "evidence": "docs/evidence/framey-mixer-child-ipc-2026-11-21.md",
+        "runtime": "published Decky 3.3.0 native AMD64; private silent PipeWire/WirePlumber streams and D-Bus; actual UID 1100; no PULSE_SERVER override",
+        "realFrameContacted": false
       }
     },
     {
