@@ -417,27 +417,47 @@ class Agent:
         return dict(self.sources[src])
 
     def select(self):
-        if self.windows or self.selecting or self.shutting_down:
-            return
-        if len(self.sources) >= 8:
-            raise ValueError('Stop a panel before sharing another source')
-        self.selecting, self.selection_error = True, ''
-        generation = self.selection_generation
-        def choose():
-            error = C.create_string_buffer(1024)
-            portal = self.native.lib.fc_portal_select(error, len(error))
-            with self.lock:
+        with self.lock:
+            if self.windows or self.selecting or self.shutting_down:
+                return
+            if len(self.sources) >= 8:
+                raise ValueError('Stop a panel before sharing another source')
+            generation = self.selection_generation
+            def choose():
+                portal = None
+                try:
+                    error = C.create_string_buffer(1024)
+                    portal = self.native.lib.fc_portal_select(error, len(error))
+                    with self.lock:
+                        if not portal:
+                            self.selection_error = error.value.decode(errors='replace')
+                        elif self.shutting_down or generation != self.selection_generation:
+                            self.native.lib.fc_portal_close(portal)
+                            portal = None
+                        else:
+                            fd, node, w, h, devices = [self.native.lib.fc_portal_value(portal, i) for i in range(5)]
+                            src = 'window:' + secrets.token_hex(8)
+                            self.sources[src] = dict(src=src, title='Shared window or screen', app='Linux portal',
+                                                     w=w, h=h, fd=fd, node=node, portal=portal, devices=devices)
+                            portal = None
+                except Exception as e:
+                    with self.lock:
+                        if portal:
+                            try:
+                                self.native.lib.fc_portal_close(portal)
+                            except Exception:
+                                pass
+                        self.selection_error = str(e) or type(e).__name__
+                finally:
+                    with self.lock:
+                        self.selecting = False
+            thread = threading.Thread(target=choose, daemon=True)
+            self.selecting, self.selection_error = True, ''
+            try:
+                thread.start()
+            except Exception:
                 self.selecting = False
-                if not portal:
-                    self.selection_error = error.value.decode(errors='replace')
-                elif self.shutting_down or generation != self.selection_generation:
-                    self.native.lib.fc_portal_close(portal)
-                else:
-                    fd, node, w, h, devices = [self.native.lib.fc_portal_value(portal, i) for i in range(5)]
-                    src = 'window:' + secrets.token_hex(8)
-                    self.sources[src] = dict(src=src, title='Shared window or screen', app='Linux portal',
-                                             w=w, h=h, fd=fd, node=node, portal=portal, devices=devices)
-        threading.Thread(target=choose, daemon=True).start()
+                raise
 
     def stop(self, src=None):
         with self.lock:

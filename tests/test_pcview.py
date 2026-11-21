@@ -250,6 +250,68 @@ class UpgradeCleanupTests(unittest.TestCase):
         self.assertEqual(host.sessions, {})
         self.assertEqual(native.lib.fc_free.call_args_list, [mock.call(i) for i in range(1, 4)])
 
+    def test_portal_select_failures_reset_selecting_and_close_partial_portal(self):
+        native = mock.Mock()
+        with mock.patch.object(agent.sys, 'platform', 'linux'):
+            host = agent.Agent(native, 'master', ROOT/'ui/mac-view.html')
+
+        # 1. Thread construction and start failures must not leave host.selecting stuck True.
+        for phase in ('construct', 'start'):
+            with self.subTest(phase=phase):
+                failure = (mock.patch.object(agent.threading, 'Thread',
+                                             side_effect=RuntimeError('picker thread unavailable'))
+                           if phase == 'construct' else
+                           mock.patch.object(agent.threading.Thread, 'start',
+                                             side_effect=RuntimeError('picker thread unavailable')))
+                with failure:
+                    with self.assertRaises(RuntimeError):
+                        host.select()
+                self.assertFalse(host.selecting)
+                self.assertEqual(host.sources, {})
+
+        # Helper to run the spawned Thread synchronously via a real Thread + join.
+        spawned = []
+        orig_thread = agent.threading.Thread
+        def capture_thread(*args, **kwargs):
+            t = orig_thread(*args, **kwargs)
+            spawned.append(t)
+            return t
+
+        # 2. fc_portal_select raising must reset selecting and record selection_error.
+        native.lib.fc_portal_select.side_effect = RuntimeError('portal dbus unavailable')
+        with mock.patch.object(agent.threading, 'Thread', side_effect=capture_thread):
+            host.select()
+        spawned.pop().join(5)
+        self.assertFalse(host.selecting)
+        self.assertIn('portal dbus unavailable', host.selection_error)
+        self.assertEqual(host.sources, {})
+        native.lib.fc_portal_close.assert_not_called()
+
+        # 3. fc_portal_value raising after portal open must close the leaked portal handle.
+        native.lib.fc_portal_select.side_effect = None
+        native.lib.fc_portal_select.return_value = 99
+        native.lib.fc_portal_value.side_effect = RuntimeError('bad portal metadata')
+        with mock.patch.object(agent.threading, 'Thread', side_effect=capture_thread):
+            host.select()
+        spawned.pop().join(5)
+        self.assertFalse(host.selecting)
+        self.assertIn('bad portal metadata', host.selection_error)
+        self.assertEqual(host.sources, {})
+        native.lib.fc_portal_close.assert_called_once_with(99)
+
+        # 4. Subsequent clean selection succeeds and clears selection_error.
+        native.lib.fc_portal_select.return_value = 100
+        native.lib.fc_portal_value.side_effect = [12, 34, 1920, 1080, 3]
+        with mock.patch.object(agent.threading, 'Thread', side_effect=capture_thread):
+            host.select()
+        spawned.pop().join(5)
+        self.assertFalse(host.selecting)
+        self.assertEqual(host.selection_error, '')
+        self.assertEqual(len(host.sources), 1)
+        source = next(iter(host.sources.values()))
+        self.assertEqual((source['fd'], source['node'], source['w'], source['h'], source['portal'], source['devices']),
+                         (12, 34, 1920, 1080, 100, 3))
+
 
 class AdapterTests(unittest.TestCase):
     def test_dxgi_only_bundle_captures_displays_without_optional_wgc_properties(self):
