@@ -285,6 +285,9 @@ DECK_PROGRESS_DIGEST = '784c59e7e2a344eb6803d00e341c7d5f10d42cea7b60cc4332f4c368
 
 def apply_script(plugin_id, digest):
     """Deliver verified offline dependencies only to exact managed archives."""
+    if plugin_id == 13 and digest == '4aefdfb0ef25dea9c6d9fd037731c8b99ee8a1be966c2f7d5b0602112ef29f62':
+        ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
+        return 'FRAMEY_PAUSE_GAMES_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
     if plugin_id == 19 and digest == 'c35b09de4bba4b4157fbe84cb7b0d20fc3924f78fa3c48ae17686b4314c1cc0c':
         ipc = Path(__file__).with_name('framey_decky_ipc.py').read_text(encoding='utf-8')
         return 'FRAMEY_NOTEBOOK_IPC_SOURCE = '+repr(ipc)+'\n'+APPLY
@@ -2341,6 +2344,25 @@ def split_by_app(data):
                 crypto.write_bytes(crypto_data.replace(env_dump,b''))
                 compat_shims.append('notifications-private-logs')
                 compat_shims.append('notifications-ipc-eof')
+            if (int(plugin_id)==13 and digest=='4aefdfb0ef25dea9c6d9fd037731c8b99ee8a1be966c2f7d5b0602112ef29f62'
+                    and folder=='SDH-PauseGames'):
+                main=unpacked/'main.py'
+                original=main.read_bytes()
+                if hashlib.sha256(original).hexdigest()!='7d3036c4d6df838c93767d3c0ff98aac6e43507f4d5a53c5ed710305192f7150':
+                    raise RuntimeError('Pause Games backend differs from pinned archive')
+                ipc=globals().get('FRAMEY_PAUSE_GAMES_IPC_SOURCE')
+                if not isinstance(ipc,str) or not ipc:
+                    raise RuntimeError('Missing Pause Games child IPC EOF repair')
+                helper=unpacked/'py_modules/framey_decky_ipc.py'
+                if helper.exists(): raise RuntimeError('Pause Games child IPC helper collides with archive')
+                compile(ipc,str(helper),'exec')
+                helper.parent.mkdir(exist_ok=True)
+                helper.write_text(ipc,encoding='utf-8')
+                source=(b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                        b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')+original
+                compile(source,str(main),'exec')
+                main.write_bytes(source)
+                compat_shims.append('pause-games-ipc-eof')
             if (int(plugin_id)==19 and digest=='c35b09de4bba4b4157fbe84cb7b0d20fc3924f78fa3c48ae17686b4314c1cc0c'
                     and folder=='SDH-Notebook'):
                 main=unpacked/'main.py'

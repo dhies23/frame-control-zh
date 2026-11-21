@@ -593,7 +593,8 @@
         "https://github.com/wynn1212/SDH-PauseGames.git"
       ],
       "status": "partial",
-      "reason": "Settings and a synthetic running-game list render locally. Actual Decky 3.3.0 discovery, private settings writes/readback and exclusion-list persistence pass on amd64 and ARM64 Frame; standalone Toggle now honors its value prop. Live empty-list/lifetime checks passed earlier. Real process pause/resume, automatic pausing, suspend integration and worn VR remain unverified/unsupported.",
+      "reason": "Settings and a synthetic running-game list render locally. Actual Decky 3.3.0 discovery, private settings writes/readback and exclusion-list persistence pass on amd64 and ARM64 Frame; standalone Toggle now honors its value prop. Live empty-list/lifetime checks passed earlier. The exact managed archive now includes a child IPC EOF repair for forced shutdown; existing copies need Update/reinstall. Local AMD64 verifies RPC after peer EOF, restart persistence and two clean parent-only stops. Fresh hosted architecture qualification of this repair is pending. Real process pause/resume, automatic pausing, suspend integration and worn VR remain unverified/unsupported.",
+      "requiredShims": ["pause-games-ipc-eof"],
       "blockInstall": false,
       "verification": [
         "static archive",
