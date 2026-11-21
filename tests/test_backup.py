@@ -306,6 +306,28 @@ class Remote(unittest.TestCase):
         self.assertEqual(result['written'], 0)
         self.assertEqual(result['held'], {'refused': 1, 'reference': 1})
 
+    def test_restore_cleans_part_file_on_failure_and_enforces_max_file(self):
+        manifest(self.home, 1234, 'Test Game')
+        save = USER % 1234 + '/AppData/Roaming/Studio/Game/save1.dat'
+        write(self.home, save, b'current save')
+        with patch.object(remote.shutil, 'copy2', side_effect=OSError('No space left on device')):
+            with self.assertRaises(OSError):
+                remote.restore('saves:1234', '20261023-120000', self.archive([(save, b'restored save')]))
+        self.assertEqual((self.home / save).read_bytes(), b'current save')
+        self.assertEqual([p.name for p in (self.home / save).parent.iterdir() if p.name.endswith('.part')], [])
+
+        new_save = USER % 1234 + '/Documents/new.sav'
+        with patch.object(remote.os, 'replace', side_effect=OSError('Permission denied')):
+            with self.assertRaises(OSError):
+                remote.restore('saves:1234', '20261023-120000', self.archive([(new_save, b'new bytes')]))
+        self.assertFalse((self.home / new_save).exists())
+        self.assertEqual([p.name for p in (self.home / new_save).parent.iterdir() if p.name.endswith('.part')], [])
+
+        with patch.object(remote, 'MAX_FILE', 4):
+            with self.assertRaisesRegex(ValueError, 'too big'):
+                remote.restore('saves:1234', '20261023-120000', self.archive([(new_save, b'12345')]))
+        self.assertFalse((self.home / new_save).exists())
+
 
 class Session(unittest.TestCase):
     def state(self, targets, running=(), configured=None):
@@ -413,6 +435,27 @@ class Session(unittest.TestCase):
                         '/bin/sh -c pgrep -f steamos-nested-desktop',
                         '/usr/bin/steamos-nested-desktop-other'):
             self.assertIsNone(re.search(pattern, command), command)
+
+    def test_sddm_dropin_without_session_key_falls_back_to_base_conf(self):
+        with tempfile.TemporaryDirectory() as folder:
+            override = write(folder, 'zz-steamos-autologin.conf', '[Autologin]\nRelogin=false\n')
+            base = write(folder, 'steamos.conf', '[Autologin]\nSession=gamescope-wayland.desktop\n')
+            with patch.object(remote, 'SDDM_CONFS', (str(override), str(base))), \
+                    patch.object(remote, '_session_target', return_value='unknown'), \
+                    patch.object(remote, '_running', return_value=False), \
+                    patch.object(remote.shutil, 'which', return_value=None):
+                state = remote.session()
+            self.assertEqual(state['configured'], 'gamescope-wayland.desktop')
+            self.assertEqual(state['config_file'], str(base))
+
+            override.write_text('[Autologin]\nSession=\nUser=deck\n')
+            with patch.object(remote, 'SDDM_CONFS', (str(override), str(base))), \
+                    patch.object(remote, '_session_target', return_value='unknown'), \
+                    patch.object(remote, '_running', return_value=False), \
+                    patch.object(remote.shutil, 'which', return_value=None):
+                cleared = remote.session()
+            self.assertIsNone(cleared['configured'])
+            self.assertEqual(cleared['config_file'], str(override))
 
 
 def fake_ssh(home, os_release):
