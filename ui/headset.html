@@ -140,6 +140,20 @@ function newDeckyRequestId(){return Array.from(crypto.getRandomValues(new Uint8A
 let deckyState=null, deckyStore=[], deckyStoreIndex=0, deckyStoreRequest=0, deckyStoreMessage='',
   deckyStatusRequest=0,
   activeFrameyId=null, activeFrameyReceipt=null, frameySession=null, deckyBusy=false;
+function renderDeckyInstalled(){
+  if(!deckyState)return;
+  const list=byId('deckyInstalled');list.replaceChildren();
+  for(const plugin of deckyState.plugins||[]){const row=document.createElement('div');row.className='block';
+    const name=document.createElement('strong');name.textContent=`${plugin.name} ${plugin.version||''}`;row.append(name);
+    const note=document.createElement('p');note.textContent=compatibilityText(plugin);row.append(note);
+    if(plugin.storeId){const open=document.createElement('button');open.className='secondary';open.textContent='Open panel';
+      open.disabled=deckyBusy||deckyJobPending()||!deckyState.running;
+      open.onclick=()=>openFrameyPanel(plugin.storeId,plugin.name);row.append(open);
+      const button=document.createElement('button');button.className='danger';button.textContent='Remove';
+      button.disabled=deckyBusy||deckyJobPending()||!deckyState.managed;button.onclick=()=>deckyChange('remove',
+        {id:plugin.storeId,name:plugin.name,installedSha256:plugin.sha256});row.append(button);}
+    list.append(row);}if(!deckyState.plugins?.length)list.textContent='No managed plugins installed.';
+}
 async function refreshDecky(reviewUnknown=false){const request=++deckyStatusRequest;
   deckyState=null;
   byId('deckyState').textContent='Checking installed plugins…';
@@ -148,7 +162,7 @@ async function refreshDecky(reviewUnknown=false){const request=++deckyStatusRequ
   showDeckyStore();
   try{const state=await api('/api/decky/panel-status');
   if(request!==deckyStatusRequest)return;
-  if(!Array.isArray(state.plugins)||typeof state.running!=='boolean')
+  if(!Array.isArray(state.plugins)||typeof state.managed!=='boolean'||typeof state.running!=='boolean')
     throw Error('Installed plugin status is incomplete');
   const reviewedUnknown=reviewUnknown&&deckyUnknownResult;
   if(reviewUnknown)clearDeckyUnknown();
@@ -165,17 +179,7 @@ async function refreshDecky(reviewUnknown=false){const request=++deckyStatusRequ
     'Decky is not running. Install it from Frame Control on your computer.';
   if(panelStale)byId('deckyState').textContent+=' The old plugin panel was closed; reopen it after refreshing.';
   if(deckyUnknownResult)byId('deckyState').textContent+=' A previous plugin change has an unknown result. Press Refresh plugins to review installed status before another change.';
-  const list=byId('deckyInstalled');list.replaceChildren();
-  for(const plugin of deckyState.plugins||[]){const row=document.createElement('div');row.className='block';
-    const name=document.createElement('strong');name.textContent=`${plugin.name} ${plugin.version||''}`;row.append(name);
-    const note=document.createElement('p');note.textContent=compatibilityText(plugin);row.append(note);
-    if(plugin.storeId){const open=document.createElement('button');open.className='secondary';open.textContent='Open panel';
-      open.disabled=deckyBusy||deckyJobPending()||!deckyState.running;
-      open.onclick=()=>openFrameyPanel(plugin.storeId,plugin.name);row.append(open);
-      const button=document.createElement('button');button.className='danger';button.textContent='Remove';
-      button.disabled=deckyBusy||deckyJobPending();button.onclick=()=>deckyChange('remove',
-        {id:plugin.storeId,name:plugin.name,installedSha256:plugin.sha256});row.append(button);}
-    list.append(row);}if(!deckyState.plugins?.length)list.textContent='No managed plugins installed.';
+  renderDeckyInstalled();
   showDeckyStore();}catch(error){if(request!==deckyStatusRequest)return;
     const panelClosed=activeFrameyId!==null;
     if(panelClosed)closeFrameyPanel();
@@ -212,7 +216,7 @@ function showDeckyStore(){const list=byId('deckyStoreList');list.replaceChildren
     const button=document.createElement('button');button.textContent='Install';
     const installed=(deckyState?.plugins||[]).find(p=>p.storeId===plugin.id);
     if(installed)button.textContent=installed.version===plugin.version?'Reinstall':'Update';
-    button.disabled=deckyBusy||deckyJobPending()||!deckyState?.running||plugin.root||!!plugin.compatibility?.blockInstall;
+    button.disabled=deckyBusy||deckyJobPending()||!deckyState?.managed||!deckyState?.running||plugin.root||!!plugin.compatibility?.blockInstall;
     const note=document.createElement('p');note.textContent=compatibilityText(plugin);label.append(note);
     if(plugin.root && !plugin.compatibility?.blockInstall)label.append(' · Needs root; not supported on Frame');
     button.onclick=()=>deckyChange(installed?'update':'install',
@@ -223,6 +227,7 @@ function deckyJobView(title,message,percent,failed=false){
   const bar=byId('deckyJobProgress');bar.hidden=false;
   if(Number.isFinite(percent))bar.value=percent;else bar.removeAttribute('value');
   byId('deckyJobCheck').hidden=!failed||!savedDeckyJob();
+  byId('deckyJobCheck').disabled=deckyBusy;
 }
 async function followDeckyJob(job,action,name){
   for(let n=0;n<180;n++){
@@ -250,9 +255,9 @@ async function deckyChange(action,plugin){if(deckyBusy)return;
     deckyJobView('Previous plugin change','Check result before starting another plugin change.',null,true);
     return;
   }
-  if(!deckyState||(action!=='remove'&&!deckyState.running))return;
+  if(!deckyState||!deckyState.managed||(action!=='remove'&&(!deckyState.running||plugin.root||plugin.compatibility?.blockInstall)))return;
   if(!confirm(`${action} ${plugin.name}? Store plugins run code as your Frame user.`))return;
-  deckyBusy=true;showDeckyStore();
+  deckyBusy=true;byId('deckyJobCheck').disabled=true;renderDeckyInstalled();showDeckyStore();
   // Every store mutation can restart the shared Decky service. Retire even a
   // different plugin's settings view and subscriptions before submitting it.
   const panelClosed=activeFrameyId!==null;
@@ -275,15 +280,16 @@ async function deckyChange(action,plugin){if(deckyBusy)return;
     if(panelNote)byId('deckyJobStatus').textContent+=panelNote;
   }catch(error){if(!accepted&&error.status>=400&&error.status<500)clearDeckyJob();
     deckyJobView(`${action} ${plugin.name}`,`Error: ${error.message}${panelNote}`,null,true);}
-  finally{deckyBusy=false;await refreshDecky();}
+  finally{await refreshDecky();deckyBusy=false;byId('deckyJobCheck').disabled=false;renderDeckyInstalled();showDeckyStore();}
 }
 async function checkDeckyJob(){const saved=savedDeckyJob();
   if(deckyBusy)return;
-  if(!saved||typeof saved.job!=='string'){clearDeckyJob();showDeckyStore();return;}
-  deckyBusy=true;byId('deckyJobCheck').hidden=true;
+  if(!saved||typeof saved.job!=='string'){clearDeckyJob();renderDeckyInstalled();showDeckyStore();return;}
+  deckyBusy=true;byId('deckyJobCheck').hidden=true;byId('deckyJobCheck').disabled=true;
+  renderDeckyInstalled();showDeckyStore();
   try{await followDeckyJob(saved.job,saved.action,saved.name);clearDeckyJob();}
   catch(error){deckyJobView(`${saved.action} ${saved.name}`,`Error: ${error.message}`,null,true);}
-  finally{deckyBusy=false;await refreshDecky();}}
+  finally{await refreshDecky();deckyBusy=false;byId('deckyJobCheck').disabled=false;renderDeckyInstalled();showDeckyStore();}}
 byId('deckyJobCheck').onclick=checkDeckyJob;
 function openFrameyPanel(id,name){
   if(deckyBusy||deckyJobPending()||!deckyState?.running)return;

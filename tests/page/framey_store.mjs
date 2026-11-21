@@ -28,7 +28,7 @@ const el=id=>document.getElementById(id);
 const fixtures=Array.from({length:43},(_,i)=>({id:i+1,name:`Plugin ${i+1}`,author:i===42?'Special Author':'Maker',
   description:'A panel',version:'1.0',root:i===0}));
 ctx.fixtures=fixtures;
-vm.runInContext('deckyStore=fixtures; deckyState={running:true,plugins:[{storeId:2,version:"1.0"}]}; showDeckyStore()',ctx);
+vm.runInContext('deckyStore=fixtures; deckyState={managed:true,running:true,plugins:[{storeId:2,version:"1.0"}]}; showDeckyStore()',ctx);
 assert.equal(el('deckyStoreSummary').textContent,'43 plugins found');
 assert.equal(el('deckyStoreList').children.length,20);
 assert.equal(el('deckyStorePage').textContent,'Page 1 of 3');
@@ -53,7 +53,7 @@ assert.equal(el('deckyStoreList').textContent,'No plugins match this search.');
 ctx.mockApi=async (path,body) => {
   if(path==='/api/decky/plugin'){assert.equal(body.sha256,'a'.repeat(64));return {job:'job-1'};}
   if(path.startsWith('/api/job'))return {done:true,message:'Installed Plugin 2'};
-  if(path==='/api/decky/panel-status')return {running:true,plugins:[{storeId:2,name:'Plugin 2',version:'1.0'}]};
+  if(path==='/api/decky/panel-status')return {managed:true,running:true,plugins:[{storeId:2,name:'Plugin 2',version:'1.0'}]};
   throw Error(`unexpected ${path}`);
 };
 vm.runInContext('api=mockApi',ctx);
@@ -146,7 +146,7 @@ assert.equal(el('deckyStoreList').children[1].children[1].disabled,true);
 ctx.mockApi=async (path,body) => {
   if(path==='/api/decky/plugin'){assert.equal(body.sha256,'b'.repeat(64));return {job:'job-2'};}
   if(path.startsWith('/api/job'))return {done:true,error:'archive digest mismatch'};
-  if(path==='/api/decky/panel-status')return {running:true,plugins:[]};
+  if(path==='/api/decky/panel-status')return {managed:true,running:true,plugins:[]};
   throw Error(`unexpected ${path}`);
 };
 vm.runInContext('api=mockApi',ctx);
@@ -257,7 +257,7 @@ assert.match(el('deckyStoreSummary').textContent,/Store unavailable: offline/);
 assert.equal(el('deckyStoreList').textContent,'','an outage is not an empty search');
 el('deckyStoreFilter').value='installed';el('deckyStoreFilter').onchange();
 assert.match(el('deckyStoreSummary').textContent,/Store unavailable: offline/);
-ctx.mockApi=async path=>{assert.equal(path,'/api/decky/panel-status');return {running:true,plugins:[]};};
+ctx.mockApi=async path=>{assert.equal(path,'/api/decky/panel-status');return {managed:true,running:true,plugins:[]};};
 vm.runInContext('api=mockApi',ctx);await vm.runInContext('refreshDecky()',ctx);
 assert.match(el('deckyStoreSummary').textContent,/Store unavailable: offline/);
 assert.equal(el('deckyStoreList').children.length,0);
@@ -288,7 +288,7 @@ assert.equal(el('deckyStoreSummary').textContent,'1 plugin found');
 session.set('frameyPluginJob',JSON.stringify({job:'old-job',action:'install',name:'Plugin 2'}));
 ctx.mockApi=async path => {
   if(path.startsWith('/api/job'))throw Error('no such job (the app may have restarted)');
-  if(path==='/api/decky/panel-status')return {running:true,plugins:[]};
+  if(path==='/api/decky/panel-status')return {managed:true,running:true,plugins:[]};
   throw Error(`unexpected ${path}`);
 };
 vm.runInContext('api=mockApi',ctx);
@@ -317,7 +317,7 @@ vm.runInContext('api=mockApi',ctx);
 await el('deckyRefresh').onclick();
 assert.equal(session.get('frameyPluginUnknown'),'1');
 assert.match(el('deckyState').textContent,/status is incomplete/);
-ctx.mockApi=async path=>{assert.equal(path,'/api/decky/panel-status');return {running:true,plugins:[]};};
+ctx.mockApi=async path=>{assert.equal(path,'/api/decky/panel-status');return {managed:true,running:true,plugins:[]};};
 vm.runInContext('api=mockApi',ctx);
 await el('deckyRefresh').onclick();
 assert.equal(session.has('frameyPluginUnknown'),false);
@@ -329,7 +329,7 @@ assert.equal(el('deckyJobProgress').hidden,true);
 ctx.hardware={id:900,name:'Hardware only',version:'1.0',description:'Fan control',root:false,
   compatibility:{status:'na',reason:'Not supported on Frame: Deck fan hardware.',verification:['static archive','local browser'],blockInstall:true}};
 el('deckySearch').value='';el('deckyStoreFilter').value='all';
-vm.runInContext('deckyStore=[hardware];deckyState={running:true,plugins:[{...hardware,storeId:900}]};showDeckyStore()',ctx);
+vm.runInContext('deckyStore=[hardware];deckyState={managed:true,running:true,plugins:[{...hardware,storeId:900}]};showDeckyStore()',ctx);
 const hardwareRow=el('deckyStoreList').children[0];
 assert.equal(hardwareRow.children[1].disabled,true);
 assert.match(hardwareRow.children[0].children[0].textContent,/N\/A: Not supported on Frame/);
@@ -342,7 +342,7 @@ assert.match(el('frameyCompatibility').textContent,/local browser/);
 // A failed installed-status read must not leave stale Remove or Install actions.
 // Older responses must not replace a newer status, even if they arrive last.
 vm.runInContext('deckyStore=[{id:2,name:"Plugin 2",version:"1.0",description:"A panel",root:false}];' +
-  'deckyState={running:true,plugins:[{storeId:2,name:"Plugin 2",version:"1.0"}]};showDeckyStore()',ctx);
+  'deckyState={managed:true,running:true,plugins:[{storeId:2,name:"Plugin 2",version:"1.0"}]};showDeckyStore()',ctx);
 let statusCalls=[];
 ctx.mockApi=path=>{assert.equal(path,'/api/decky/panel-status');
   return new Promise((resolve,reject)=>statusCalls.push({resolve,reject}));};
@@ -355,7 +355,7 @@ assert.match(el('deckyState').textContent,/Installed plugins unavailable: offlin
 assert.equal(el('deckyInstalled').children.length,0);
 assert.equal(el('deckyInstalled').textContent,'Refresh to check installed plugins.');
 assert.equal(el('deckyStoreList').children[0].children[1].disabled,true);
-statusCalls[0].resolve({running:true,plugins:[{storeId:2,name:'Stale',version:'1.0'}]});
+statusCalls[0].resolve({managed:true,running:true,plugins:[{storeId:2,name:'Stale',version:'1.0'}]});
 await staleSuccess;
 assert.match(el('deckyState').textContent,/offline/);
 assert.equal(el('deckyInstalled').children.length,0);
@@ -618,4 +618,136 @@ for(const action of ['install','update','remove']){
         'reopened iframe must still reject the previous session');
     }
   }
+}
+
+// Active jobs and Check result must lock installed plugin controls as well as
+// store rows through the final status refresh. Unmanaged or incomplete status
+// and blocked releases must never enable mutations or prompt confirmation.
+{
+  const entries=new Map(),storage=new Map();
+  const get=id=>{if(!entries.has(id))entries.set(id,new Element(id));return entries.get(id);};
+  let confirms=0,posts=0,polls=0,finishPost,finishPoll,finishStatus;
+  const installedPlugin={storeId:2,name:'Installed fixture',version:'1.0',sha256:'a'.repeat(64)};
+  const storeRows=[
+    {id:2,name:'Installed fixture',version:'2.0',description:'Updateable',sha256:'b'.repeat(64),root:false},
+    {id:3,name:'Root fixture',version:'1.0',description:'Needs root',sha256:'c'.repeat(64),root:true},
+    {id:4,name:'Hardware fixture',version:'1.0',description:'Deck only',sha256:'d'.repeat(64),root:false,
+      compatibility:{status:'na',reason:'Not supported on Frame: synthetic hardware.',blockInstall:true}},
+  ];
+  const context=vm.createContext({document:{getElementById:get,createElement:()=>new Element()},
+    location:{hash:'',pathname:'/'},history:{replaceState(){}},crypto:webcrypto,
+    sessionStorage:{getItem:k=>storage.get(k)||'',setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
+    window:{addEventListener(){}},setInterval(){},setTimeout(){},console,
+    confirm:()=>{confirms++;return true;}});
+  vm.runInContext(script,context);
+  const run=expression=>vm.runInContext(expression,context);
+  const installedButtons=()=>get('deckyInstalled').children.flatMap(row=>row.children.filter(c=>['Open panel','Remove'].includes(c.textContent)));
+  const storeButtons=()=>get('deckyStoreList').children.map(row=>row.children[1]);
+  get('deckyStoreFilter').value='all';
+  context.storeRows=storeRows;
+  let statusReply={managed:true,running:true,plugins:[installedPlugin]};
+  let deferStatus=false;
+  context.mockApi=async(path,body)=>{
+    if(path==='/api/decky/panel-status')return deferStatus ? new Promise(resolve=>{finishStatus=()=>resolve(statusReply);}) : statusReply;
+    if(path==='/api/decky/plugin'){posts++;return new Promise((resolve,reject)=>{finishPost=(ok)=>ok?resolve({job:body.requestId}):reject(Error('POST lost'));});}
+    if(path.startsWith('/api/job')){polls++;return new Promise((resolve,reject)=>{finishPoll=(reply)=>reply instanceof Error?reject(reply):resolve(reply);});}
+    throw Error(`unexpected ${path}`);
+  };
+  run('api=mockApi;deckyStore=storeRows');
+  await run('refreshDecky()');
+  assert.equal(installedButtons().every(b=>!b.disabled),true);
+  assert.equal(storeButtons()[0].disabled,false);
+  assert.equal(storeButtons()[1].disabled,true);
+  assert.equal(storeButtons()[2].disabled,true);
+
+  // Blocked releases must be rejected before confirmation even if called directly.
+  await run('deckyChange("install",storeRows[1])');
+  await run('deckyChange("install",storeRows[2])');
+  assert.equal(confirms,0);assert.equal(posts,0);
+
+  // Start an update: installed buttons and store buttons must lock immediately.
+  deferStatus=true;
+  const changing=run('deckyChange("update",{...storeRows[0],installedSha256:"'+'a'.repeat(64)+'"})');
+  assert.equal(posts,1);
+  assert.equal(installedButtons().length,2);
+  assert.ok(installedButtons().every(b=>b.disabled),'active job must disable Open panel and Remove');
+  assert.ok(storeButtons().every(b=>b.disabled),'active job must disable store buttons');
+  assert.equal(get('deckyJobCheck').disabled,true);
+
+  // Simulate a lost POST reply; Check result must stay disabled during the
+  // post-failure refreshDecky() so tapping it cannot start a concurrent poll.
+  finishPost(false);
+  for(let n=0;n<10&&!finishStatus;n++)await Promise.resolve();
+  assert.equal(typeof finishStatus,'function');
+  assert.equal(get('deckyJobCheck').hidden,false);
+  assert.equal(get('deckyJobCheck').disabled,true,'Check result must stay locked until post-job refresh settles');
+  await run('checkDeckyJob()');
+  assert.equal(polls,0,'overlapping Check result must be ignored during post-job refresh');
+  const finishFirstStatus=finishStatus;finishStatus=null;
+  finishFirstStatus();
+  await changing;
+  assert.equal(get('deckyJobCheck').hidden,false);
+  assert.equal(get('deckyJobCheck').disabled,false,'Check result unlocks once post-job refresh settles');
+  assert.ok(installedButtons().every(b=>b.disabled),'pending job keeps installed controls locked');
+
+  // Now click Check result: all controls lock through polling and final refresh.
+  const checking=run('checkDeckyJob()');
+  assert.equal(polls,1);
+  assert.equal(get('deckyJobCheck').hidden,true);
+  assert.equal(get('deckyJobCheck').disabled,true);
+  assert.ok(installedButtons().every(b=>b.disabled),'Check result must disable installed controls while polling');
+  assert.ok(storeButtons().every(b=>b.disabled),'Check result must disable store controls while polling');
+  finishPoll({done:true,message:'Recovered update'});
+  for(let n=0;n<10&&!finishStatus;n++)await Promise.resolve();
+  assert.equal(typeof finishStatus,'function');
+  assert.equal(run('deckyBusy'),true,'deckyBusy must remain true through final refresh');
+  const finishSecondStatus=finishStatus;finishStatus=null;
+  finishSecondStatus();
+  await checking;
+  assert.equal(run('deckyBusy'),false);
+  assert.equal(installedButtons().every(b=>!b.disabled),true);
+  assert.equal(storeButtons()[0].disabled,false);
+
+  // Missing managed boolean is incomplete status and locks controls.
+  deferStatus=false;
+  statusReply={running:true,plugins:[installedPlugin]};
+  await run('refreshDecky()');
+  assert.match(get('deckyState').textContent,/status is incomplete/);
+  assert.equal(get('deckyInstalled').children.length,0);
+  assert.ok(storeButtons().every(b=>b.disabled));
+
+  // Unmanaged Decky must disable Remove and store mutations (Install/Update)
+  // and block retained mutation callbacks. When stopped it also closes any open
+  // panel and disables Open panel; when running without a release receipt, Open
+  // panel stays available for receipt-owned plugins while mutations stay locked.
+  statusReply={managed:true,running:true,plugins:[installedPlugin]};
+  await run('refreshDecky()');
+  const retainedOpen=installedButtons().find(b=>b.textContent==='Open panel').onclick;
+  const retainedRemove=installedButtons().find(b=>b.textContent==='Remove').onclick;
+  const retainedUpdate=storeButtons()[0].onclick;
+  run('openFrameyPanel(2,"Installed fixture")');
+  assert.equal(get('frameyPanel').hidden,false);
+  statusReply={managed:false,running:false,plugins:[installedPlugin]};
+  await run('refreshDecky()');
+  assert.equal(get('frameyPanel').hidden,true,'stopped unmanaged status must close open panel');
+  assert.match(get('deckyState').textContent,/Install it from Frame Control/);
+  assert.ok(installedButtons().every(b=>b.disabled),'stopped unmanaged status must disable Open panel and Remove');
+  assert.ok(storeButtons().every(b=>b.disabled),'stopped unmanaged status must disable store actions');
+  let beforeConfirms=confirms,beforePosts=posts;
+  retainedOpen();await retainedRemove();await retainedUpdate();
+  assert.equal(get('frameyPanel').hidden,true);
+  assert.equal(confirms,beforeConfirms,'retained callbacks must not prompt when unmanaged');
+  assert.equal(posts,beforePosts,'retained callbacks must not post when unmanaged');
+
+  statusReply={managed:false,running:true,plugins:[installedPlugin]};
+  await run('refreshDecky()');
+  assert.equal(installedButtons().find(b=>b.textContent==='Open panel').disabled,false,
+    'running loader keeps Open panel available for receipt-owned plugins');
+  assert.equal(installedButtons().find(b=>b.textContent==='Remove').disabled,true,
+    'unmanaged running status must keep Remove disabled');
+  assert.ok(storeButtons().every(b=>b.disabled),'unmanaged running status must keep store actions disabled');
+  beforeConfirms=confirms;beforePosts=posts;
+  await retainedRemove();await retainedUpdate();
+  assert.equal(confirms,beforeConfirms,'retained mutations must not prompt when unmanaged');
+  assert.equal(posts,beforePosts,'retained mutations must not post when unmanaged');
 }
