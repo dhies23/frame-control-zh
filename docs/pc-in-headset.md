@@ -144,6 +144,8 @@ python scripts/macview-bench.py run --pc --scenario capture --source window:1234
   malformed upgrades retain their HTTP errors and preserve another session.
   These checks use private in-memory transport and a synthetic source with
   native calls replaced. They add no Windows capture or physical Frame proof.
+  Controlled producer-thread construction and startup failures also release
+  the session and controller, allowing a fresh viewer to connect afterward.
 - **Verified in CI, this PR:** on `windows-latest`, the native adapter builds
   and a real x264 synthetic stream passes the ticket, reconnect, timing and
   input-echo tests through the helper. The Windows installer builds with the
