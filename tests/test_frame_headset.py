@@ -105,6 +105,15 @@ class HeadsetWindow(unittest.TestCase):
         with patch.object(frame_headset_runtime, 'command', return_value=' 0x101 "Other panel"'):
             self.assertIsNone(frame_headset_runtime.panel_window())
 
+    def test_desktop_headset_panel_controls_lock_jobs_and_discard_stale_status(self):
+        result = subprocess.run(
+            ['node', str(Path(__file__).parent / 'page/headset_panel_controls.mjs')],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()
