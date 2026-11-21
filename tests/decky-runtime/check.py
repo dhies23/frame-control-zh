@@ -81,6 +81,8 @@ def main():
     parser.add_argument('--reproduce-tailscale-unload-regression', action='store_true')
     parser.add_argument('--reproduce-junk-store-unload-regression', action='store_true')
     parser.add_argument('--reproduce-junk-store-ipc-regression', action='store_true')
+    parser.add_argument('--reproduce-kde-connect-runtime-regression', action='store_true')
+    parser.add_argument('--reproduce-kde-connect-ipc-regression', action='store_true')
     parser.add_argument('--reproduce-bound-method-regression', action='store_true')
     parser.add_argument('--reproduce-music-control-unload-regression', action='store_true')
     parser.add_argument('--reproduce-animation-unload-regression', action='store_true')
@@ -262,6 +264,22 @@ def main():
         (plugin/'py_modules/framey_decky_ipc.py').unlink()
     if args.reproduce_junk_store_ipc_regression:
         assert record['id'] == 84
+        prefix = (b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
+                  b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
+        managed = (plugin/'main.py').read_bytes()
+        assert managed.startswith(prefix)
+        (plugin/'main.py').write_bytes(managed[len(prefix):])
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
+    if args.reproduce_kde_connect_runtime_regression:
+        assert record['id'] == 74
+        with zipfile.ZipFile(io.BytesIO(data)) as original:
+            (plugin/'main.py').write_bytes(original.read(record['folder']+'/main.py'))
+            script = plugin/'run_kde_connect.sh'
+            script.write_bytes(original.read(record['folder']+'/run_kde_connect.sh'))
+            script.chmod(0o644)
+        (plugin/'py_modules/framey_decky_ipc.py').unlink()
+    if args.reproduce_kde_connect_ipc_regression:
+        assert record['id'] == 74
         prefix = (b'from framey_decky_ipc import install as _framey_install_ipc_eof\n'
                   b'_framey_install_ipc_eof()\ndel _framey_install_ipc_eof\n')
         managed = (plugin/'main.py').read_bytes()
@@ -642,6 +660,7 @@ def main():
                                or args.reproduce_pause_games_unload_regression
                                or args.reproduce_tailscale_runtime_regression
                                or args.reproduce_junk_store_unload_regression
+                               or args.reproduce_kde_connect_runtime_regression
                                or args.reproduce_playtime_unload_regression
                                or args.reproduce_volume_boost_user_regression
                                or args.reproduce_mixer_unload_regression) else case['shim'], 'calls': []}
@@ -690,6 +709,9 @@ def main():
             if case['probe'] == 'mixer-private-audio':
                 import mixer_private
                 mixer_fixture = mixer_private.start(env, log, processes, until_ready)
+            if case['probe'] == 'kde-connect-private-daemon':
+                import kde_connect_private
+                kde_connect_fixture = kde_connect_private.start(home, env)
             backend = subprocess.Popen([str(loader)], env=env, stdout=log, stderr=log, start_new_session=True)
             processes.append(backend)
             discovered = until_ready(lambda: rpc('loader/get_plugins'), 'published Decky plugin discovery',
@@ -832,6 +854,23 @@ def main():
                     if args.reproduce_junk_store_ipc_regression
                     else 'private static menu actions, websocket port, post-EOF RPC, restart and two strict stops with Junk-Store unload hook; Legendary/login/games/UI/Frame unverified'
                 )
+            elif case['probe'] == 'kde-connect-private-daemon':
+                if args.reproduce_kde_connect_runtime_regression:
+                    report['kdeConnectRuntime'] = kde_connect_private.probe_original_runtime_failure(
+                        backend, log, legacy, until_ready, kde_connect_fixture)
+                    report['result'] = (
+                        'expected original KDE Connect PermissionError on non-executable run_kde_connect.sh and missing _unload; negative only'
+                    )
+                else:
+                    report['kdeConnectRuntime'] = kde_connect_private.probe(
+                        backend, loader, env, log, processes, legacy, rpc, until_ready,
+                        kde_connect_fixture, plugin, discovered, data,
+                        ipc_regression=args.reproduce_kde_connect_ipc_regression)
+                    report['result'] = (
+                        'expected KDE Connect forced SIGKILL after IPC peer EOF; negative only'
+                        if args.reproduce_kde_connect_ipc_regression
+                        else 'private xprop/kdeconnectd stub DISPLAY=:0/:1 switching, preserved user HOME/XDG_RUNTIME_DIR/D-Bus, disable and unload SIGTERM cleanup, post-EOF RPC, restart and two strict stops; real kdeconnectd/pairing/Gamescope/UI/Frame unverified'
+                    )
             elif case['probe'] == 'screensaver-private-bus':
                 import screensaver_private
                 report['screensaverRuntime'] = screensaver_private.probe(backend, loader, env, log, processes,
