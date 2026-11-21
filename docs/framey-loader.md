@@ -300,6 +300,13 @@ The store still needs the managed Decky user service running
 before its Install or Update buttons are enabled. If a plugin prevents Decky
 from starting, Remove remains available for Frame Control-owned plugins while
 the managed service is stopped; it does not restart the service.
+The desktop catalogue also keeps Remove for an installed managed copy when the
+current store release needs root or is marked not supported on Frame. The
+warning stays visible and Install/Update remains unavailable. Removal names the
+installed copy and sends its reviewed receipt digest, rather than the blocked
+release's name or archive digest. An upstream-only copy gets no managed Remove
+action. These paths are covered with real local DOM controls and synthetic API
+replies; they do not establish a live removal or worn-headset behavior.
 
 Install, Update, and Remove show the current job stage in the headset panel.
 The desktop store also reserves a request ID before sending a plugin change.
