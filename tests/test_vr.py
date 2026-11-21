@@ -169,3 +169,40 @@ class HUD(unittest.TestCase):
                 vr.panel('hud-start')
             popen.return_value.terminate.assert_called_once()
             popen.return_value.wait.assert_called_once()
+
+    def test_corrupt_hud_state_and_exited_pid_do_not_break_stop(self):
+        for raw in ('{', 'null', '[]', json.dumps({'pid': True, 'start': 'same'})):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as tmp, \
+                 mock.patch.object(vr, 'ROOT', Path(tmp)), \
+                 mock.patch.object(vr, 'process_identity', return_value='same'), \
+                 mock.patch.object(vr.os, 'kill') as kill:
+                (Path(tmp) / 'hud.json').write_text(raw)
+                self.assertEqual(vr.panel('hud-stop')['message'], 'HUD closed.')
+                kill.assert_not_called()
+                self.assertFalse((Path(tmp) / 'hud.json').exists())
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(vr, 'ROOT', Path(tmp)), \
+             mock.patch.object(vr, 'process_identity', return_value='same'), \
+             mock.patch.object(vr.os, 'kill', side_effect=ProcessLookupError):
+            (Path(tmp) / 'hud.json').write_text(json.dumps({'pid': 1234, 'start': 'same'}))
+            self.assertEqual(vr.panel('hud-stop')['message'], 'HUD closed.')
+            self.assertFalse((Path(tmp) / 'hud.json').exists())
+
+        with self.assertRaises(ValueError):
+            vr.validate(['hud-stop'])
+
+    def test_process_identity_handles_truncated_proc_stat(self):
+        with mock.patch.object(vr.Path, 'read_text', return_value='1234 (xterm) S 1'), \
+             mock.patch.object(vr.Path, 'read_bytes', side_effect=[b'xterm\0-name\0frame-control-hud\0', b'xterm\n']):
+            self.assertIsNone(vr.process_identity(1234))
+
+    def test_start_failure_kills_unresponsive_process_and_preserves_error(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(vr, 'ROOT', Path(tmp)), \
+             mock.patch.object(vr.subprocess, 'Popen') as popen, \
+             mock.patch.object(vr.subprocess, 'check_output', side_effect=OSError('no display')):
+            popen.return_value.poll.return_value = None
+            popen.return_value.wait.side_effect = [subprocess.TimeoutExpired('xterm', 3), 0]
+            with self.assertRaisesRegex(OSError, 'no display'):
+                vr.panel('hud-start')
+            popen.return_value.terminate.assert_called_once()
+            popen.return_value.kill.assert_called_once()
