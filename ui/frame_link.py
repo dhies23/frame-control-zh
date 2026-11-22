@@ -83,7 +83,7 @@ def ssh_g(alias):
     ssh alias. proxied: it goes through ProxyJump or ProxyCommand, so only ssh can reach it."""
     try:
         out = frame_host.run_ssh(["ssh", "-G", alias], capture_output=True, stdin=subprocess.DEVNULL, text=True,
-                                 timeout=10).stdout
+                                 errors="replace", timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
         out = ""
     got = {}
@@ -91,7 +91,8 @@ def ssh_g(alias):
         k, _, v = line.partition(" ")
         if k in ("hostname", "port", "user", "proxyjump", "proxycommand") and k not in got:
             got[k] = v.strip()
-    port = int(got["port"]) if got.get("port", "").isdigit() else 22
+    raw_port = got.get("port", "")
+    port = int(raw_port) if raw_port.isdigit() and 1 <= int(raw_port) <= 65535 else 22
     proxied = any(got.get(k) not in (None, "", "none") for k in ("proxyjump", "proxycommand"))
     return got.get("hostname") or alias, port, got.get("user"), proxied
 
@@ -101,7 +102,7 @@ def proxy_route(alias):
     ProxyJump, or ("command", text) through a ProxyCommand."""
     try:
         out = frame_host.run_ssh(["ssh", "-G", alias], capture_output=True, stdin=subprocess.DEVNULL, text=True,
-                                 timeout=10).stdout
+                                 errors="replace", timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
         out = ""
     got = {}
@@ -1110,7 +1111,7 @@ class Link:
                     row.update(state="timeout", detail="No answer in time")
         states = [r["state"] for r in results if r]
         worst = next((s for s in ("refused", "timeout", "unreachable", "unresolved") if s in states), "timeout")
-        i = states.index(worst) if worst in states else 0
+        i = next((idx for idx, r in enumerate(results) if r and r["state"] == worst), 0)
         raw = probe_raw(ranked[i][0]["host"], port, results[i] or {"state": worst})
         message = self.explain(raw) or "The Frame isn't answering."
         self.fail("find", message, raw)
@@ -1193,6 +1194,10 @@ class Link:
         pending, self.pending = self.pending, None
         if pending and pending.poll() is None:
             pending.kill()
+            try:
+                pending.wait(2)
+            except subprocess.TimeoutExpired:
+                pass
         if self.control and self.alias:
             try:
                 frame_host.run_ssh([*self.mux_base, *self.opts, "-O", "exit", self.alias], capture_output=True,
@@ -1310,13 +1315,20 @@ class Link:
         mismatch = False
         shown = None  # (type, fingerprint) of the key the headset showed
         exited = None  # when ssh was first seen to have exited
+        def kill_proc():
+            proc.kill()
+            try:
+                proc.wait(2)
+            except subprocess.TimeoutExpired:
+                pass
+
         while True:
             left = deadline - time.monotonic()
             if self.stopped:
-                proc.kill()
+                kill_proc()
                 return "stop"
             if left <= 0:
-                proc.kill()
+                kill_proc()
                 self.fail(step, self.explain(f"Timed out talking to {alias}") or "The headset took too long to answer.",
                           f"Timed out talking to {alias}")
                 return "next"  # silence is about this address (or a jump host's forward to it)
@@ -1383,7 +1395,7 @@ class Link:
         collecting[0] = False  # the master keeps printing mux debug lines: drop them
         self.pending = None
         if self.stopped:
-            proc.kill()
+            kill_proc()
             return "stop"
         for sid in ("ssh", "identity", "login"):
             with self.cond:
@@ -1689,11 +1701,15 @@ def devices_view(link):
 
 def login_change(reg, did, body):
     """Whether an update asks for another user or port (the page sends both every time)."""
+    if not isinstance(body, dict):
+        return False
     try:
         d = reg.get(did)
     except frame_devices.DeviceError:
         return False
     user, port = body.get("user"), body.get("port")
+    if isinstance(port, bool):
+        return True  # it will be refused anyway
     try:
         port = int(port) if port is not None else None
     except (TypeError, ValueError):
@@ -1704,6 +1720,8 @@ def login_change(reg, did, body):
 def devices_action(link, body, open_setup, busy=lambda: 0):
     """POST /api/devices {"action": ..., "id": device id, ...}. -> {"message", ...devices_view}.
     busy() counts installs in progress: nothing may move them to another headset."""
+    if not isinstance(body, dict):
+        raise frame_devices.DeviceError("request body must be a JSON object")
     reg = link.reg
     action = body.get("action")
     did = body.get("id")
@@ -1781,7 +1799,7 @@ def devices_action(link, body, open_setup, busy=lambda: 0):
         msg = f"Removed {body.get('host')}"
     elif action == "address-move":
         delta = body.get("delta")
-        if delta not in (-1, 1):
+        if isinstance(delta, bool) or delta not in (-1, 1):
             raise frame_devices.DeviceError("delta must be -1 or 1")
         reg.move_address(did, body.get("host"), delta)
         msg = "Moved"
@@ -1862,12 +1880,19 @@ def tailscale_find(link, device_id=None):
     if not ts.get("up"):
         return {"up": False, "peers": [], "message": "Tailscale isn't running on this computer. Start it, then look again."}
     peers = []
-    for p in ts["peers"]:
-        ip = next((i for i in p["ips"] if "." in i), p["ips"][0] if p["ips"] else None)
-        likely = p["os"] == "linux" and (LIKELY.search(p["name"]) or p["name"].lower() in (
+    for p in ts.get("peers") or ():
+        if not isinstance(p, dict):
+            continue
+        ips = [i for i in (p.get("ips") or ()) if isinstance(i, str) and i]
+        ip = next((i for i in ips if "." in i), ips[0] if ips else None)
+        name = str(p.get("name") or "")
+        dns = str(p.get("dns") or "")
+        os_name = str(p.get("os") or "")
+        online = bool(p.get("online"))
+        likely = os_name == "linux" and (LIKELY.search(name) or name.lower() in (
             device["alias"].lower(), (device.get("name") or "").lower()))
-        peers.append({"name": p["name"], "dns": p["dns"], "ip": ip, "os": p["os"], "online": p["online"],
-                      "likely": bool(likely), "added": bool({p["dns"].lower(), (ip or "").lower()} & known)})
+        peers.append({"name": name, "dns": dns, "ip": ip, "os": os_name, "online": online,
+                      "likely": bool(likely), "added": bool(({dns.lower(), (ip or "").lower()} - {""}) & known)})
     peers.sort(key=lambda p: (not p["likely"], p["os"] != "linux", not p["online"], p["name"].lower()))
     return {"up": True, "peers": peers, "tailnet": ts.get("tailnet"), "message": None}
 
@@ -1881,7 +1906,7 @@ def matches_pinned_key(host, port, saved):
         return False
     try:
         reply = frame_host.run_ssh([keyscan, "-T", "2", "-p", str(port), host],
-                                   capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=4)
+                                   capture_output=True, text=True, errors="replace", stdin=subprocess.DEVNULL, timeout=4)
     except (OSError, subprocess.TimeoutExpired):
         return False
     pins = set(saved)
