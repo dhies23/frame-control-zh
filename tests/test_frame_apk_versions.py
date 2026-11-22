@@ -343,6 +343,44 @@ class VersionsTest(unittest.TestCase):
         self.assertEqual(len(recent), 2)
         self.assertEqual(recent[0]['date'], '2026-02-01')
 
+    def test_android_name_and_describe_ignore_bool_or_unhashable_sdk(self):
+        self.assertEqual(versions.android_name(True), 'Android API True')
+        self.assertEqual(versions.android_name([30]), 'Android API [30]')
+        info = {'package': 'org.example.app', 'label': 'Example', 'version': '1.0',
+                'version_code': 1, 'min_sdk': True, 'abis': []}
+        self.assertIn('Minimum: not specified', versions.describe(info))
+
+    def test_alternatives_skips_malformed_index_entries_and_bool_current_code(self):
+        valid = {'version': '1.0', 'version_code': 1, 'min_sdk': 21, 'abis': ['arm64-v8a'],
+                 'name': '/good_1.apk', 'sha256': '1' * 64}
+        bad_records = [
+            'not-a-dict',
+            {'version': '2.0', 'version_code': 2, 'abis': [], 'name': 123},
+            {'version': '2.1', 'version_code': 3, 'abis': [], 'name': '///'},
+            {'version': '2.2', 'version_code': True, 'abis': [], 'name': '/bool.apk'},
+            {'version': '2.3', 'version_code': '4', 'abis': [], 'name': '/strcode.apk'},
+            {'version': ['bad'], 'version_code': 5, 'abis': [], 'name': '/badver.apk'},
+            {'version': '2.5', 'version_code': 6, 'abis': 'arm64-v8a', 'name': '/badabi.apk'},
+            {'version': '2.6', 'version_code': 7, 'abis': [], 'name': '/badsha.apk', 'sha256': ['x']},
+            valid,
+        ]
+        responses = iter([
+            ['not-a-dict'],
+            {'org.example.app': 'not-a-list'},
+            {'org.example.app': bad_records},
+        ])
+        with patch.object(frame_catalog, 'load_index', side_effect=lambda *a, **k: next(responses)):
+            result = versions.alternatives('org.example.app', current_version_code=True)
+        self.assertEqual([v['version_code'] for v in result['versions']], [7, 1])
+        self.assertEqual(versions.alternatives(None)['versions'], [])
+        self.assertEqual(versions.alternatives(None)['links'], [])
+
+    def test_install_missing_sha256_raises_frame_error_not_key_error(self):
+        record = {'version': '1.0', 'version_code': 1, 'min_sdk': 21, 'abis': [], 'name': '/nohash.apk'}
+        with patch.object(frame_catalog, 'load_index', return_value={'org.example.app': [record]}):
+            with self.assertRaisesRegex(frame_android.FrameError, 'SHA-256'):
+                versions.install('org.example.app', 'https://f-droid.org/repo/nohash.apk')
+
 
 class UploadVersionsTest(unittest.TestCase):
     def test_endpoint_validation(self):

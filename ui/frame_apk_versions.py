@@ -18,12 +18,16 @@ NOTE = ('Pick a version whose minimum is Android 11 or lower and that has an '
 
 
 def android_name(sdk):
-    return 'Android ' + ANDROID[sdk] if sdk in ANDROID else f'Android API {sdk}'
+    if isinstance(sdk, int) and not isinstance(sdk, bool) and sdk in ANDROID:
+        return 'Android ' + ANDROID[sdk]
+    return f'Android API {sdk}'
 
 
 def describe(info):
     sdk = info.get('min_sdk')
-    minimum = f'{android_name(sdk)} (API {sdk})' if sdk else 'not specified'
+    minimum = (f'{android_name(sdk)} (API {sdk})'
+               if isinstance(sdk, int) and not isinstance(sdk, bool) and sdk > 0
+               else 'not specified')
     try:
         frame_android.check_installable(info)
         verdict = 'Lepton can install this APK. Features may still need services Lepton lacks.'
@@ -35,6 +39,8 @@ def describe(info):
 
 
 def search_links(package):
+    if not isinstance(package, str) or not package:
+        return []
     q = quote(package, safe='')
     return [{'source': name, 'url': url} for name, url in (
         ('APKMirror', 'https://www.apkmirror.com/?' + urlencode({'post_type': 'app_release', 's': package})),
@@ -46,6 +52,8 @@ def search_links(package):
 
 
 def _versions(package, cached_only=False):
+    if not isinstance(package, str) or not package:
+        return [], []
     versions, errors, seen = [], [], set()
     for source, repo in REPOS:
         try:
@@ -53,18 +61,39 @@ def _versions(package, cached_only=False):
         except Exception as e:  # one bad repo (dropped download, odd index) mustn't hide the others
             errors.append(f'Could not check {source}: {e}')
             continue
-        for v in index.get(package, []):
-            url = repo + v['name'].lstrip('/')
-            key = (v['version_code'], v.get('sha256') or url)
+        if not isinstance(index, dict):
+            continue
+        entries = index.get(package, [])
+        if not isinstance(entries, list):
+            continue
+        for v in entries:
+            if not isinstance(v, dict):
+                continue
+            name = v.get('name')
+            code = v.get('version_code')
+            version = v.get('version')
+            abis = v.get('abis', [])
+            if (not isinstance(name, str) or not name.lstrip('/') or
+                    not isinstance(code, int) or isinstance(code, bool) or
+                    not isinstance(version, str) or not isinstance(abis, list)):
+                continue
+            sha256 = v.get('sha256')
+            if not isinstance(sha256, str):
+                sha256 = ''
+            url = repo + name.lstrip('/')
+            key = (code, sha256 or url)
             if key in seen:
                 continue
             seen.add(key)
-            versions.append(dict(v, url=url, source=source))
+            versions.append(dict(v, version=version, version_code=code, abis=abis,
+                                 sha256=sha256, url=url, source=source))
     return versions, errors
 
 
 def alternatives(package, current_version_code=None):
     """At most eight releases, preferring arm64-only builds over universal builds."""
+    if isinstance(current_version_code, bool):
+        current_version_code = None
     versions, errors = _versions(package)
     versions = [v for v in versions if v['version_code'] != current_version_code]
     total = len(versions)
@@ -78,12 +107,14 @@ def alternatives(package, current_version_code=None):
 
 
 def install(package, url):
+    if not isinstance(package, str) or not isinstance(url, str):
+        raise frame_android.FrameError('That version is no longer available; check the APK again')
     # Resolve the selection again: the client cannot supply a trusted hash or arbitrary URL.
     records, _ = _versions(package, cached_only=True)
     version = next((v for v in records if v['url'] == url), None)
     if not version:
         raise frame_android.FrameError('That version is no longer available; check the APK again')
-    apk = frame_catalog.fetch_apk({'a': version['url'], 'h': version['sha256'], 'n': package})
+    apk = frame_catalog.fetch_apk({'a': version['url'], 'h': version.get('sha256'), 'n': package})
     info = frame_android.apk_info(apk)
     if info['package'] != package or info.get('version_code') != version['version_code']:
         raise frame_android.FrameError('The downloaded APK does not match the selected version')
