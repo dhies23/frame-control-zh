@@ -173,6 +173,50 @@ class BackupTests(unittest.TestCase):
         launch.assert_not_called()
         self.assertFalse(result['needs_game_data'])
 
+    def test_path_rejects_control_characters(self):
+        for bad in ('game\x00.apk', 'sub/line\nbreak.obb', 'tab\tname.apk', 'del\x7fname.apk'):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(backup.android.FrameError, 'unsafe path'):
+                    backup._path(bad)
+
+    def test_check_standalone_wraps_deflate_and_runtime_errors(self):
+        import zlib
+        for exc in (zlib.error('bad deflate'), RuntimeError('encrypted'), EOFError('short'),
+                    UnicodeError('bad text')):
+            with self.subTest(exc=type(exc).__name__), \
+                    patch.object(backup.frame_apk, '_read', side_effect=exc):
+                with self.assertRaisesRegex(backup.android.FrameError, 'Could not read APK manifest'):
+                    backup._check_standalone(self.apk)
+
+    def test_inspect_guards_invalid_path_entries_and_unreadable_directories(self):
+        for bad in ([None], [123], [''], ['   ']):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(backup.android.FrameError, 'Choose'):
+                    backup.inspect(bad)
+        folder = self.root / 'unreadable'
+        folder.mkdir()
+        with patch.object(Path, 'iterdir', side_effect=PermissionError('denied')):
+            with self.assertRaisesRegex(backup.android.FrameError, 'Could not read'):
+                backup.inspect([str(folder)])
+            with self.assertRaisesRegex(backup.android.FrameError, 'Could not read'):
+                backup.inspect([str(self.apk)], discover=True)
+
+    def test_public_uses_cached_signature_size_after_file_removed(self):
+        plan = backup.inspect([str(self.apk), str(self.obb[0])])
+        expected_size = self.obb[0].stat().st_size
+        self.obb[0].unlink()
+        view = backup.public(plan)
+        self.assertEqual(view['obb'], [{'name': self.obb[0].name, 'size': expected_size}])
+
+    def test_install_handles_vanished_file_between_is_file_and_stat(self):
+        plan = backup.inspect([str(self.apk), str(self.obb[0])])
+        with patch.object(Path, 'is_file', return_value=True), \
+                patch.object(Path, 'stat', side_effect=FileNotFoundError('gone')), \
+                patch.object(backup.android, 'ssh') as ssh:
+            with self.assertRaisesRegex(backup.android.FrameError, 'backup changed'):
+                backup.install(plan)
+        ssh.assert_not_called()
+
 
 class StagingTests(unittest.TestCase):
     setUp = BackupTests.setUp
