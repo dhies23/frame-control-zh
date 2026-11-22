@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import runpy
 import shlex
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -27,8 +28,12 @@ def _stream(command, src=None, dst=None):
     except OSError as error:
         raise android.FrameError('app-data transfer failed: ' + str(error))
     if result.returncode:
-        raise android.FrameError(result.stderr.decode(errors='replace').strip()[-600:] or
-                                 'app-data transfer failed')
+        stderr = (result.stderr or b'').decode(errors='replace')
+        stdout = '' if dst else (result.stdout or b'').decode(errors='replace')
+        err = android.FrameError(stderr.strip()[-600:] or 'app-data transfer failed')
+        if frame_host.ssh_link_failed(result.returncode, stderr, stdout):
+            frame_host.link_failure(err)
+        raise err
     return result.stdout
 
 
@@ -41,7 +46,7 @@ def _sha256(path):
 
 
 def _meta(package):
-    if not android.PKG_RE.fullmatch(package or ''):
+    if not isinstance(package, str) or not android.PKG_RE.fullmatch(package):
         raise android.FrameError('invalid package name')
     meta = android._meta_or_fail(package)
     if meta['package'] != package:
@@ -50,7 +55,7 @@ def _meta(package):
 
 
 def install_obb(package, paths):
-    if not android.PKG_RE.fullmatch(package or ''):
+    if not isinstance(package, str) or not android.PKG_RE.fullmatch(package):
         raise android.FrameError('invalid package name')
     paths = [Path(p).resolve() for p in paths]
     if not paths:
@@ -92,8 +97,31 @@ def _data_command(action, meta):
     guard = ('running=$(podman ps --format "{{.Names}}") || exit 1; '
              f'if printf "%s\\n" "$running" | grep -Fxq {shlex.quote(container)}; then '
              'echo "stop the app before backup or restore" >&2; exit 1; fi; ')
-    return guard + shlex.join(['podman', 'unshare', 'python3', '-c', REMOTE.read_text(),
+    return guard + shlex.join(['podman', 'unshare', 'python3', '-c', REMOTE.read_text(encoding='utf-8'),
                               action, meta['package'], str(int(meta['instance']))])
+
+
+def _publish_exclusive(temporary, destination):
+    """Publish a verified backup without overwriting an existing destination."""
+    try:
+        os.link(temporary, str(destination))
+    except FileExistsError:
+        raise android.FrameError('backup destination already exists') from None
+    except OSError:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0)
+        try:
+            out_fd = os.open(str(destination), flags, 0o600)
+        except FileExistsError:
+            raise android.FrameError('backup destination already exists') from None
+        try:
+            with os.fdopen(out_fd, 'wb') as out, open(temporary, 'rb') as src:
+                shutil.copyfileobj(src, out)
+        except BaseException:
+            try:
+                os.unlink(str(destination))
+            except OSError:
+                pass
+            raise
 
 
 def backup_data(package, destination):
@@ -102,16 +130,20 @@ def backup_data(package, destination):
         raise android.FrameError('backup destination already exists')
     with android._install_lock:
         meta = _meta(package)
+        destination.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix='.frame-backup-', dir=str(destination.parent))
         try:
             with os.fdopen(fd, 'wb') as dst:
                 _stream(_data_command('backup', meta), dst=dst)
             result = _inspect(temporary, meta)
             # Exclusive publication: a concurrently created backup is never overwritten.
-            os.link(temporary, str(destination))
+            _publish_exclusive(temporary, destination)
             return dict(result, path=str(destination), sha256=_sha256(destination))
         finally:
-            os.unlink(temporary)
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 def _inspect(path, meta):
@@ -126,9 +158,15 @@ def restore_data(package, archive):
     with android._install_lock:
         meta = _meta(package)
         _inspect(archive, meta)
-        with open(archive, 'rb') as src:
-            result = _stream(_data_command('restore', meta), src=src)
         try:
-            return json.loads(result)
+            with open(archive, 'rb') as src:
+                result = _stream(_data_command('restore', meta), src=src)
+        except OSError as error:
+            raise android.FrameError('invalid app-data backup: ' + str(error))
+        try:
+            parsed = json.loads(result)
         except (ValueError, TypeError):
+            parsed = None
+        if not isinstance(parsed, dict):
             raise android.FrameError('could not read restore result; inspect app data before retrying')
+        return parsed
