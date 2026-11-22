@@ -19,16 +19,21 @@ APPID = '2000250025'
 
 
 def validate(body):
-    action = body.get('action')
+    action = body.get('action') if isinstance(body, dict) else None
     if action not in ('hud-start', 'hud-stop'):
         raise ValueError('VR action must be hud-start or hud-stop; playspace controls are not yet verified')
     return action
 
 
 def save(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix('.tmp')
-    tmp.write_text(json.dumps(data))
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(json.dumps(data))
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def process_identity(pid):
@@ -37,19 +42,31 @@ def process_identity(pid):
         args = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
         if b'frame-control-hud' in args and b'xterm' in Path(f'/proc/{pid}/comm').read_bytes():
             return stat[19]  # field 22, starttime; protects against PID reuse
-    except OSError:
+    except (OSError, IndexError):
         pass
     return None
 
 
+def _read_saved(path):
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def panel(action):
     path = ROOT / 'hud.json'
-    saved = json.loads(path.read_text()) if path.exists() else {}
+    saved = _read_saved(path)
     pid = saved.get('pid')
-    running = bool(pid and saved.get('start') and process_identity(pid) == saved['start'])
+    valid_pid = type(pid) is int and pid > 1
+    running = bool(valid_pid and saved.get('start') and process_identity(pid) == saved['start'])
     if action == 'hud-stop':
         if running:
-            os.kill(pid, signal.SIGTERM)  # xterm closes the PTY; child exits on HUP
+            try:
+                os.kill(pid, signal.SIGTERM)  # xterm closes the PTY; child exits on HUP
+            except ProcessLookupError:
+                pass
         path.unlink(missing_ok=True)
         return {'message': 'HUD closed.'}
     if running:
@@ -82,7 +99,14 @@ def panel(action):
     except BaseException:
         if p.poll() is None:
             p.terminate()
-            p.wait(timeout=3)
+            try:
+                p.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                try:
+                    p.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
         raise
 
 
