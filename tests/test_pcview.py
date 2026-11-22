@@ -28,7 +28,7 @@ import frame_pc_agent as agent
 import frame_pc_capture as capture
 import frame_pcview
 import frame_macview
-from frame_stream_stats import Stats
+from frame_stream_stats import Stats, distribution
 from test_macview import WS
 
 
@@ -517,6 +517,83 @@ class AdapterTests(unittest.TestCase):
         for _ in range(4100):
             stats.add(cap=10000001)
         self.assertEqual(len(stats.frames), 4096)
+
+    def test_stats_ignore_malformed_nonfinite_and_bool_reports(self):
+        stats = Stats(lambda: 10000000)
+        f1 = stats.add(cap=10000001)
+        f2 = stats.add(cap=10000002)
+        stats.report(None)
+        stats.report({})
+        stats.report(dict(t='rx', s=True, r=999))
+        stats.report(dict(t='rx', s=[1], r=999))
+        stats.report(dict(t='rx', s=f1['s'], r=True))
+        stats.report(dict(t='rx', s=f1['s'], r=float('nan')))
+        stats.report(dict(t='rx', s=f1['s'], r=float('inf')))
+        self.assertEqual(f1['rx'], 0)
+        stats.report(dict(t='rx', s=f1['s'], r=10000010))
+        self.assertEqual(f1['rx'], 10000010)
+
+        stats.report(dict(t='fd', f=None, drop=2))
+        self.assertEqual(stats.dropped, 2)
+        stats.report(dict(t='fd', f=[
+            [True, 11, 12, 13],
+            [[1], 14, 15, 16],
+            [f1['s'], float('nan'), float('inf'), True],
+            [f2['s'], 21, 22, 23],
+        ], drop=3))
+        self.assertEqual((f1['dec'], f1['drw'], f1['vs']), (0, 0, 0))
+        self.assertEqual((f2['dec'], f2['drw'], f2['vs']), (21, 22, 23))
+        self.assertEqual(stats.dropped, 5)
+        for bad_drop in (True, False, -4, 'many', None, float('nan'), float('inf')):
+            stats.report(dict(t='fd', f=[], drop=bad_drop))
+        self.assertEqual(stats.dropped, 5)
+
+        for bad_rtt in (float('nan'), float('inf'), float('-inf'), -1, True, 'bad', None):
+            stats.report(dict(t='clock', rtt=bad_rtt, dec='bad'))
+        self.assertEqual((stats.rtt, stats.decoder, stats.synced), (0, '', False))
+        stats.report(dict(t='clock', rtt=4.25, dec=None))
+        self.assertEqual((stats.rtt, stats.decoder, stats.synced), (4.25, '', True))
+        self.assertEqual(distribution([1.0, float('nan'), float('inf'), True, None, 3.0]), {'p50': 3.0, 'p95': 3.0})
+
+    def test_stats_input_bounds_and_sequence_wrap_skip_zero(self):
+        now = [10000000]
+        stats = Stats(lambda: now[0])
+        for bad in (None, dict(t='m', i=True), dict(t='m', i=0), dict(t='m', i=-1), dict(t='m', i=1 << 32)):
+            stats.input(bad)
+        self.assertEqual(stats.inputs, {})
+
+        stats.input(dict(t='m', i=7, tv=float('nan')))
+        self.assertEqual(stats.inputs[7]['tv'], 0)
+
+        stats.sequence = 0xffffffff
+        wrapped = stats.add(cap=10000001)
+        self.assertEqual(wrapped['s'], 1)
+        self.assertEqual(wrapped['echo'], 7)
+        self.assertEqual(stats.inputs[7]['frame'], 1)
+        later = stats.add(cap=10000002)
+        self.assertEqual(later['s'], 2)
+        self.assertEqual(later['echo'], 0)
+        now[0] = 10000010
+        self.assertEqual([f['s'] for f in stats.snapshot(since=0, settle=0)['frames']], [1, 2])
+
+    def test_rx_bool_sequence_does_not_ack_controller(self):
+        session = agent.Session.__new__(agent.Session)
+        session.lock, session.input_lock = threading.RLock(), threading.RLock()
+        session.stop_event, session.key_event = threading.Event(), threading.Event()
+        session.src, session.codec, session.key, session.w, session.h = 'display:1', 'h264', 'r', 100, 100
+        session.source = dict(src='display:1', w=100, h=100, portal=1)
+        session.input_enabled, session.released = True, False
+        session.native = mock.Mock()
+        session.native.now.return_value = 0
+        session.controller, session.agent = mock.Mock(), mock.Mock()
+        session.stats = Stats(lambda: 0)
+        session.produce = lambda: None
+        session.input = None
+        session.ws = mock.Mock()
+        session.ws.receive.side_effect = [dict(t='rx', s=True, r=100), ConnectionError('closed')]
+        with self.assertRaises(ConnectionError):
+            session.start()
+        session.controller.call.assert_not_called()
 
 
 def x264_bundled():
