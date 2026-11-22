@@ -280,6 +280,69 @@ class VersionsTest(unittest.TestCase):
         with patch.object(frame_android, 'ssh', return_value='\n9876543\n'):
             self.assertEqual(frame_catalog.environment(), {'steamos': None, 'lepton': '9876543'})
 
+    def test_reduce_index_handles_non_dict_uses_sdk(self):
+        raw = os.path.join(self.tmp.name, 'null_sdk.json')
+        entry1 = {'manifest': {'versionName': '1', 'versionCode': 1, 'usesSdk': None}, 'file': {'name': '/a.apk'}}
+        entry2 = {'manifest': {'versionName': '2', 'versionCode': 2, 'usesSdk': []}, 'file': {'name': '/b.apk'}}
+        with open(raw, 'w', encoding='utf-8') as f:
+            json.dump({'packages': {'org.example.a': {'versions': {'1': entry1, '2': entry2}}}}, f)
+        reduced = frame_catalog._reduce_index(raw)
+        self.assertEqual([v['min_sdk'] for v in reduced['org.example.a']], [1, 1])
+
+    def test_load_index_uses_utf8_for_cache_read_and_write(self):
+        import builtins
+        repo = versions.REPOS[0][1]
+        real_open = builtins.open
+        encodings = []
+
+        def tracked_open(file, mode='r', *args, **kwargs):
+            if str(file).endswith('.installable-v1') or str(file).endswith('.part'):
+                if 'b' not in mode:
+                    encodings.append((mode, kwargs.get('encoding')))
+            return real_open(file, mode, *args, **kwargs)
+
+        with patch.object(builtins, 'open', side_effect=tracked_open):
+            frame_catalog.load_index(repo)
+            frame_catalog._indexes.clear()
+            frame_catalog.load_index(repo)
+        self.assertTrue(encodings)
+        self.assertTrue(all(enc == 'utf-8' for _, enc in encodings), encodings)
+
+    def test_fetch_apk_caps_size_wraps_http_exception_and_rejects_colon_or_del(self):
+        import http.client
+        cache = os.path.join(self.tmp.name, 'apk-cache-harden')
+        digest = 'a' * 64
+        with patch.object(frame_catalog, 'CACHE', cache):
+            for bad_url in ('https://f-droid.org/repo/app:stream.apk', 'https://f-droid.org/repo/app\x7f.apk'):
+                with self.subTest(bad_url=bad_url), self.assertRaisesRegex(frame_android.FrameError, 'filename'):
+                    frame_catalog.fetch_apk({'a': bad_url, 'h': digest, 'n': 'Bad'})
+            with patch.object(frame_catalog.urllib.request, 'urlopen',
+                              side_effect=http.client.IncompleteRead(b'part')):
+                with self.assertRaisesRegex(frame_android.FrameError, "couldn't download"):
+                    frame_catalog.fetch_apk({'a': 'https://f-droid.org/repo/ok.apk', 'h': digest, 'n': 'Ok'})
+            with patch.object(frame_catalog, 'MAX_APK', 16), \
+                    patch.object(frame_catalog.urllib.request, 'urlopen', return_value=io.BytesIO(b'x' * 64)):
+                with self.assertRaisesRegex(frame_android.FrameError, 'too large'):
+                    frame_catalog.fetch_apk({'a': 'https://f-droid.org/repo/big.apk', 'h': digest, 'n': 'Big'})
+            self.assertFalse(any(n.endswith('.part') for n in os.listdir(cache)))
+
+    def test_fetch_icon_handles_none_icon_field(self):
+        self.assertIsNone(frame_catalog.fetch_icon({'i': None}))
+
+    def test_add_report_rejects_trailing_newline_and_non_string_package(self):
+        for bad in ('org.example.app\n', 123, ['org.example.app']):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                frame_catalog.add_report(bad, '1.0', rating='works')
+
+    def test_recent_reports_skips_malformed_rows_and_handles_non_string_dates(self):
+        rows = ['bad', {'date': '2026-01-01'}, {'package': 'org.example.app', 'date': 12345},
+                {'package': 'org.example.app', 'date': '2026-02-01'}]
+        with patch.object(frame_catalog, 'catalog'), \
+                patch.object(frame_catalog.compat_db, 'load', return_value=rows):
+            recent = frame_catalog.recent_reports()
+        self.assertEqual(len(recent), 2)
+        self.assertEqual(recent[0]['date'], '2026-02-01')
+
 
 class UploadVersionsTest(unittest.TestCase):
     def test_endpoint_validation(self):
