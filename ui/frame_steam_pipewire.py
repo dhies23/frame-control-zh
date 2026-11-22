@@ -65,9 +65,9 @@ def _steam_running(proc=Path('/proc')):
             try:
                 if p.stat().st_uid != os.geteuid():
                     continue
-                comm = (p / 'comm').read_text().strip().lower()
+                comm = (p / 'comm').read_bytes().decode('utf-8', 'replace').strip().lower()
                 args = (p / 'cmdline').read_bytes().decode('utf-8', 'replace').split('\0')
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 continue  # a process exited while scanning
             names = {Path(a).name.lower() for a in args if a}
             if (comm in {'steam', 'steamwebhelper', 'steam.sh'}
@@ -100,6 +100,8 @@ def _check_start(child):
 
 def action(body):
     global _launch
+    if not isinstance(body, dict):
+        raise HelperError('Unknown Steam helper action.')
     kind = body.get('action')
     if kind not in ('launch', 'permissions'):
         raise HelperError('Unknown Steam helper action.')
