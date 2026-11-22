@@ -113,6 +113,8 @@ def check_host(host):
 
 
 def check_port(port):
+    if isinstance(port, bool):
+        raise DeviceError("The port must be a number")
     try:
         port = int(port)
     except (TypeError, ValueError):
@@ -176,7 +178,7 @@ def parse_blocks(text):
             cur["hostname"] = value.replace("%%", "%")
         elif key == "user" and cur["user"] is None:
             cur["user"] = value
-        elif key == "port" and value.isdigit():
+        elif key == "port" and value.isdigit() and 1 <= int(value) <= 65535:
             cur["port"], cur["port_set"] = int(value), True
         elif key == "identityfile":
             cur["identity_files"].append(value)
@@ -290,9 +292,9 @@ def repair_permissions(path=None):
             if not frame_host.make_private(tmp):
                 return False
             for attempt in range(20):  # a running ssh.exe can hold the file for a moment
-                if path.read_bytes() != data:
-                    return False
                 try:
+                    if path.read_bytes() != data:
+                        return False
                     os.replace(tmp, path)
                     return True
                 except PermissionError:
@@ -435,10 +437,17 @@ def pin_dir():
 def _write_pin(device_id, lines):
     target = known_hosts(device_id)
     fd_, tmp = tempfile.mkstemp(prefix=".seed-", dir=str(pin_dir()))
-    with os.fdopen(fd_, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(dict.fromkeys(lines)) + "\n")
-    frame_host.make_private(tmp)  # Windows: this user only, not the folder's inherited ACL
-    os.replace(tmp, target)  # whole file at once: ssh never sees half of it
+    try:
+        with os.fdopen(fd_, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(dict.fromkeys(lines)) + "\n")
+        frame_host.make_private(tmp)  # Windows: this user only, not the folder's inherited ACL
+        os.replace(tmp, target)  # whole file at once: ssh never sees half of it
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 # The host key types OpenSSH writes to known_hosts.
@@ -577,7 +586,10 @@ class Registry:
             except (OSError, ValueError):
                 return
             if isinstance(data, dict) and isinstance(data.get("devices"), list):
-                data.setdefault("networks", {})
+                if not isinstance(data.get("networks"), dict):
+                    data["networks"] = {}
+                if "dismissed" in data and not isinstance(data.get("dismissed"), dict):
+                    data["dismissed"] = {}
                 data.setdefault("active", None)
                 data["devices"] = [d for d in data["devices"] if self._sane(d)]
                 # The headset in use is this server's own choice: another server picking a
@@ -593,22 +605,39 @@ class Registry:
     @staticmethod
     def _sane(d):
         try:
+            if not isinstance(d, dict):
+                return False
             check_alias(d["alias"])
-            d["addresses"] = [a for a in d.get("addresses") or [] if isinstance(a, dict) and HOST_RE.fullmatch(a.get("host", ""))
-                              and a.get("kind") in KINDS]
+            raw_addrs = d.get("addresses")
+            if not isinstance(raw_addrs, list):
+                raw_addrs = []
+            d["addresses"] = [a for a in raw_addrs if isinstance(a, dict)
+                              and isinstance(a.get("host"), str) and HOST_RE.fullmatch(a["host"])
+                              and ".." not in a["host"] and a.get("kind") in KINDS]
             for a in d["addresses"]:
-                a.setdefault("networks", [])
-                a.setdefault("label", "")
+                nets = a.get("networks")
+                a["networks"] = [n for n in nets if isinstance(n, str)] if isinstance(nets, list) else []
+                if not isinstance(a.get("label"), str):
+                    a["label"] = ""
                 # Old or hand-edited registries must not turn a cached route into an
                 # arbitrary hostname or an SSH option. Only a numeric address is used.
                 if not frame_network.valid_ip(a.get("last_ip", "")):
                     a.pop("last_ip", None)
                     a.pop("last_ip_network", None)
+            if not isinstance(d.get("user"), str) or not NAME_RE.fullmatch(d["user"]):
+                d["user"] = DEFAULT_USER
+            port = d.get("port")
+            if type(port) is not int or not 1 <= port <= 65535:
+                d["port"] = 22
+            id_files = d.get("identity_files")
+            d["identity_files"] = [str(f) for f in id_files][:8] if isinstance(id_files, list) else []
+            if not isinstance(d.get("name"), str) or not d["name"]:
+                d["name"] = d["alias"]
             if d.get("identity") or any(a.get("last_ok") for a in d["addresses"]):
                 # Files from before the flag existed: it had an identity (or a connection that
                 # worked, which saved one). Kept from now on, whatever happens to its addresses.
                 d["identity_established"] = True
-            return NAME_RE.fullmatch(d.get("id", "")) is not None
+            return isinstance(d.get("id"), str) and NAME_RE.fullmatch(d["id"]) is not None
         except (KeyError, TypeError, DeviceError):
             return False
 
@@ -616,8 +645,15 @@ class Registry:
         with self.lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_name(self.path.name + ".tmp")
-            tmp.write_text(json.dumps(self.data, indent=1), encoding="utf-8")
-            os.replace(tmp, self.path)
+            try:
+                tmp.write_text(json.dumps(self.data, indent=1), encoding="utf-8")
+                os.replace(tmp, self.path)
+            finally:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
             self._stamp = self._file_stamp()
 
     def _refresh(self):
@@ -795,11 +831,17 @@ class Registry:
             self.save()
 
     def move_address(self, device_id, host, delta):
+        if isinstance(delta, bool):
+            raise DeviceError("The move offset must be a number")
+        try:
+            delta = int(delta)
+        except (TypeError, ValueError):
+            raise DeviceError("The move offset must be a number") from None
         with self._changing():
             d = self._find(device_id)
             a = self._addr(d, host)
             i = d["addresses"].index(a)
-            j = max(0, min(len(d["addresses"]) - 1, i + int(delta)))
+            j = max(0, min(len(d["addresses"]) - 1, i + delta))
             d["addresses"].insert(j, d["addresses"].pop(i))
             self.save()
 
@@ -901,7 +943,10 @@ class Registry:
         with self._changing():
             first = not self.data["devices"] and not self.data.get("active")
             for b in blocks:
-                host = b["hostname"] if b["hostname"] and HOST_RE.fullmatch(b["hostname"]) else None
+                try:
+                    host = check_host(b["hostname"]) if b["hostname"] else None
+                except DeviceError:
+                    host = None
                 user = b["user"] if b["user"] and NAME_RE.fullmatch(b["user"]) else DEFAULT_USER
                 d = next((x for x in self.data["devices"] if x["alias"] == b["alias"]), None)
                 dismissed = self.data.get("dismissed", {})
