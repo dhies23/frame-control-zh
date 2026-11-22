@@ -215,8 +215,10 @@ def game(appid):
 
 def shipping_exe(game_dir):
     """The Unreal Engine game binary (…/Binaries/Win64/*-Win64-Shipping.exe), or None."""
-    found = [p for p in game_dir.glob("*/Binaries/Win64/*.exe") if p.name.lower().endswith("-win64-shipping.exe")]
-    found += [p for p in game_dir.glob("Binaries/Win64/*.exe") if p.name.lower().endswith("-win64-shipping.exe")]
+    found = [p for p in game_dir.glob("*/Binaries/Win64/*.exe")
+             if p.name.lower().endswith("-win64-shipping.exe") and p.is_file()]
+    found += [p for p in game_dir.glob("Binaries/Win64/*.exe")
+              if p.name.lower().endswith("-win64-shipping.exe") and p.is_file()]
     return max(found, key=lambda p: p.stat().st_size) if found else None
 
 
@@ -237,7 +239,8 @@ def game_pid(exe_name):
 
 def loaded(pid, name):
     try:
-        return any(line.rstrip().endswith("/" + name) for line in open(f"/proc/{pid}/maps"))
+        with open(f"/proc/{pid}/maps", encoding="utf-8", errors="replace") as f:
+            return any(line.rstrip().endswith("/" + name) for line in f)
     except OSError:
         return False
 
@@ -248,9 +251,12 @@ def receipt_path(appid):
 
 def read_receipt(appid):
     try:
-        return json.loads(receipt_path(appid).read_text())
+        data = json.loads(receipt_path(appid).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    if not isinstance(data, dict) or not isinstance(data.get("exe"), str) or not isinstance(data.get("prefix"), str):
+        return None
+    return data
 
 
 def managed_dir(g):
@@ -367,8 +373,11 @@ def install(appid):
                "sources": [UEVR["url"], PYTHON["url"]]}
     RECEIPTS.mkdir(parents=True, exist_ok=True)
     tmp = receipt_path(appid).with_suffix(".tmp")
-    tmp.write_text(json.dumps(receipt, indent=1))
-    tmp.rename(receipt_path(appid))
+    try:
+        tmp.write_text(json.dumps(receipt, indent=1), encoding="utf-8")
+        tmp.rename(receipt_path(appid))
+    finally:
+        tmp.unlink(missing_ok=True)
     return {"message": f"Installed UEVR {UEVR['version']} for {g['name']}", **status(appid)}
 
 
@@ -442,12 +451,12 @@ def start(appid):
     reply = None
     for line in reversed(out.stdout.splitlines()):
         try:
-            reply = json.loads(line)
-            break
+            parsed = json.loads(line)
         except ValueError:
             continue
-    if not isinstance(reply, dict):
-        reply = None
+        if isinstance(parsed, dict):
+            reply = parsed
+            break
     if not reply or "error" in reply:
         raise Fail("UEVR injection failed: " + (reply or {}).get("error", (out.stderr.strip().splitlines() or ["no output"])[-1]))
     try:
@@ -477,7 +486,10 @@ def uninstall(appid):
     # if the receipt says otherwise.
     managed = os.path.join(prefix, "drive_c", MANAGED)
     uevr_dirs = {os.path.realpath(str(d)) for d in user_dirs({"prefix": Path(prefix)}, Path(r["exe"])).values()}
-    targets = list(r.get("remove", [])) + list(r.get("remove_if_created", {}).values())
+    raw_remove = r.get("remove")
+    raw_created = r.get("remove_if_created")
+    targets = ([t for t in raw_remove if isinstance(t, str)] if isinstance(raw_remove, list) else []) + (
+        [t for t in raw_created.values() if isinstance(t, str)] if isinstance(raw_created, dict) else [])
     for t in targets:
         real = os.path.realpath(t)
         if not (real.startswith(managed + os.sep) or real in uevr_dirs):
@@ -488,8 +500,9 @@ def uninstall(appid):
     if left:  # keep the receipt, so Remove can be tried again
         raise Fail("couldn't remove " + ", ".join(left))
     parents = {os.path.realpath(os.path.join(prefix, "drive_c/users/steamuser/AppData/Roaming/UnrealVRMod")), managed}
-    for t in r.get("remove_if_empty", []):
-        if os.path.realpath(t) in parents:
+    raw_empty = r.get("remove_if_empty")
+    for t in (raw_empty if isinstance(raw_empty, list) else []):
+        if isinstance(t, str) and os.path.realpath(t) in parents:
             try:
                 os.rmdir(t)
             except OSError:

@@ -6,6 +6,7 @@ import hashlib
 import io
 import itertools
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -293,6 +294,48 @@ class Start(FakeLibrary):
 
     def test_inject_script_is_valid_python(self):
         compile(frame_mods.INJECT_PY, "frame_inject.py", "exec")
+
+    def test_trailing_non_dict_json_from_wine_does_not_hide_injection_reply(self):
+        res, _ = self.run_start('{"pid": 320, "nullified": true}\n0\n[1, 2]\n')
+        self.assertEqual(res["frame_submits"], 7)
+        self.assertIn("UEVR injected into Gravitas", res["message"])
+
+    def test_corrupt_non_dict_receipt_is_ignored(self):
+        frame_mods.RECEIPTS.mkdir(parents=True, exist_ok=True)
+        for bad in ("[1, 2]", '"oops"', "123", '{"prefix": "/x"}'):
+            frame_mods.receipt_path(APPID).write_text(bad, encoding="utf-8")
+            self.assertIsNone(frame_mods.read_receipt(APPID))
+
+    @unittest.skipIf(sys.platform == "win32", "broken symlink test runs on POSIX")
+    def test_shipping_exe_skips_broken_symlinks(self):
+        game_dir = frame_mods.game(APPID)["dir"]
+        broken = game_dir / "Binaries/Win64/Broken-Win64-Shipping.exe"
+        broken.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink("/nonexistent/target.exe", broken)
+        found = frame_mods.shipping_exe(game_dir)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.name, "Drop-Win64-Shipping.exe")
+
+    def test_uninstall_handles_null_receipt_collections_and_install_cleans_tmp(self):
+        frame_mods.install(APPID)
+        r = frame_mods.read_receipt(APPID)
+        r.update(remove=None, remove_if_created=None, remove_if_empty=None)
+        frame_mods.receipt_path(APPID).write_text(json.dumps(r), encoding="utf-8")
+        frame_mods.uninstall(APPID)
+        self.assertIsNone(frame_mods.read_receipt(APPID))
+
+        tmp = frame_mods.receipt_path(APPID).with_suffix(".tmp")
+        real_rename = Path.rename
+
+        def fail_receipt_rename(self_path, target):
+            if self_path == tmp:
+                raise OSError("disk full")
+            return real_rename(self_path, target)
+
+        with mock.patch.object(Path, "rename", fail_receipt_rename):
+            with self.assertRaises(OSError):
+                frame_mods.install(APPID)
+        self.assertFalse(tmp.exists())
 
 
 class Helper(unittest.TestCase):
