@@ -135,6 +135,60 @@ class ApkInfo(unittest.TestCase):
         self.assertEqual(res.values(1), [])
         self.assertLess(len(looked), frame_apk.MAX_STEPS + 10)
 
+    def test_crafted_huge_counts_and_bad_headers_fail_fast_as_apk_error(self):
+        # String pool with count=0x10000000 in a 28-byte chunk must be rejected before unpacking.
+        bad_pool = struct.pack('<HHIIIII', 0x0001, 28, 28, 0x10000000, 0, 0, 28) + b'\0' * 4
+        bad_manifest = struct.pack('<HHI', 0x0003, 8, 8 + len(bad_pool)) + bad_pool
+        with self.assertRaises(frame_apk.ApkError):
+            frame_apk.manifest_elements(bad_manifest)
+
+        # Start tag with asize=0 and count=100 must be rejected as corrupt instead of re-reading.
+        sp = pool(['manifest', 'package', 'com.example.bad'])
+        start_tag = struct.pack('<HHI', 0x0102, 16, 36) + b'\0' * 8 + struct.pack('<4xIHHH', 0, 0, 0, 100) + b'\0' * 10
+        zero_asize = struct.pack('<HHI', 0x0003, 8, 8 + len(sp) + len(start_tag)) + sp + start_tag
+        with self.assertRaises(frame_apk.ApkError):
+            frame_apk.manifest_elements(zero_asize)
+
+        # Resource table type chunk claiming count=0x10000000 in a 40-byte chunk must raise ApkError.
+        type_chunk = struct.pack('<HHI', 0x0201, 36, 40) + struct.pack('<BB2xII', 1, 0, 0x10000000, 40) + b'\0' * 20
+        pkg_chunk = struct.pack('<HHI', 0x0200, 12, 12 + len(type_chunk)) + struct.pack('<I', 0x7f) + type_chunk
+        arsc = struct.pack('<HHI', 0x0002, 12, 12 + len(pkg_chunk)) + struct.pack('<I', 1) + pkg_chunk
+        with self.assertRaises(frame_apk.ApkError):
+            frame_apk.Resources(arsc)
+
+        # Resmap chunk with hsize > size must be skipped by _chunks without negative unpack count.
+        bad_resmap = struct.pack('<HHI', 0x0180, 16, 12) + b'\0' * 4
+        bad_hdr_manifest = struct.pack('<HHI', 0x0003, 8, 8 + len(bad_resmap)) + bad_resmap
+        self.assertEqual(frame_apk.manifest_elements(bad_hdr_manifest), [])
+
+    def test_icon_fallback_skips_oversized_candidate(self):
+        arsc = resources({(1, '', 0): {0: 1, 1: 2}, (2, '', 160): {0: 3}, (2, '', 640): {0: 4}})
+        data = apk({
+            'AndroidManifest.xml': manifest('com.example.icon', 0x7f010000, 0x7f010001, 26),
+            'resources.arsc': arsc,
+            'res/icon_hi.png': b'X' * 64,
+            'res/icon_lo.png': b'lo',
+        })
+        limit, frame_apk.MAX_ICON = frame_apk.MAX_ICON, 16
+        try:
+            info = self.read(data)
+        finally:
+            frame_apk.MAX_ICON = limit
+        self.assertEqual(info['icon_png'], b'lo')
+
+        # Also falls back across ic_launcher PNGs when the largest exceeds MAX_ICON.
+        fallback_apk = apk({
+            'AndroidManifest.xml': manifest('com.example.launcher', 0x7f010000, 0x7f010001, 26),
+            'res/drawable-xxxhdpi/ic_launcher.png': b'Y' * 64,
+            'res/drawable-mdpi/ic_launcher.png': b'ok',
+        })
+        limit, frame_apk.MAX_ICON = frame_apk.MAX_ICON, 16
+        try:
+            info2 = self.read(fallback_apk)
+        finally:
+            frame_apk.MAX_ICON = limit
+        self.assertEqual(info2['icon_png'], b'ok')
+
 
 if __name__ == '__main__':
     unittest.main()
