@@ -770,5 +770,98 @@ class StatusProbe(unittest.TestCase):
             self.assertIn(key, data)
 
 
+class ServerHardeningTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(ROOT / "ui"))
+        import server
+        cls.server = server
+
+    def test_trailing_newlines_rejected_across_validators(self):
+        from unittest.mock import patch
+        s = self.server
+        calls = [
+            ("launch", lambda: s.launch({"appid": "620\n"})),
+            ("force_quit", lambda: s.force_quit({"action": "quit", "appid": "620\n"})),
+            ("steam", lambda: s.steam({"action": "store", "appid": "620\n"})),
+            ("mods", lambda: s.mods({"action": "status", "appid": "620\n"})),
+            ("panel_window", lambda: s.panel_target({"window": ["123\n"], "display": [":1"]})),
+            ("panel_display", lambda: s.panel_target({"window": ["123"], "display": [":1\n"]})),
+            ("touch_display", lambda: s.touch_event({"window": 123, "display": ":1\n", "button": "left"})),
+            ("flatpak", lambda: s.flatpak({"id": "org.example.App\n", "action": "install"})),
+            ("apk_versions", lambda: s.apk_versions("package=org.example.app%0A")),
+            ("quest_serial", lambda: s.quest_serial("ABC123\n")),
+            ("quest_pkg", lambda: s.quest({"action": "import", "package": "org.example.app\n"})),
+            ("meta_app", lambda: s.meta({"action": "install", "app": "12345\n"})),
+            ("meta_pkg", lambda: s.meta({"action": "test", "package": "org.example.app\n"})),
+            ("titles_id", lambda: s.titles({"action": "launch", "id": "MyGame\n"})),
+        ]
+        with patch.object(s, "ssh", side_effect=AssertionError("ssh called")), \
+                patch.object(s, "steam_frame", side_effect=AssertionError("steam_frame called")), \
+                patch.object(s, "running_frame", side_effect=AssertionError("running_frame called")), \
+                patch.object(s, "start_job", side_effect=AssertionError("start_job called")), \
+                patch.object(s, "queue_job", side_effect=AssertionError("queue_job called")), \
+                patch.object(s.frame_apk_versions, "alternatives", side_effect=AssertionError("alternatives called")), \
+                patch.object(s.frame_titles, "launch", side_effect=AssertionError("titles.launch called")):
+            for label, fn in calls:
+                with self.subTest(label=label):
+                    with self.assertRaises(s.Failure) as caught:
+                        fn()
+                    self.assertEqual(caught.exception.status, 400)
+
+    def test_upload_rejects_backslashes_and_control_chars_in_filename(self):
+        from unittest.mock import patch
+        s = self.server
+        for bad in ("a\\evil.bin", "..\\evil.bin", "bad%00.bin", "bad%0A.bin", "bad%7F.bin"):
+            with self.subTest(bad=bad):
+                h = object.__new__(s.Handler)
+                h.headers = {"X-Filename": bad, "X-Mode": "push", "Content-Length": "4"}
+                h.rfile = io.BytesIO(b"data")
+                with patch.object(s, "push_file", side_effect=AssertionError("push_file called")):
+                    with self.assertRaises(s.Failure) as caught:
+                        h.upload()
+                self.assertEqual(caught.exception.status, 400)
+
+    def test_parse_display_non_finite_font_and_macview_bool_dimensions(self):
+        s = self.server
+        for raw in ("NaN", "inf", "-inf"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(s.parse_display(f"@@font\n{raw}\n")["fontScale"])
+        for payload in ({"action": "show", "src": "0", "w": True}, {"action": "show", "src": "0", "h": False}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(s.Failure) as caught:
+                    s.macview_action(payload)
+                self.assertEqual(caught.exception.status, 400)
+
+    def test_ssh_and_helper_reads_use_utf8_encoding(self):
+        from unittest.mock import patch
+        s = self.server
+        seen = {}
+
+        def fake_run_ssh(cmd, **kwargs):
+            seen.update(kwargs)
+            return subprocess.CompletedProcess(cmd, 0, stdout='{"ok": true}', stderr="")
+
+        with patch.object(s, "ensure_master"), patch.object(s.frame_host, "run_ssh", side_effect=fake_run_ssh):
+            self.assertEqual(s.ssh("echo ok"), '{"ok": true}')
+        self.assertEqual(seen.get("encoding"), "utf-8")
+        self.assertEqual(seen.get("errors"), "replace")
+
+        encodings = []
+        real_read_text = Path.read_text
+
+        def tracked_read_text(path_obj, *args, **kwargs):
+            if path_obj.name in ("frame_status.py", "frame_touch.py"):
+                enc = args[0] if args else kwargs.get("encoding")
+                encodings.append((path_obj.name, enc))
+            return real_read_text(path_obj, *args, **kwargs)
+
+        with patch.object(Path, "read_text", tracked_read_text), \
+                patch.object(s, "ssh", return_value="{}"):
+            s.status({})
+            s.panels()
+        self.assertEqual(encodings, [("frame_status.py", "utf-8"), ("frame_touch.py", "utf-8")])
+
+
 if __name__ == "__main__":
     unittest.main()
