@@ -1,5 +1,8 @@
 /* Fixed, read-only projection executed in Steam CEF. No plugin source runs here. */
 (function(payload) {
+  // A poll may spend 15s verifying its receipt, then 25s reading Steam state.
+  // Retain its bounded lifetime queue through that round trip and poll gap.
+  const sessionIdleMs = 60000;
   const api = window.SteamClient?.GameSessions;
   let bridge = window.__frameyRunningBridgeV1;
   if (bridge && bridge.api !== api) {
@@ -58,7 +61,7 @@
     bridge.sessions.set(payload.session, item);
     if (!bridge.timer) bridge.timer = setInterval(() => {
       for (const [key, state] of bridge.sessions)
-        if (Date.now() - state.touched > 15000) bridge.remove(key);
+        if (Date.now() - state.touched > sessionIdleMs) bridge.remove(key);
     }, 5000);
   }
   item.touched = Date.now();

@@ -1,5 +1,8 @@
 /* Fixed local-download operations in Steam CEF. Plugin code never runs here. */
 (async function(payload) {
+  // A poll may spend 15s verifying its receipt, then 25s reading Steam state.
+  // Retain the subscription through slow polls and active queue batches.
+  const sessionIdleMs = 60000;
   const api = window.SteamClient?.Downloads;
   let bridge = window.__frameyDownloadsBridgeV1;
   if (bridge && bridge.api !== api) {
@@ -15,7 +18,7 @@
       sessions.delete(key);
       if (!sessions.size) {clearInterval(bridge.timer); bridge.timer = null;}
     };
-    bridge = window.__frameyDownloadsBridgeV1 = {api, sessions, remove, timer:null, busy:false, inFlight:null};
+    bridge = window.__frameyDownloadsBridgeV1 = {api, sessions, remove, timer:null, busy:false, busySession:null, inFlight:null};
   }
   if (payload.action === 'close') {bridge.remove(payload.session); return null;}
   if (typeof api?.RegisterForDownloadItems !== 'function')
@@ -72,7 +75,7 @@
     bridge.sessions.set(payload.session,item);
     if (!bridge.timer) bridge.timer = setInterval(() => {
       for (const [key,state] of bridge.sessions)
-        if (Date.now() - state.touched > 15000) bridge.remove(key);
+        if (bridge.busySession !== key && Date.now() - state.touched > sessionIdleMs) bridge.remove(key);
     },5000);
   }
   item.touched = Date.now();
@@ -115,6 +118,7 @@
     if (result === false) throw Error(name+' was refused by Steam');
   };
   bridge.busy = true;
+  bridge.busySession = payload.session;
   item.changedVersion = item.version;
   const modern = item.modern, deadline = Date.now()+15000;
   let queued = 0;
@@ -131,5 +135,9 @@
     return {queued};
   } catch (error) {
     throw Error('Queued '+queued+' of '+selected.length+' downloads; '+error.message);
-  } finally {bridge.busy = false;}
+  } finally {
+    item.touched = Date.now();
+    bridge.busy = false;
+    bridge.busySession = null;
+  }
 })
