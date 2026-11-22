@@ -19,6 +19,7 @@ import contextlib
 import hashlib
 import http.client
 import json
+import math
 import os
 import queue
 import re
@@ -560,7 +561,8 @@ def ssh(remote, *, stdin=None, timeout=30, text=True, route=None, retry=False):
         # Never let ssh inherit our stdin: under the app it's the pipe held open for
         # --exit-on-eof, and Windows' ssh.exe waits on it forever.
         feed = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
-        run = dict(capture_output=True, **feed, text=text, errors="replace" if text else None, timeout=timeout)
+        run = dict(capture_output=True, **feed, text=text, encoding="utf-8" if text else None,
+                   errors="replace" if text else None, timeout=timeout)
         if retry and route is None:
             r = _run_retryable_ssh(lambda: [*SSH, FRAME, remote], **run)
         else:
@@ -619,7 +621,7 @@ def terminal(argv):
 # ---- actions ---------------------------------------------------------------
 
 def status(_body):
-    s = json.loads(ssh("python3 -", stdin=(HERE / "frame_status.py").read_text(), timeout=20))
+    s = json.loads(ssh("python3 -", stdin=(HERE / "frame_status.py").read_text(encoding="utf-8"), timeout=20))
     osr = s.get("os") if isinstance(s, dict) else None
     if isinstance(osr, dict):
         # The headset's hash is for usage statistics only; the page and MCP clients don't get it.
@@ -783,7 +785,7 @@ def comfort(body):
     # on-headset state/lock; no listener, service registration or third-party app.
     # The page polls this every few seconds, so run the copy already on the headset and
     # send the sources only when that version isn't there yet.
-    files = {name: (HERE / name).read_text() for name in COMFORT_FILES}
+    files = {name: (HERE / name).read_text(encoding="utf-8") for name in COMFORT_FILES}
     version = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()[:16]
     safe_retry = body.get("action") == "status"
     out = json.loads(ssh("python3 -", stdin=COMFORT_RUN % ({}, version, COMFORT_FILES, json.dumps(body)),
@@ -805,7 +807,7 @@ def headset_view():
 
 def _headset_view():
     # `timeout`: VR_Init can block if SteamVR is restarting.
-    out = ssh("timeout 15 python3 -", stdin=(HERE / "frame_vrshot.py").read_text(), timeout=30)
+    out = ssh("timeout 15 python3 -", stdin=(HERE / "frame_vrshot.py").read_text(encoding="utf-8"), timeout=30)
     # SteamVR prints its own notices (e.g. about vrwebhelper) on stdout too, so
     # take the last line that is our result object.
     result = {"error": out.strip() or "no output"}
@@ -927,7 +929,8 @@ def save_shots(body):
                 try:
                     r = _run_retryable_ssh(lambda: ["scp", "-p", *SSH[1:],
                                                     *(f"{FRAME}:{remote}" for remote, _ in group), str(incoming)],
-                                           capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=300)
+                                           capture_output=True, stdin=subprocess.DEVNULL, text=True,
+                                           encoding="utf-8", errors="replace", timeout=300)
                 except subprocess.TimeoutExpired:
                     raise Failure("Copying screenshots timed out")
                 if r.returncode != 0:
@@ -1001,7 +1004,7 @@ def fetch_file(remote, local):
     try:
         # Modern scp uses SFTP, so the remote path isn't parsed by a shell. -p keeps its time.
         r = frame_host.run_ssh(["scp", "-p", *SSH[1:], f"{FRAME}:{remote}", str(local)], capture_output=True,
-                               stdin=subprocess.DEVNULL, text=True, errors="replace", timeout=3600)
+                               stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", timeout=3600)
     except subprocess.TimeoutExpired:
         raise Failure(f"Copying {Path(remote).name} timed out")
     if r.returncode != 0:
@@ -1169,7 +1172,7 @@ def auto_sync(body):
 
 def launch(body):
     appid = str(body.get("appid", ""))
-    if not APPID.match(appid):
+    if not APPID.fullmatch(appid):
         raise Failure("bad appid", 400)
     ssh(f"steam steam://rungameid/{appid} >/dev/null 2>&1 &")
     return {"message": f"Launching {appid}"}
@@ -1180,7 +1183,7 @@ def steam_frame(*args, timeout=40, script="frame_steam.py", source=None):
     helper with the same JSON contract, on the Frame and return its JSON."""
     try:
         out = ssh("python3 - " + " ".join(map(shlex.quote, args)),
-                  stdin=source or (HERE / script).read_text(), timeout=timeout)
+                  stdin=source or (HERE / script).read_text(encoding="utf-8"), timeout=timeout)
     except Failure as e:
         # The helper prints {"error": ...} on stdout when it fails, but ssh()
         # reports stderr instead if there was any, so look in both.
@@ -1196,7 +1199,8 @@ def steam_frame(*args, timeout=40, script="frame_steam.py", source=None):
 def running_frame(*args, timeout=40):
     """frame_running.py on the Frame, with frame_steam.py (its DevTools client) as a module."""
     source = ("import sys, types\nm = types.ModuleType('frame_steam'); sys.modules['frame_steam'] = m\n"
-              f"exec({(HERE / 'frame_steam.py').read_text()!r}, m.__dict__)\n" + (HERE / "frame_running.py").read_text())
+              f"exec({(HERE / 'frame_steam.py').read_text(encoding='utf-8')!r}, m.__dict__)\n"
+              + (HERE / "frame_running.py").read_text(encoding="utf-8"))
     return steam_frame(*args, timeout=timeout, source=source)
 
 
@@ -1211,7 +1215,7 @@ def force_quit(body):
     appid = str(body.get("appid", ""))
     if body.get("action") != "quit":
         raise Failure("action must be quit", 400)
-    if not APPID.match(appid):
+    if not APPID.fullmatch(appid):
         raise Failure("bad appid", 400)
     app = next((a for a in running_frame("list")["running"] if str(a.get("appid")) == appid), None)
     if not app:
@@ -1233,7 +1237,7 @@ def force_quit(body):
 def steam(body):
     """Steam games: install an owned game, or open its store page in the headset."""
     appid, action = str(body.get("appid", "")), body.get("action")
-    if not APPID.match(appid):
+    if not APPID.fullmatch(appid):
         raise Failure("bad appid", 400)
     if action not in ("install", "store"):
         raise Failure("action must be install or store", 400)
@@ -1254,7 +1258,7 @@ def vr(body):
         action = frame_vr.validate(body)
     except ValueError as e:
         raise Failure(str(e), 400)
-    sources = {name: (HERE / (name + '.py')).read_text() for name in ('frame_status', 'frame_vr')}
+    sources = {name: (HERE / (name + '.py')).read_text(encoding='utf-8') for name in ('frame_status', 'frame_vr')}
     script = "import sys, types, json, os\n"
     for name, source in sources.items():
         script += f"m = types.ModuleType({name!r}); sys.modules[{name!r}] = m\nexec({source!r}, m.__dict__)\n"
@@ -1277,7 +1281,7 @@ MOD_TIMEOUT = {"status": 40, "install": 600, "start": 900, "uninstall": 60}
 def mods(body):
     """UEVR for one installed Unreal game: status, install, start (inject) or uninstall."""
     appid, action = str(body.get("appid", "")), body.get("action")
-    if not APPID.match(appid):
+    if not APPID.fullmatch(appid):
         raise Failure("bad appid", 400)
     if action not in MOD_TIMEOUT:
         raise Failure("action must be " + ", ".join(MOD_TIMEOUT), 400)
@@ -1530,7 +1534,7 @@ KDECONNECT_HOME = ".local/share/frame-control/kdeconnect"
 def kdeconnect_packages():
     """[(file, sha256), ...] from frame/kdeconnect/packages.json; [] if it's missing."""
     try:
-        manifest = json.loads((KDECONNECT / "packages.json").read_text())
+        manifest = json.loads((KDECONNECT / "packages.json").read_text(encoding="utf-8"))
         return [(p["file"], p["sha256"]) for p in manifest["packages"]]
     except (OSError, ValueError, KeyError, TypeError):
         return []
@@ -1821,7 +1825,7 @@ def licenses():
     notices = []
     for title, path in found:
         try:
-            notices.append({"title": title, "text": path.read_text(errors="replace")})
+            notices.append({"title": title, "text": path.read_text(encoding="utf-8", errors="replace")})
         except OSError:
             pass
     return notices
@@ -2083,12 +2087,12 @@ TOUCH_BUTTONS = ("left", "right", "middle")
 
 def panels():
     """The headset's app panels (window, display, name, size) and which has focus."""
-    return json.loads(ssh("python3 - panels", stdin=(HERE / "frame_touch.py").read_text(), timeout=20))
+    return json.loads(ssh("python3 - panels", stdin=(HERE / "frame_touch.py").read_text(encoding="utf-8"), timeout=20))
 
 
 def panel_target(q):
     window, display = (q.get("window") or [""])[0], (q.get("display") or [""])[0]
-    if not PANEL_WINDOW.match(window) or not PANEL_DISPLAY.match(display):
+    if not PANEL_WINDOW.fullmatch(window) or not PANEL_DISPLAY.fullmatch(display):
         raise Failure("window must be a window id and display an X display such as :1", 400)
     return window, display
 
@@ -2120,7 +2124,7 @@ def touch_event(event):
         window, display = event.get("window"), event.get("display")
         if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
             raise Failure("window must be the panel's window id", 400)
-        if not isinstance(display, str) or not PANEL_DISPLAY.match(display):
+        if not isinstance(display, str) or not PANEL_DISPLAY.fullmatch(display):
             raise Failure("display must be an X display such as :1", 400)
         out.update(window=window, display=display)
     for name in ("dx", "dy"):
@@ -2193,7 +2197,7 @@ def remote_touch(body):
 
 def flatpak(body):
     app, action = str(body.get("id", "")), body.get("action")
-    if not FLATPAK_ID.match(app):
+    if not FLATPAK_ID.fullmatch(app):
         raise Failure("bad Flatpak app ID", 400)
     if action == "install":
         def work():
@@ -2282,7 +2286,7 @@ def open_thing(body):
 def apk_versions(query):
     args = parse_qs(query, keep_blank_values=True)
     packages, codes = args.get('package', []), args.get('code', [])
-    if len(packages) != 1 or not frame_android.PKG_RE.match(packages[0]):
+    if len(packages) != 1 or not frame_android.PKG_RE.fullmatch(packages[0]):
         raise Failure('invalid Android package id', 400)
     if codes and (len(codes) != 1 or not re.fullmatch(r'[0-9]{1,19}', codes[0])):
         raise Failure('invalid version code', 400)
@@ -2346,7 +2350,7 @@ QUEST_SERIAL = re.compile(r"^[A-Za-z0-9._:\[\]-]{1,128}$")
 def quest_serial(value):
     if value in (None, ""):
         return None
-    if not isinstance(value, str) or not QUEST_SERIAL.match(value):
+    if not isinstance(value, str) or not QUEST_SERIAL.fullmatch(value):
         raise Failure("invalid Quest serial", 400)
     return value
 
@@ -2368,7 +2372,7 @@ def quest(body):
     if body.get("action") != "import":
         raise Failure("unknown action", 400)
     pkg = str(body.get("package", ""))
-    if not frame_android.PKG_RE.match(pkg):
+    if not frame_android.PKG_RE.fullmatch(pkg):
         raise Failure("invalid Android package id", 400)
     serial, data, older = quest_serial(body.get("serial")), body.get("data", False), body.get("allowDowngrade", False)
     if type(data) is not bool or type(older) is not bool:
@@ -2442,7 +2446,7 @@ def meta(body):
                         message="Disconnected your Meta account; its token was deleted from this computer")
         if action == "install":
             app_id, test, older = str(body.get("app", "")), body.get("test", False), body.get("allowDowngrade", False)
-            if not META_APP_ID.match(app_id):
+            if not META_APP_ID.fullmatch(app_id):
                 raise Failure("invalid Meta app id", 400)
             if type(test) is not bool or type(older) is not bool:
                 raise Failure("test and allowDowngrade must be true or false", 400)
@@ -2458,7 +2462,7 @@ def meta(body):
             return queue_job(f"{'Install and test' if test else 'Install'} {app_id} from Meta", work, progress=True)
         if action == "test":
             pkg = str(body.get("package", ""))
-            if not frame_android.PKG_RE.match(pkg):
+            if not frame_android.PKG_RE.fullmatch(pkg):
                 raise Failure("invalid Android package id", 400)
             ensure_master()
 
@@ -2704,7 +2708,7 @@ def titles(body):
     if action not in ("launch", "remove", "refresh-art"):
         raise Failure("unknown action", 400)
     gid = str(body.get("id", ""))
-    if not frame_titles.ID_RE.match(gid):
+    if not frame_titles.ID_RE.fullmatch(gid):
         raise Failure("bad title id", 400)
     ensure_master()
     if action == "refresh-art":
@@ -2926,7 +2930,8 @@ def parse_display(out):
     size, density = parts.get("size", []), parts.get("density", [])
     font = (parts.get("font") or ["null"])[0]
     try:
-        font_scale = None if font == "null" else float(font)
+        parsed_font = None if font == "null" else float(font)
+        font_scale = parsed_font if parsed_font is not None and math.isfinite(parsed_font) else None
     except ValueError:
         font_scale = None
     phys_d, over_d = pick(density, "physical density"), pick(density, "override density")
@@ -3257,7 +3262,7 @@ def _sweep_one(prefix, d, own=False):
 
 def panels_action(body):
     action = body.get("action", "list")
-    script = (HERE / "frame_panels.py").read_text()
+    script = (HERE / "frame_panels.py").read_text(encoding="utf-8")
     if action == "open":
         # Installed in the user account so the page can outlive this SSH call.
         remote = ('umask 077; mkdir -p ~/.local/share/frame-control/panels && '
@@ -3365,7 +3370,7 @@ def media(body):
             raise Failure("theatre must be true or false", 400)
     with _MEDIA_LOCK:
         # Ship only our small stdlib modules, atomically, to the user account.
-        sources = {name: (HERE / name).read_text() for name in (
+        sources = {name: (HERE / name).read_text(encoding="utf-8") for name in (
             "frame_media.py", "frame_media_player.py", "frame_media_remote.py", "frame_splat.py")}
         installer = """import json, os, pathlib, sys, tempfile
 root = pathlib.Path.home()/'.local/share/frame-control/media'
@@ -3462,6 +3467,8 @@ def macview_action(body):
     try:
         if action == "show":
             w, h = body.get("w"), body.get("h")
+            if isinstance(w, bool) or isinstance(h, bool):
+                raise Failure("w and h must be integers", 400)
             return macview.show(str(body.get("src") or ""), str(body.get("quality") or "balanced"),
                                 int(w) if w else None, int(h) if h else None)
         if action == "stop":
@@ -3806,7 +3813,7 @@ def push_file(path, dest="Downloads/"):
             # Modern scp uses SFTP, so the remote path isn't parsed by a shell.
             tool, cmd = "scp", lambda: ["scp", *SSH[1:], "-r", str(path), f"{FRAME}:{dest}"]
         r = _run_retryable_ssh(cmd, capture_output=True, stdin=subprocess.DEVNULL, text=True,
-                               errors="replace", timeout=timeout)
+                               encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         raise Failure(f"Copying {name} timed out")
     if r.returncode != 0:
@@ -3959,7 +3966,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/control-center.css":
                 self.send_bytes((HERE / 'control-center.css').read_bytes(), 'text/css; charset=utf-8')
             elif path == "/assistant":
-                page = (HERE / "assistant.html").read_text().replace("__FRAME_KEY__", json.dumps(UI_KEY).replace("<", "\\u003c"))
+                page = (HERE / "assistant.html").read_text(encoding="utf-8").replace("__FRAME_KEY__", json.dumps(UI_KEY).replace("<", "\\u003c"))
                 self.send_bytes(page.encode(), "text/html; charset=utf-8")
             elif path == "/api/agent/approval":
                 token = (parse_qs(url.query).get("confirmation") or [""])[0]
@@ -4083,12 +4090,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/contact":
                 self.send_json(frame_contact.state())
             elif path == "/api/computer/state":
-                self.send_json(json.loads(ssh("python3 -", stdin=(HERE / "frame_computer.py").read_text(), timeout=20)))
+                self.send_json(json.loads(ssh("python3 -", stdin=(HERE / "frame_computer.py").read_text(encoding="utf-8"), timeout=20)))
             elif path == "/api/status":
                 self.send_json(status({}))
             elif path == "/api/storage":
                 with working(self.headers.get("X-Frame-Device")):
-                    self.send_json(json.loads(ssh("python3 -", stdin=(HERE / "frame_storage.py").read_text(), timeout=20)))
+                    self.send_json(json.loads(ssh("python3 -", stdin=(HERE / "frame_storage.py").read_text(encoding="utf-8"), timeout=20)))
             elif path == "/api/running":
                 self.send_json(running_games())
             elif path == "/api/steam/owned":
@@ -4265,10 +4272,12 @@ class Handler(BaseHTTPRequestHandler):
     def upload(self):
         """Raw file body. X-Filename names it; X-Mode is 'push', 'apk' (install), 'apkinfo' (read only)
         or 'title' (a .zip or program to sideload: inspected and kept for /api/titles install)."""
-        name = os.path.basename(unquote(self.headers.get("X-Filename", "")))
+        raw_name = unquote(self.headers.get("X-Filename", ""))
+        name = os.path.basename(raw_name)
         mode = self.headers.get("X-Mode", "push")
         length = int(self.headers.get("Content-Length") or 0)
-        if not name or name.startswith("."):
+        if (not name or name in (".", "..") or name.startswith(".") or "/" in name or "\\" in raw_name
+                or any(ord(c) < 32 or ord(c) == 127 for c in raw_name)):
             raise Failure("missing filename", 400)
         if length <= 0:
             raise Failure("empty upload", 400)
