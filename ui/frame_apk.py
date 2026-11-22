@@ -29,28 +29,46 @@ class ApkError(Exception):
 
 def _string_pool(buf, off):
     """Strings of the ResStringPool chunk at off."""
-    _, hsize, _, count, _, flags, start = struct.unpack_from('<HHIIIII', buf, off)
+    _, hsize, size, count, _, flags, start = struct.unpack_from('<HHIIIII', buf, off)
+    if hsize < 28 or size < hsize or off + size > len(buf):
+        raise ApkError('corrupt string pool')
+    if count > (size - hsize) // 4 or start > size:
+        raise ApkError('corrupt string pool')
     utf8 = flags & 0x100
     offsets = struct.unpack_from(f'<{count}I', buf, off + hsize)
-    base = off + start
+    base, limit = off + start, off + size
     out = []
     for o in offsets:
         p = base + o
+        if p >= limit:
+            raise ApkError('corrupt string pool')
         if utf8:
             for _ in range(2):  # UTF-16 length, then UTF-8 byte length
+                if p >= limit:
+                    raise ApkError('corrupt string pool')
                 n = buf[p]
                 if n & 0x80:
+                    if p + 1 >= limit:
+                        raise ApkError('corrupt string pool')
                     n = ((n & 0x7f) << 8) | buf[p + 1]
                     p += 2
                 else:
                     p += 1
+            if p + n > limit:
+                raise ApkError('corrupt string pool')
             out.append(buf[p:p + n].decode('utf-8', 'replace'))
         else:
+            if p + 2 > limit:
+                raise ApkError('corrupt string pool')
             n, = struct.unpack_from('<H', buf, p)
             p += 2
             if n & 0x8000:
+                if p + 2 > limit:
+                    raise ApkError('corrupt string pool')
                 n = ((n & 0x7fff) << 16) | struct.unpack_from('<H', buf, p)[0]
                 p += 2
+            if p + 2 * n > limit:
+                raise ApkError('corrupt string pool')
             out.append(buf[p:p + 2 * n].decode('utf-16-le', 'replace'))
     return out
 
@@ -58,7 +76,7 @@ def _string_pool(buf, off):
 def _chunks(buf, off, end):
     while off + 8 <= end:
         ctype, hsize, size = struct.unpack_from('<HHI', buf, off)
-        if size < 8 or off + size > end:
+        if hsize < 8 or size < hsize or off + size > end:
             break
         yield ctype, hsize, off, size
         off += size
@@ -75,7 +93,11 @@ def manifest_elements(data):
         elif ctype == 0x0180:
             resmap = struct.unpack_from(f'<{(size - hsize) // 4}I', data, off + hsize)
         elif ctype == 0x0102:
+            if hsize + 14 > size:
+                raise ApkError('corrupt manifest start tag')
             name, astart, asize, count = struct.unpack_from('<4xIHHH', data, off + hsize)
+            if count and (asize < 20 or hsize + astart + count * asize > size):
+                raise ApkError('corrupt manifest attributes')
             attrs = {}
             for i in range(count):
                 a = off + hsize + astart + i * asize
@@ -101,6 +123,8 @@ class Resources:
         if len(data) < 12 or struct.unpack_from('<H', data, 0)[0] != 0x0002:
             return
         hsize, = struct.unpack_from('<H', data, 2)
+        if hsize < 12 or hsize > len(data):
+            return
         for ctype, _, off, size in _chunks(data, hsize, len(data)):
             if ctype == 0x0001 and not self.strings:
                 self.strings = _string_pool(data, off)
@@ -110,10 +134,17 @@ class Resources:
     def _package(self, data, off, size):
         pid, = struct.unpack_from('<I', data, off + 8)
         phsize, = struct.unpack_from('<H', data, off + 2)
+        if phsize < 12 or phsize > size:
+            return
         for ctype, thsize, t, tsize in _chunks(data, off + phsize, off + size):
             if ctype != 0x0201:
                 continue
+            if thsize < 36 or thsize > tsize:
+                continue
             tid, flags, count, estart = struct.unpack_from('<BB2xII', data, t + 8)
+            elem_size = 2 if (flags & 0x02) and not (flags & 0x01) else 4
+            if count > (tsize - thsize) // elem_size:
+                raise ApkError('corrupt resource table')
             cfg = t + 20
             language = data[cfg + 8:cfg + 10].rstrip(b'\0').decode('latin-1')
             density, = struct.unpack_from('<H', data, cfg + 14)
@@ -126,14 +157,21 @@ class Resources:
             else:
                 offsets = [(i, o) for i, o in enumerate(struct.unpack_from(f'<{count}I', data, t + thsize))
                            if o != 0xffffffff]
+            t_end = t + tsize
             for index, o in offsets:
                 e = t + estart + o
+                if e + 4 > t_end:
+                    raise ApkError('corrupt resource table')
                 esize, eflags = struct.unpack_from('<HH', data, e)
                 if eflags & 0x08:  # compact entry: type in the flags' high byte
+                    if e + 8 > t_end:
+                        raise ApkError('corrupt resource table')
                     dtype, value = eflags >> 8, struct.unpack_from('<I', data, e + 4)[0]
                 elif eflags & 0x01:  # bag (style, plural...): not a plain value
                     continue
                 else:
+                    if e + esize + 8 > t_end:
+                        raise ApkError('corrupt resource table')
                     dtype, value = struct.unpack_from('<3xBI', data, e + esize)
                 resid = (pid << 24) | (tid << 16) | index
                 self.entries.setdefault(resid, []).append((language, density, dtype, value))
@@ -254,12 +292,18 @@ def apk_info(path):
 def _icon_png(z, names, icons):
     for icon in icons:
         if icon.endswith('.png') and icon in names:
-            return _read(z, icon, MAX_ICON)
-    # Adaptive icons are XML; fall back to the largest launcher PNG.
+            try:
+                return _read(z, icon, MAX_ICON)
+            except Exception:  # noqa: BLE001 - try the next candidate icon
+                continue
+    # Adaptive icons are XML; fall back to the largest readable launcher PNG.
     pngs = sorted((n for n in names if n.endswith('.png') and 'ic_launcher' in n and 'foreground' not in n),
                   key=lambda n: z.getinfo(n).file_size)
-    if pngs:
-        return _read(z, pngs[-1], MAX_ICON)
+    for png in reversed(pngs):
+        try:
+            return _read(z, png, MAX_ICON)
+        except Exception:  # noqa: BLE001 - try smaller launcher icons
+            continue
     # Godot exports can keep only an adaptive launcher plus the project icon.
     return _read(z, 'assets/icon.png', MAX_ICON) if 'assets/icon.png' in names else None
 
