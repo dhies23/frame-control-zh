@@ -347,6 +347,103 @@ class StoreSearch(unittest.TestCase):
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_html_parsers_survive_valueless_attributes(self):
+        search_parser = frame_store.SearchResults()
+        search_parser.feed(
+            '<a class></a>'
+            '<a class="search_result_row" href><img src></a>'
+            '<a class="search_result_row" href="https://store.steampowered.com/app/620/">'
+            '<img src><span class="title">Portal 2</span></a>'
+        )
+        self.assertEqual(len(search_parser.items), 1)
+        self.assertEqual(search_parser.items[0]["name"], "Portal 2")
+        self.assertEqual(search_parser.items[0]["image"], "")
+
+        review_parser = frame_store.ReviewSummaries()
+        review_parser.feed(
+            '<a class></a>'
+            '<a class="user_reviews_summary_row" data-tooltip-html="95% positive">'
+            '<div class="subtitle">English:</div><span class="game_review_summary">Very Positive</span></a>'
+        )
+        self.assertEqual(len(review_parser.rows), 1)
+        self.assertEqual(review_parser.rows[0]["rating"], "Very Positive")
+
+    def test_frame_rating_rejects_boolean_category(self):
+        with mock.patch.object(frame_store, "_get", return_value={"results": {"frame_resolved_category": True}}):
+            self.assertEqual(frame_store.frame_rating(620), 0)
+
+    def test_search_rejects_non_string_term_and_malformed_payloads_with_value_error(self):
+        with mock.patch.object(frame_store, "_get") as get, self.assertRaises(ValueError):
+            frame_store.search(None, "AU")
+        get.assert_not_called()
+        for bad in ([], None, {"success": 1, "results_html": "", "total_count": None},
+                    {"success": 1, "results_html": "", "total_count": True}):
+            with self.subTest(bad=bad), mock.patch.object(frame_store, "_get", return_value=bad):
+                with self.assertRaises(ValueError):
+                    frame_store.search("portal", "AU")
+
+    def test_details_guards_malformed_top_level_and_nested_fields(self):
+        for bad in ([], None, {"7": False}, {"7": []}):
+            frame_store._details.clear()
+            with self.subTest(bad=bad), mock.patch.object(frame_store, "_get", return_value=bad):
+                with self.assertRaises(ValueError):
+                    frame_store.details(7, "AU")
+
+        frame_store._details.clear()
+        data = {
+            "name": "Odd",
+            "dlc": [{"bad": 1}, True, 11, 11],
+            "movies": [{"name": "T", "mp4": ["bad"], "webm": "bad"}],
+            "genres": ["bad", {"description": "Action"}],
+            "release_date": ["bad"],
+            "screenshots": ["bad", {"path_full": "https://cdn.example/s.jpg"}],
+            "metacritic": "bad",
+            "categories": [123, {"description": "VR"}],
+            "developers": "not-list",
+            "publishers": 42,
+        }
+        with mock.patch.object(frame_store, "_get", return_value={"7": {"success": True, "data": data}}):
+            res = frame_store.details(7, "AU")
+        self.assertEqual(res["dlc_count"], 1)
+        self.assertEqual(res["movies"][0]["sources"], [])
+        self.assertEqual(res["genres"], ["Action"])
+        self.assertEqual(res["release"], "")
+        self.assertEqual(res["screenshots"], ["https://cdn.example/s.jpg"])
+        self.assertIsNone(res["metascore"])
+        self.assertEqual(res["categories"], ["VR"])
+        self.assertEqual(res["developers"], [])
+        self.assertEqual(res["publishers"], [])
+
+        frame_store._details.clear()
+        with mock.patch.object(frame_store, "_get", return_value={"7": {"success": True, "data": {"name": "M", "movies": "bad"}}}):
+            self.assertEqual(frame_store.details(7, "AU")["movies"], [])
+
+    def test_caches_are_bounded(self):
+        with mock.patch.object(frame_store, "MAX_CACHE", 2):
+            with mock.patch.object(frame_store, "_get", return_value={"results": {"frame_resolved_category": 3}}):
+                for appid in (1, 2, 3):
+                    frame_store.frame_rating(appid)
+            self.assertLessEqual(len(frame_store._compat), 2)
+            with mock.patch.object(frame_store, "_get", side_effect=lambda _, p: {str(p["appids"]): {"success": True, "data": {"name": "G"}}}):
+                for appid in (1, 2, 3):
+                    frame_store.details(appid, "AU")
+            self.assertLessEqual(len(frame_store._details), 2)
+
+
+class StoreHttp(unittest.TestCase):
+    def test_http_helpers_cap_response_size(self):
+        class HugeResp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self, n=-1): return b"x" * (64 if n < 0 else n)
+
+        with mock.patch.object(frame_store, "MAX_RESPONSE", 32), \
+                mock.patch.object(frame_store.urllib.request, "urlopen", return_value=HugeResp()):
+            with self.assertRaisesRegex(ValueError, "too large"):
+                frame_store._get("api/appdetails", {"appids": 1})
+            with self.assertRaisesRegex(ValueError, "too large"):
+                frame_store._get_text("app/1/", {"cc": "AU"})
+
 
 if __name__ == "__main__":
     unittest.main()

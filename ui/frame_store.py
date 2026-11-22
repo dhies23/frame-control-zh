@@ -22,6 +22,8 @@ STORE = "https://store.steampowered.com"
 UA = {"User-Agent": "FrameControl/1 (+local)"}
 COMPAT_TTL = 24 * 3600
 DETAIL_TTL = 15 * 60
+MAX_RESPONSE = 8 * 1024 * 1024
+MAX_CACHE = 2000
 SEARCH_LIMIT = 50
 SEARCH_TYPES = {"all": "", "game": "998", "dlc": "21"}
 SEARCH_VR = {"all": "", "supported": "401,402", "required": "401"}
@@ -58,16 +60,36 @@ _details = {}  # (appid, country) -> (time, public store data)
 _lock = threading.Lock()
 
 
+def _cache_put(cache, key, value, ttl):
+    now = time.time()
+    with _lock:
+        cache.pop(key, None)
+        cache[key] = (now, value)
+        if len(cache) > MAX_CACHE:
+            expired = [k for k, (ts, _) in cache.items() if now - ts >= ttl]
+            for k in expired:
+                cache.pop(k, None)
+        while len(cache) > MAX_CACHE:
+            cache.pop(next(iter(cache)))
+
+
+def _read_capped(response):
+    raw = response.read(MAX_RESPONSE + 1)
+    if len(raw) > MAX_RESPONSE:
+        raise ValueError("Steam response too large")
+    return raw
+
+
 def _get(path, params, timeout=10):
     url = f"{STORE}/{path}?{urllib.parse.urlencode(params)}"
     with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout) as r:
-        return json.load(r)
+        return json.loads(_read_capped(r).decode("utf-8", errors="replace"))
 
 
 def _get_text(path, params, timeout=5):
     url = f"{STORE}/{path}?{urllib.parse.urlencode(params)}"
     with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout) as response:
-        return response.read().decode("utf-8", errors="replace")
+        return _read_capped(response).decode("utf-8", errors="replace")
 
 
 def frame_rating(appid, timeout=10):
@@ -78,12 +100,13 @@ def frame_rating(appid, timeout=10):
         return hit[1]
     try:
         r = _get("saleaction/ajaxgetdeckappcompatibilityreport", {"nAppID": appid, "l": "english"}, timeout=timeout)
-        cat = int((r.get("results") or {}).get("frame_resolved_category") or 0)
+        results = r.get("results") if isinstance(r, dict) else None
+        raw_cat = results.get("frame_resolved_category") if isinstance(results, dict) else None
+        cat = 0 if isinstance(raw_cat, bool) else int(raw_cat or 0)
         cat = cat if 0 <= cat <= 3 else 0
     except (OSError, ValueError, TypeError, AttributeError, http.client.HTTPException):
         return 0  # not cached, so the next search retries
-    with _lock:
-        _compat[appid] = (time.time(), cat)
+    _cache_put(_compat, appid, cat, COMPAT_TTL)
     return cat
 
 
@@ -116,9 +139,9 @@ class SearchResults(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
-        classes = attrs.get("class", "").split()
+        classes = (attrs.get("class") or "").split()
         if tag == "a" and "search_result_row" in classes:
-            match = re.match(r"https://store\.steampowered\.com/(app|sub|bundle)/(\d+)(?:/|$)", attrs.get("href", ""))
+            match = re.match(r"https://store\.steampowered\.com/(app|sub|bundle)/(\d+)(?:/|$)", attrs.get("href") or "")
             if match:
                 kind, appid = match.groups()
                 self.row = {"id": int(appid) if kind == "app" else f"{kind}_{appid}",
@@ -128,7 +151,7 @@ class SearchResults(HTMLParser):
         if self.row is None:
             return
         if tag == "img" and not self.row.get("image"):
-            self.row["image"] = attrs.get("src", "")
+            self.row["image"] = attrs.get("src") or ""
         if "search_review_summary" in classes:
             self.row["review_summary"] = "\n".join(plain_text(attrs.get("data-tooltip-html")).splitlines()[:2])
         if "discount_final_price" in classes and "free" in classes:
@@ -177,7 +200,7 @@ class ReviewSummaries(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
-        classes = attrs.get("class", "").split()
+        classes = (attrs.get("class") or "").split()
         if tag == "a" and "app_tag" in classes:
             self.tag_text = ""
         if tag == "a" and "user_reviews_summary_row" in classes and attrs.get("data-tooltip-html"):
@@ -212,6 +235,8 @@ class ReviewSummaries(HTMLParser):
 
 def search(term, cc, start=0, item_type="all", sort="relevance", vr="all", price="any", discount=False, tags="", hidef2p=False):
     """Public Steam result pages; type and sorting apply before pagination."""
+    if not isinstance(term, str):
+        raise ValueError("Invalid Steam search options")
     term = term.strip()[:100]
     if (item_type not in SEARCH_TYPES or sort not in SEARCH_SORTS or vr not in SEARCH_VR
             or price not in SEARCH_PRICES or not valid_search_tags(tags) or type(discount) is not bool
@@ -233,9 +258,15 @@ def search(term, cc, start=0, item_type="all", sort="relevance", vr="all", price
     if hidef2p:
         params["hidef2p"] = 1
     payload = _get("search/results/", params)
-    if payload.get("success") not in (True, 1) or not isinstance(payload.get("results_html"), str):
+    if not isinstance(payload, dict) or payload.get("success") not in (True, 1) or not isinstance(payload.get("results_html"), str):
         raise ValueError("Steam returned an invalid search page")
-    total = int(payload.get("total_count"))
+    raw_total = payload.get("total_count")
+    if isinstance(raw_total, bool):
+        raise ValueError("Steam returned an invalid search page")
+    try:
+        total = int(raw_total)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Steam returned an invalid search page") from error
     parser = SearchResults()
     parser.feed(payload["results_html"])
     if total < 0 or (total > start and not parser.items):
@@ -261,30 +292,48 @@ def details(appid, cc):
     if hit and time.time() - hit[0] < DETAIL_TTL:
         return dict(hit[1])
     payload = _get("api/appdetails", {"appids": appid, "cc": cc, "l": "english"})
-    entry = payload.get(str(appid)) or {}
-    if not entry.get("success") or not isinstance(entry.get("data"), dict):
+    entry = payload.get(str(appid)) if isinstance(payload, dict) else None
+    if not isinstance(entry, dict) or not entry.get("success") or not isinstance(entry.get("data"), dict):
         raise ValueError("Steam has no public details for this title in this region")
     data = entry["data"]
+    dlc_raw = data.get("dlc")
+    dlc_count = len({d for d in dlc_raw if isinstance(d, int) and not isinstance(d, bool)}) if isinstance(dlc_raw, list) else None
+    movies_raw = data.get("movies") if isinstance(data.get("movies"), list) else []
+    movies = []
+    for m in movies_raw[:6]:
+        if not isinstance(m, dict):
+            continue
+        mp4 = m.get("mp4") if isinstance(m.get("mp4"), dict) else {}
+        webm = m.get("webm") if isinstance(m.get("webm"), dict) else {}
+        movies.append({
+            "name": m.get("name") or "Steam trailer",
+            "thumbnail": m.get("thumbnail"),
+            "sources": [{"url": url, "type": mime} for url, mime in (
+                (mp4.get("480"), "video/mp4"),
+                (webm.get("480"), "video/webm"),
+                (m.get("hls_h264"), "application/vnd.apple.mpegurl"))
+                if isinstance(url, str) and url.startswith("https://")],
+        })
+    release_date = data.get("release_date") if isinstance(data.get("release_date"), dict) else {}
+    metacritic = data.get("metacritic") if isinstance(data.get("metacritic"), dict) else {}
+    genres_raw = data.get("genres") if isinstance(data.get("genres"), list) else []
+    shots_raw = data.get("screenshots") if isinstance(data.get("screenshots"), list) else []
+    cats_raw = data.get("categories") if isinstance(data.get("categories"), list) else []
     result = {"id": appid, "name": data.get("name", ""), "type": data.get("type") or "unknown",
               "price": data.get("price_overview"), "free": data.get("is_free") is True,
               "image": data.get("header_image"), "description": data.get("short_description") or "",
               "about": plain_text(data.get("about_the_game") or data.get("detailed_description")),
               # Missing is unknown, not zero. Steam can repeat IDs in its DLC list.
-              "dlc_count": len(set(data["dlc"])) if isinstance(data.get("dlc"), list) else None,
-              "movies": [{"name": m.get("name") or "Steam trailer", "thumbnail": m.get("thumbnail"),
-                          "sources": [{"url": url, "type": mime} for url, mime in (
-                              ((m.get("mp4") or {}).get("480"), "video/mp4"),
-                              ((m.get("webm") or {}).get("480"), "video/webm"),
-                              (m.get("hls_h264"), "application/vnd.apple.mpegurl"))
-                              if isinstance(url, str) and url.startswith("https://")]}
-                         for m in (data.get("movies") or [])[:6] if isinstance(m, dict)],
-              "developers": data.get("developers") or [], "publishers": data.get("publishers") or [],
-              "genres": [g["description"] for g in data.get("genres", []) if g.get("description")],
-              "release": (data.get("release_date") or {}).get("date") or "",
+              "dlc_count": dlc_count,
+              "movies": movies,
+              "developers": data["developers"] if isinstance(data.get("developers"), list) else [],
+              "publishers": data["publishers"] if isinstance(data.get("publishers"), list) else [],
+              "genres": [g["description"] for g in genres_raw if isinstance(g, dict) and g.get("description")],
+              "release": release_date.get("date") or "",
               "base_game": data.get("fullgame"),
-              "screenshots": [s["path_full"] for s in (data.get("screenshots") or [])[:6] if s.get("path_full")],
-              "metascore": (data.get("metacritic") or {}).get("score"),
-              "categories": [c["description"] for c in data.get("categories", []) if c.get("description")],
+              "screenshots": [s["path_full"] for s in shots_raw[:6] if isinstance(s, dict) and s.get("path_full")],
+              "metascore": metacritic.get("score"),
+              "categories": [c["description"] for c in cats_raw if isinstance(c, dict) and c.get("description")],
               "requirements": {k: plain_text(v) for k, v in (data.get("pc_requirements") if isinstance(data.get("pc_requirements"), dict) else {}).items()
                                if k in ("minimum", "recommended") and v}}
     try:
@@ -298,8 +347,7 @@ def details(appid, cc):
     if result["review_summaries"]:
         review = next((r for r in result["review_summaries"] if "English" in r["label"]), result["review_summaries"][0])
         result["review_summary"] = f'{review["rating"]}\n{review["label"]} {review["description"]}'
-    with _lock:
-        _details[key] = (time.time(), result)
+    _cache_put(_details, key, result, DETAIL_TTL)
     return dict(result)
 
 
