@@ -371,5 +371,13 @@
       "deckpass-ipc-eof"
     ],
     "probe": "deckpass-private-cli"
+  },
+  {
+    "id": 137,
+    "shim": "proton-launch-safe-profiles",
+    "additionalShims": [
+      "proton-launch-ipc-eof"
+    ],
+    "probe": "proton-launch-private-wrapper"
   }
 ]

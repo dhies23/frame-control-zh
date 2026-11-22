@@ -13309,12 +13309,17 @@
         "https://github.com/moi952/decky-proton-launch.git"
       ],
       "status": "partial",
-      "reason": "Initializer succeeds; Proton wrapper installation and launch changes were not run.",
+      "reason": "Initializer succeeds. Exact managed 0.9.0 installs route launch logs to private ~/.config/decky-proton-launch/proton-launch.log instead of shared /tmp/proton-launch.log, validate positive integer app IDs, shell-identifier variable names and single-line values in profile writes, refuse symlinks and unowned existing ~/proton-launch scripts, restrict wrapper/profile permissions to owner-only (0o700/0o600), and repair Decky 3.3.0 child IPC EOF shutdown; isolated AMD64 private wrapper execution, injection/unowned-script refusals, private log reads, post-EOF RPC, restart and two strict stops are covered. Update/reinstall old copies. Live Steam localconfig/shortcuts edits, real Proton game launches on ARM64 Frame and worn VR remain unverified.",
+      "requiredShims": [
+        "proton-launch-safe-profiles",
+        "proton-launch-ipc-eof"
+      ],
       "blockInstall": false,
       "verification": [
         "static archive",
         "local browser",
-        "fake-Frame"
+        "fake-Frame",
+        "isolated Linux backend"
       ],
       "browser": {
         "id": 137,

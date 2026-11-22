@@ -32,6 +32,7 @@ PLUGINS = (
     {'id': 84, 'name': 'Junk-Store', 'version': '1.1.13', 'api_version': 'legacy', 'folder': 'Junk-Store', 'sha256': 'f7ad2a0103c85bf308929b2e96ec9aeeb0d76bcc6ae97eb1e4b5f31ffba0cbb1'},
     {'id': 74, 'name': 'KDE Connect', 'version': '0.1.0-1', 'api_version': 'legacy', 'folder': 'kdeconnect', 'sha256': '5f7decb4de48290f8eec15937486c9611aec0d25256515c97f98cf7ba30c79a4'},
     {'id': 121, 'name': 'DeckPass', 'version': '1.1.1', 'api_version': 1, 'folder': 'DeckPass', 'sha256': '4be32fd39ce406e2276b21537c98afc00a8ed1b82a23ff0e01af552352fa48f8'},
+    {'id': 137, 'name': 'Decky Proton Launch', 'version': '0.9.0', 'api_version': 1, 'folder': 'decky-proton-launch', 'sha256': 'e7b98a7ca8817ef08584ed0828eee8702631af33daccc229075a012eca91f731'},
     {'id': 87, 'name': 'ScreenSaver', 'version': '1.1.2', 'api_version': 'legacy', 'folder': 'DeckyInhibitScreenSaver', 'sha256': '5e61f20d53e244c55a0375d6299b16cdb9701c222519c7fecd726f1926091822'},
     {'id': 23, 'name': 'Animation Changer', 'version': '1.3.2', 'api_version': 'legacy',
      'folder': 'SDH-AnimationChanger', 'sha256': 'f2c62b90ca60d8a80b6d0f75d8027552b1509c7a05842c6f4a24a9072846d133'},
