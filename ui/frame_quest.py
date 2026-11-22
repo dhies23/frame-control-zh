@@ -21,6 +21,7 @@ import re
 import secrets
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -67,6 +68,21 @@ class QuestError(android.FrameError):
     pass
 
 
+def _check_package(pkg):
+    if not isinstance(pkg, str) or not android.PKG_RE.fullmatch(pkg):
+        raise QuestError('invalid package name')
+    return pkg
+
+
+def _int_code(code):
+    if isinstance(code, bool) or code is None:
+        return None
+    try:
+        return int(code)
+    except (TypeError, ValueError):
+        return None
+
+
 def _adb_cmd():
     try:
         return [frame_host.adb()]
@@ -94,7 +110,8 @@ def adb(*args, serial=None, timeout=ADB_TIMEOUT):
         r = subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, text=True, errors='replace',
                            timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise QuestError(f'adb {args[0]} took more than {timeout} s; check the Quest is still connected')
+        verb = args[0] if args else 'command'
+        raise QuestError(f'adb {verb} took more than {timeout} s; check the Quest is still connected')
     except OSError as e:
         raise QuestError(f'could not run adb: {e}')
     if r.returncode != 0:
@@ -193,7 +210,9 @@ def _parse_packages(out, packages):
         elif current is None or not line:
             continue
         elif line.startswith('package:'):
-            current['apks'].append(line[len('package:'):])
+            apk_path = line[len('package:'):].strip()
+            if apk_path:
+                current['apks'].append(apk_path)
         else:
             size, _, where = line.partition('\t') if '\t' in line else line.partition(' ')
             if size.isdigit():
@@ -216,7 +235,7 @@ def packages(serial):
     in bytes of the OBB and external data folders (None when there is none)."""
     out = adb('shell', 'pm list packages -3', serial=serial)
     names = sorted({l.split(':', 1)[1].strip() for l in out.splitlines() if l.startswith('package:')})
-    names = [n for n in names if android.PKG_RE.match(n)]
+    names = [n for n in names if android.PKG_RE.fullmatch(n)]
     apps = []
     for i in range(0, len(names), BATCH):
         batch = names[i:i + BATCH]
@@ -225,6 +244,7 @@ def packages(serial):
 
 
 def package(serial, pkg):
+    pkg = _check_package(pkg)
     apps = _parse_packages(adb('shell', _package_script([pkg]), serial=serial, timeout=60), [pkg])
     if not apps:
         raise QuestError(f"{pkg} isn't installed on the Quest")
@@ -239,10 +259,10 @@ def status(serial=None, with_apps=True):
         return {'quest': None, 'devices': [], 'guidance': str(e), 'apps': []}
     try:
         quest = find_quest(serial)
+        apps = packages(quest['serial']) if with_apps else []
     except QuestError as e:
         return {'quest': None, 'devices': found, 'guidance': str(e), 'apps': []}
-    return {'quest': quest, 'devices': found, 'guidance': None,
-            'apps': packages(quest['serial']) if with_apps else []}
+    return {'quest': quest, 'devices': found, 'guidance': None, 'apps': apps}
 
 
 # ---- Checking what was copied ---------------------------------------------------
@@ -256,7 +276,7 @@ def inspect(package_name, base, splits=(), info=None):
         try:
             with zipfile.ZipFile(path) as z:
                 names |= set(z.namelist())
-        except (zipfile.BadZipFile, OSError) as e:
+        except (zipfile.BadZipFile, OSError, EOFError, RuntimeError, struct.error, ValueError) as e:
             raise QuestError(f'{os.path.basename(path)} copied from the Quest is not a readable APK: {e}')
     info = info or android.apk_info(base)
     label = info['label']
@@ -333,7 +353,7 @@ def push_data(meta, folder):
     """Stream a pulled /sdcard/Android/data/<package> folder into the running instance as a
     tar, written straight into the SSH transfer: nothing is staged on this computer."""
     import frame_android_data
-    pkg = meta['package']
+    pkg = _check_package(meta.get('package') if isinstance(meta, dict) else None)
     container = f"lepton-steamlaunch-{int(meta['instance'])}"
     script = f'set -eu; mkdir -p {DATA}/{pkg}; cd {DATA}/{pkg}; tar -x -o -f -'
     read_end, write_end = os.pipe()
@@ -379,7 +399,10 @@ def space_needed(apk_bytes, merged_bytes, obb_bytes, data_bytes):
 
 
 def _check_space(work, need, pkg):
-    free = shutil.disk_usage(str(work)).free
+    try:
+        free = shutil.disk_usage(str(work)).free
+    except OSError as e:
+        raise QuestError(f'Could not check free space for importing {pkg}: {e}') from e
     if need > free:
         raise QuestError(f'Importing {pkg} needs about {need / 1024**3:.1f} GB free on this computer '
                          f'({free / 1024**3:.1f} GB available in {work.parent})')
@@ -394,8 +417,7 @@ def import_game(package_name, serial=None, data=False, progress=None, allow_down
     imports again, and Frame Control copies the data in and closes the game.
 
     allow_downgrade: replace a newer version on the Frame with the Quest's older one."""
-    if not android.PKG_RE.match(package_name or ''):
-        raise QuestError('invalid package name')
+    package_name = _check_package(package_name)
     report = progress or (lambda stage, percent=None: None)
     if not _import_lock.acquire(blocking=False):
         raise QuestError('Another Quest import is running; wait for it to finish')
@@ -405,7 +427,10 @@ def import_game(package_name, serial=None, data=False, progress=None, allow_down
         app = package(quest['serial'], package_name)
         sweep_cache()
         work = cache_root() / f'{package_name}-{secrets.token_hex(4)}'
-        work.mkdir(parents=True)
+        try:
+            work.mkdir(parents=True)
+        except OSError as e:
+            raise QuestError(f'Could not create temporary Quest import folder: {e}') from e
         try:
             return _import(quest['serial'], app, data, work, report, allow_downgrade)
         finally:
@@ -436,12 +461,12 @@ def _check_downgrade(existing, checked, allow):
     """Refuse to replace a newer install on the Frame with the Quest's older copy."""
     if not existing or allow:
         return
-    have, new = _installed_code(existing['package'], existing), checked['version_code']
+    have, new = _installed_code(existing['package'], existing), _int_code(checked.get('version_code'))
     if have is None or new is None:
         raise QuestError(f"Frame Control can't tell which version of {checked['label']} is on the Frame, so it "
                          "won't replace it in case that one is newer. Allow replacing a newer version (or "
                          "--allow-downgrade) to install your Quest's copy anyway.")
-    if int(new) < int(have):
+    if new < int(have):
         raise QuestError(f"The Frame has a newer {checked['label']} ({_version(existing.get('version'), have)}) than "
                          f"your Quest ({_version(checked['version'], new)}). Frame Control won't replace it with "
                          "an older version unless you allow it (Allow replacing a newer version, or "
@@ -455,8 +480,8 @@ def _check_target(pkg, meta, checked):
     if (not meta or meta.get('package') != pkg or android._int(meta.get('instance')) != android.instance_id(pkg)):
         raise QuestError(f"{label} is open on the Frame, but Frame Control has no matching install record for "
                          'it. Close it, then import again to install it.')
-    have, new = _installed_code(pkg, meta), checked['version_code']
-    if have is None or new is None or int(have) != int(new):
+    have, new = _installed_code(pkg, meta), _int_code(checked.get('version_code'))
+    if have is None or new is None or int(have) != new:
         raise QuestError(f"{label} is open on the Frame with a different version (Frame: "
                          f"{_version(meta.get('version'), have)}; Quest: {_version(checked['version'], new)}). "
                          "Close it, then import again to install the Quest's version.")
@@ -465,7 +490,10 @@ def _check_target(pkg, meta, checked):
 
 def _check_android_package(meta, code):
     """The package Android itself has installed in the instance is this one, at this version."""
-    pkg = meta['package']
+    pkg = _check_package(meta.get('package') if isinstance(meta, dict) else None)
+    want = _int_code(code)
+    if want is None:
+        raise QuestError(f'invalid version code for {pkg}')
     container = f"lepton-steamlaunch-{int(meta['instance'])}"
     out = android.ssh(f"podman exec {container} /system/bin/sh -c 'dumpsys package {pkg}' 2>/dev/null || true",
                       timeout=60)
@@ -474,9 +502,9 @@ def _check_android_package(meta, code):
     found = re.search(r'\bversionCode=(\d+)', block.group(0)) if block else None
     if not found:
         raise QuestError(f'Android in {container} does not have {pkg} installed')
-    if int(found.group(1)) != int(code):
+    if int(found.group(1)) != want:
         raise QuestError(f'Android in {container} has {pkg} version code {found.group(1)}, not the '
-                         f"Quest's {code}")
+                         f"Quest's {want}")
 
 
 def _close(pkg):

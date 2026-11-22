@@ -1140,5 +1140,65 @@ class Server(unittest.TestCase):
             self.assertIn('runs on your computer', s.quest_status('')['guidance'])
 
 
+class Hardening(unittest.TestCase):
+    def test_package_name_validation_rejects_trailing_newline_and_non_strings(self):
+        with patch.object(quest, 'adb') as adb, patch.object(android, 'ssh') as ssh:
+            for bad in (PKG + '\n', 123, ['com.a.b'], 'com.a; id'):
+                with self.subTest(bad=bad):
+                    with self.assertRaisesRegex(quest.QuestError, 'invalid package'):
+                        quest.import_game(bad)
+                    with self.assertRaisesRegex(quest.QuestError, 'invalid package'):
+                        quest.package('SER', bad)
+                    with self.assertRaisesRegex(quest.QuestError, 'invalid package'):
+                        quest.push_data({'package': bad, 'instance': 1}, '.')
+                    with self.assertRaisesRegex(quest.QuestError, 'invalid package'):
+                        quest._check_android_package({'package': bad, 'instance': 1}, 100)
+        adb.assert_not_called()
+        ssh.assert_not_called()
+
+    def test_status_returns_guidance_when_quest_disconnects_during_package_list(self):
+        found = [dict(QUEST)]
+        with patch.object(quest, 'devices', return_value=found), \
+                patch.object(quest, 'find_quest', return_value=found[0]), \
+                patch.object(quest, 'packages', side_effect=quest.QuestError('Quest disconnected')):
+            res = quest.status()
+        self.assertIsNone(res['quest'])
+        self.assertEqual(res['devices'], found)
+        self.assertEqual(res['guidance'], 'Quest disconnected')
+        self.assertEqual(res['apps'], [])
+
+    def test_inspect_wraps_corrupt_zip_struct_and_eof_errors(self):
+        for exc in (EOFError('short'), struct.error('bad'), RuntimeError('bad')):
+            with self.subTest(exc=type(exc).__name__), \
+                    patch.object(quest.zipfile, 'ZipFile', side_effect=exc):
+                with self.assertRaisesRegex(quest.QuestError, 'not a readable APK'):
+                    quest.inspect(PKG, '/tmp/base.apk')
+
+    def test_space_check_wraps_oserror(self):
+        with patch.object(quest.shutil, 'disk_usage', side_effect=OSError('disk gone')):
+            with self.assertRaisesRegex(quest.QuestError, 'free space'):
+                quest._check_space(Path('/tmp/work'), 1024, PKG)
+
+    def test_version_code_checks_reject_booleans_and_none(self):
+        with self.assertRaisesRegex(quest.QuestError, "can't tell which version"):
+            quest._check_downgrade({'package': PKG, 'version_code': 10},
+                                   {'label': 'G', 'version': '1', 'version_code': True}, False)
+        with self.assertRaisesRegex(quest.QuestError, 'different version'):
+            quest._check_target(PKG, {'package': PKG, 'instance': android.instance_id(PKG), 'version_code': 1},
+                                {'label': 'G', 'version': '1', 'version_code': True})
+        dump = f'Packages:\n  Package [{PKG}] (abc):\n    versionCode=1 minSdk=29\n'
+        with patch.object(android, 'ssh', return_value=dump):
+            for bad_code in (None, True):
+                with self.subTest(bad_code=bad_code):
+                    with self.assertRaisesRegex(quest.QuestError, 'invalid version code'):
+                        quest._check_android_package({'package': PKG, 'instance': 2800000001}, bad_code)
+
+    def test_parse_packages_ignores_blank_package_lines(self):
+        apps = quest._parse_packages('@@com.a.b\npackage:\npackage:   \npackage:/data/app/base.apk\n', ['com.a.b'])
+        self.assertEqual(len(apps), 1)
+        self.assertEqual(apps[0]['apks'], ['/data/app/base.apk'])
+        self.assertFalse(apps[0]['split'])
+
+
 if __name__ == '__main__':
     unittest.main()
