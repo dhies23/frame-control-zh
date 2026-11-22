@@ -77,7 +77,7 @@ class HelperTests(unittest.TestCase):
         self.spawn.assert_not_called()
 
     def test_only_explicit_supported_actions(self):
-        for body in ({}, {'action': 'launch'}, {'action': 'permissions', 'confirmed': 'true'},
+        for body in (None, ['launch'], {}, {'action': 'launch'}, {'action': 'permissions', 'confirmed': 'true'},
                      {'action': 'delete-all', 'confirmed': True}):
             with self.subTest(body=body), self.assertRaises(helper.HelperError):
                 helper.action(body)
@@ -197,6 +197,23 @@ class ProcessTests(unittest.TestCase):
     def test_exited_process_is_skipped(self):
         (self.proc / '2').mkdir()
         self.assertFalse(helper._steam_running(self.proc))
+
+    def test_esrch_exited_process_and_non_utf8_comm_are_tolerated(self):
+        p = self.proc / '2'
+        p.mkdir()
+        (p / 'comm').write_bytes(b'game-\xff\xfe\n')
+        (p / 'cmdline').write_bytes(b'game\0')
+        self.assertFalse(helper._steam_running(self.proc))
+
+        real_read_bytes = Path.read_bytes
+
+        def esrch_on_pid2(path_self):
+            if path_self == p / 'cmdline':
+                raise ProcessLookupError(3, 'No such process')
+            return real_read_bytes(path_self)
+
+        with mock.patch.object(helper.Path, 'read_bytes', esrch_on_pid2):
+            self.assertFalse(helper._steam_running(self.proc))
 
     def test_unreadable_or_missing_inventory_fails_closed(self):
         with self.assertRaisesRegex(helper.HelperError, 'Cannot verify'):
