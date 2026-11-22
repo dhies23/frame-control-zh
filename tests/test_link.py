@@ -1492,5 +1492,100 @@ class ServerConnection(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/devices", {"action": "nope"})[0], 400)
 
 
+class Hardening(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="frame-link-harden-"))
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.reg = fd.Registry(self.dir / "devices.json")
+        self.link = fl.Link(self.reg, env_alias=None, mux_base=["ssh", "-o", "BatchMode=yes"],
+                            control=None, apply=lambda *a: None, explain=explain)
+
+    def test_ssh_g_bounds_port_and_uses_replace_errors(self):
+        for bad_port in ("0", "70000"):
+            resp = subprocess.CompletedProcess([], 0, f"hostname h\nport {bad_port}\nuser u\n", "")
+            with mock.patch.object(fl.frame_host, "run_ssh", return_value=resp) as run:
+                _, port, _, _ = fl.ssh_g("frame")
+            self.assertEqual(port, 22)
+            self.assertEqual(run.call_args.kwargs.get("errors"), "replace")
+
+        resp = subprocess.CompletedProcess([], 0, "proxyjump jump\n", "")
+        with mock.patch.object(fl.frame_host, "run_ssh", return_value=resp) as run:
+            self.assertEqual(fl.proxy_route("frame"), ("jump", "jump"))
+        self.assertEqual(run.call_args.kwargs.get("errors"), "replace")
+
+        key = ("ssh-ed25519", fd.fingerprint("a2V5"))
+        resp = subprocess.CompletedProcess([], 0, "192.168.1.41 ssh-ed25519 a2V5\n", "")
+        with mock.patch.object(fl.frame_host, "which", return_value="ssh-keyscan"), \
+                mock.patch.object(fl.frame_host, "run_ssh", return_value=resp) as run:
+            self.assertTrue(fl.matches_pinned_key("192.168.1.41", 22, [key]))
+        self.assertEqual(run.call_args.kwargs.get("errors"), "replace")
+
+    def test_devices_action_rejects_non_dict_body_and_boolean_delta_or_port(self):
+        d = self.reg.add_device("frame", port=1, hosts=["192.0.2.1", "192.0.2.2"])
+        for bad in (None, [], "bad"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(fd.DeviceError):
+                    fl.devices_action(self.link, bad, lambda *a: "")
+        with self.assertRaisesRegex(fd.DeviceError, "delta"):
+            fl.devices_action(self.link, {"action": "address-move", "id": d["id"],
+                                          "host": "192.0.2.1", "delta": True}, lambda *a: "")
+        self.assertTrue(fl.login_change(self.reg, d["id"], {"port": True}))
+
+    def test_failed_probe_blames_matching_result_slot_when_earlier_probe_is_none(self):
+        d = self.reg.add_device("frame", port=22, hosts=["192.0.2.1", "192.0.2.2"])
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def fake_probe(address, port, net_id, update=None):
+            if address["host"] == "192.0.2.1":
+                release.wait(2)
+                return {"state": "timeout", "detail": "No answer", "ip": None, "rtt_ms": None}
+            return {"state": "refused", "detail": "Refused", "ip": "192.0.2.2", "rtt_ms": None}
+
+        def fake_pick(results, tried, done, deadline=None):
+            with done:
+                done.wait_for(lambda: results[1] is not None, timeout=2)
+            return None
+
+        with mock.patch.object(fl.frame_network, "current_network", return_value=dict(NET)), \
+                mock.patch.object(fl, "ssh_g", return_value=("frame", 22, "steamos", False)), \
+                mock.patch.object(fl, "probe_address", side_effect=fake_probe), \
+                mock.patch.object(fl.Link, "pick", side_effect=fake_pick):
+            ok = self.link.attempt(d)
+        self.assertFalse(ok)
+        self.assertIn("192.0.2.2", self.link.snapshot()["error"]["raw"])
+
+    def test_tailscale_find_handles_missing_peer_fields(self):
+        self.reg.add_device("frame", hosts=["192.0.2.1"])
+        ts = {"installed": True, "up": True, "tailnet": "tail.ts.net",
+              "peers": [{"name": None, "dns": None, "ips": None, "os": None, "online": False}]}
+        with mock.patch.object(fl.frame_network, "tailscale_status", return_value=ts):
+            result = fl.tailscale_find(self.link)
+        self.assertTrue(result["up"])
+        self.assertEqual(len(result["peers"]), 1)
+        self.assertIsNone(result["peers"][0]["ip"])
+
+    def test_handshake_reaps_killed_process_on_timeout(self):
+        d = self.reg.add_device("frame", port=22, hosts=["192.0.2.1"])
+        events = []
+
+        class FakeProc:
+            returncode = None
+            def poll(self):
+                return self.returncode
+            def kill(self):
+                events.append("kill")
+                self.returncode = -9
+            def wait(self, timeout=None):
+                events.append("wait")
+                return self.returncode
+
+        with mock.patch.object(fl, "HANDSHAKE_TIMEOUT", 0.05), \
+                mock.patch.object(fl.subprocess, "Popen", return_value=FakeProc()):
+            outcome = self.link._handshake(d, {"host": "192.0.2.1"}, {"ip": "192.0.2.1"}, "steamos")
+        self.assertEqual(outcome, "next")
+        self.assertEqual(events, ["kill", "wait"])
+
+
 if __name__ == "__main__":
     unittest.main()
