@@ -563,6 +563,115 @@ class Repositories(unittest.TestCase):
         with self.assertRaisesRegex(SourceError, 'fingerprint mismatch'):
             fdroid.search(source, '')
 
+    def test_date_summary_and_images_guard_malformed_values(self):
+        for bad in (True, False, float('inf'), float('-inf'), float('nan'), 1e20):
+            with self.subTest(bad=bad):
+                self.assertIsNone(fdroid._date(bad))
+        self.assertEqual(fdroid._summary({'en-US': 123}), '')
+        self.assertEqual(fdroid._summary(123), '')
+        self.assertEqual(fdroid._images({'screenshots': ['not-a-dict']}, URL),
+                         {'icon': None, 'banner': None, 'screenshots': []})
+
+    def test_fetch_wraps_http_exception_and_jar_wraps_zlib_error(self):
+        import http.client
+        import zlib
+        self.fetch_patch.stop()
+        try:
+            with patch.object(fdroid.urllib.request, 'build_opener') as opener:
+                opener.return_value.open.side_effect = http.client.IncompleteRead(b'part')
+                with self.assertRaisesRegex(SourceError, 'download failed'):
+                    fdroid._fetch(URL + 'entry.jar', str(self.root / 'out.jar'), 1024)
+        finally:
+            self.fetch_mock = self.fetch_patch.start()
+
+        stream = io.BytesIO((FIXTURES / 'entry.jar').read_bytes())
+        with patch.object(zipfile.ZipFile, 'read', side_effect=zlib.error('corrupt stream')):
+            with self.assertRaisesRegex(SourceError, 'invalid signed repository'):
+                fdroid._jar(stream, 'entry.json', None)
+
+    def test_reduce_and_v1_tolerate_malformed_metadata_and_builds(self):
+        raw = self.root / 'null_meta.json'
+        raw.write_text(json.dumps({
+            'packages': {
+                'org.example.nullmeta': {
+                    'metadata': None,
+                    'versions': {
+                        '1': {
+                            'manifest': {'versionName': '1.0', 'versionCode': 1, 'usesSdk': {'minSdkVersion': 21}},
+                            'file': {'name': '/a.apk', 'sha256': 'a' * 64, 'size': 10},
+                            'added': 1700000000000,
+                        }
+                    }
+                }
+            }
+        }), encoding='utf-8')
+        reduced = fdroid._reduce(str(raw), {'id': 'test', 'url': URL})
+        self.assertEqual(reduced['org.example.nullmeta']['name'], 'org.example.nullmeta')
+
+        v1_out = self.root / 'v1_out.json'
+        v1_payload = json.dumps({
+            'repo': {'timestamp': 123},
+            'apps': ['bad', {}, {'packageName': 'org.example.v1', 'localized': {'en-US': {'phoneScreenshots': 'bad'}}}],
+            'packages': {
+                'org.example.v1': [
+                    'not-a-dict',
+                    {'versionCode': 1},
+                    {'apkName': 'ok.apk', 'versionCode': 2, 'versionName': '2.0', 'hash': 'b' * 64, 'hashType': 'sha256'},
+                ]
+            }
+        }).encode('utf-8')
+        self.assertEqual(fdroid._v1(v1_payload, v1_out), 123)
+        parsed = json.loads(v1_out.read_text(encoding='utf-8'))
+        self.assertEqual(len(parsed['packages']['org.example.v1']['versions']), 1)
+
+    def test_refresh_later_cleans_up_when_thread_start_fails(self):
+        class BrokenThread:
+            def __init__(self, *a, **k):
+                pass
+
+            def start(self):
+                raise RuntimeError('cannot start thread')
+
+        source = {'id': 'broken-refresh', 'url': URL}
+        with patch.object(fdroid.threading, 'Thread', BrokenThread):
+            with self.assertRaises(RuntimeError):
+                fdroid._refresh_later(source)
+        self.assertNotIn('broken-refresh', fdroid._refreshing)
+
+    def test_storage_state_cache_and_v1_use_utf8_io(self):
+        real_read_text = Path.read_text
+        real_write_text = Path.write_text
+        real_fdopen = os.fdopen
+        seen = []
+
+        def tracked_read(path_obj, *args, **kwargs):
+            seen.append(('read_text', path_obj.name, args[0] if args else kwargs.get('encoding')))
+            return real_read_text(path_obj, *args, **kwargs)
+
+        def tracked_write(path_obj, data, *args, **kwargs):
+            seen.append(('write_text', path_obj.name, args[0] if args else kwargs.get('encoding')))
+            return real_write_text(path_obj, data, *args, **kwargs)
+
+        def tracked_fdopen(fd, mode='r', *args, **kwargs):
+            if 'b' not in mode:
+                seen.append(('fdopen', mode, kwargs.get('encoding')))
+            return real_fdopen(fd, mode, *args, **kwargs)
+
+        with patch.object(Path, 'read_text', tracked_read), \
+                patch.object(Path, 'write_text', tracked_write), \
+                patch.object(os, 'fdopen', tracked_fdopen):
+            fdroid._write(fdroid._storage(), {'repos': [], 'enabled': {}})
+            fdroid._read()
+            fdroid._write(fdroid._state_path(), {})
+            fdroid._states()
+            v1_path = self.root / 'v1_utf8.json'
+            fdroid._v1(json.dumps({'apps': [], 'packages': {}}).encode('utf-8'), v1_path)
+            cache = self.root / 'cache_utf8.json'
+            fdroid._write(cache, {'version': fdroid.CACHE_VERSION, 'url': URL, 'fingerprint': None, 'apps': {}})
+            fdroid._cached({'url': URL, 'fingerprint': None}, cache)
+        self.assertTrue(seen)
+        self.assertTrue(all(enc == 'utf-8' for _, _, enc in seen), seen)
+
 
 if __name__ == '__main__':
     unittest.main()
