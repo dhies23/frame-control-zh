@@ -47,8 +47,28 @@ await run('close');finish();
 await assert.rejects(pending,/panel closed/);assert.equal(calls.length,1);
 assert.equal(callbacks.size,0);assert.equal(intervals.size,0);
 await run();emit([row(10)]);
-now+=16000;for(const timer of [...intervals.values()])timer();
+for(const delay of [20000,41000]) {
+  now+=delay;for(const timer of [...intervals.values()])timer();
+  const kept=await run();
+  assert.equal(kept.ready,true,'slow poll keeps download subscription alive');
+  assert.equal(callbacks.size,1);
+}
+// Steam callbacks alone must not renew an abandoned panel lease.
+now+=59000;emit([row(10)]);for(const timer of [...intervals.values()])timer();
+assert.equal(callbacks.size,1);
+now+=2000;for(const timer of [...intervals.values()])timer();
 assert.equal(callbacks.size,0,'abandoned iframe releases its native subscription');
+// An idle sweep while a queue batch is in progress must not tear down the active session.
+await run();emit([row(10)]);calls.length=0;
+const activeQueue=run('queue',[10]);
+now+=65000;for(const timer of [...intervals.values()])timer();
+assert.equal(callbacks.size,1,'active queue session is not swept while busy');
+now-=64000; // Keep within the 15s batch deadline when the native call completes.
+finish();
+await activeQueue;
+assert.equal(callbacks.size,1);
+await run('close');
+assert.equal(callbacks.size,0);
 await run();emit(Array(2049).fill(row(10)));
 await assert.rejects(run(),/limit/);await assert.rejects(run('queue',[10]),/unavailable/);
 await run('close');await run();emit([{...row(10),queue_index:'-1'}]);

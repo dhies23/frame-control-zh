@@ -45,11 +45,28 @@ window.SteamUIStore.RunningApps=[];window.SteamUIStore.MainRunningApp=undefined;
 assert.deepEqual(poll().runningIds,[]);assert.equal(poll().mainAppId,null);
 assert.equal(poll().cursor,101); // Reading a closed game invents no exit event.
 assert.equal(poll('one',13,false),null);assert.equal(listeners.size,1);
-now+=16000;for(const timer of [...timers.values()])timer();
+now+=61000;for(const timer of [...timers.values()])timer();
 assert.equal(listeners.size,0);assert.equal(timers.size,0);
 poll();assert.equal(listeners.size,1);
 window.SteamClient.GameSessions={...api};poll();assert.equal(listeners.size,1);
 poll('one',13,false);assert.equal(listeners.size,0);
+// Receipt verification (15s) and Steam read RPC (25s) can exceed 15s. Retain
+// queued lifetime notifications through slow polls, while still expiring abandoned panels.
+for(const delay of [20000,41000]) {
+  poll('slow',13,true,0);
+  emit({unAppID:10,bRunning:true});
+  now+=delay;for(const timer of [...timers.values()])timer();
+  const delayed=poll('slow',13,true,0);
+  assert.deepEqual(delayed.events,[{sequence:1,unAppID:10,bRunning:true}]);
+  assert.equal(listeners.size,1,'slow poll keeps the same Steam lifetime subscription');
+  assert.deepEqual(poll('slow',13,true,1).events,[]);
+  // Notifications alone must not extend an abandoned client's lease.
+  now+=59000;emit({unAppID:10,bRunning:false});
+  for(const timer of [...timers.values()])timer();
+  assert.equal(listeners.size,1);
+  now+=2000;for(const timer of [...timers.values()])timer();
+  assert.equal(listeners.size,0);assert.equal(timers.size,0);
+}
 window.SteamUIStore.RunningApps=Array(65).fill(app);
 assert.throws(()=>poll(),/Too many/);assert.equal(listeners.size,0);
 window.SteamUIStore=undefined;
