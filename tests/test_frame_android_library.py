@@ -655,6 +655,128 @@ class InstallTests(unittest.TestCase):
         self.assertIn('podman stop -t 5 lepton-steamlaunch-2800000001', ssh.call_args.args[0])
 
 
+class AndroidGuardsTests(unittest.TestCase):
+    def test_package_validation_rejects_trailing_newline_and_non_strings(self):
+        with patch.object(android, 'ssh') as ssh:
+            for bad in ('org.test.app\n', '../evil', 123, ['org.test.app']):
+                with self.subTest(read_meta=bad):
+                    self.assertIsNone(android.read_meta(bad))
+            for fn in (android._meta_or_fail, android.installed_version_code, android.refresh_art):
+                for bad in ('org.test.app\n', 123, ['org.test.app']):
+                    with self.subTest(fn=fn.__name__, bad=bad), self.assertRaises(android.FrameError):
+                        fn(bad)
+            ssh.assert_not_called()
+        self.assertIsNone(android._clean_meta({'package': 'org.test.app\n', 'instance': 2800000001}))
+        bad_info = {'package': 'org.test.app\n', 'label': 'Bad', 'version': '1', 'icon_png': None,
+                    'vr': False, 'launchable': True, 'repairable': False, 'abis': [], 'min_sdk': 24}
+        with patch.object(android, 'apk_info', return_value=bad_info), \
+                patch.object(android, '_install') as inner:
+            with self.assertRaisesRegex(android.FrameError, 'unexpected package name'):
+                android.install('bad.apk')
+            inner.assert_not_called()
+
+    def test_int_and_art_missing_reject_booleans_and_malformed_artwork(self):
+        self.assertIsNone(android._int(True))
+        self.assertIsNone(android._int(False))
+        self.assertIsNone(android._clean_meta({'package': 'org.test.app', 'instance': True, 'shortcut': True}))
+        for bad in ({'artwork': 123}, {'artwork': list(art.SLOTS)}, 'not-a-dict', None):
+            with self.subTest(bad=bad):
+                self.assertTrue(android.art_missing(bad))
+
+    def test_apply_library_wraps_malformed_render_and_configure_output(self):
+        good_render = json.dumps({'paths': {s: f'/tmp/{s}.png' for s in art.SLOTS}, 'warnings': []})
+        cases = [
+            (['not-json'], 'invalid output'),
+            (['[]'], 'every slot'),
+            ([json.dumps({'paths': []})], 'every slot'),
+            ([good_render, 'not-json'], 'invalid output'),
+            ([good_render, '[]'], 'invalid output'),
+        ]
+        for replies, expected in cases:
+            with self.subTest(replies=replies), \
+                    patch.object(android, 'ssh', return_value='/home/steamos'), \
+                    patch.object(android, 'shortcut_tool', side_effect=replies):
+                with self.assertRaisesRegex(android.FrameError, expected):
+                    android.apply_library(42, 'Game', 'Applications/Android/org.test.app', {}, home='/home/steamos')
+
+    def test_refresh_art_guards_corrupt_recovery_and_malformed_frame_info(self):
+        meta = {'package': 'org.test.app', 'label': 'App', 'instance': 2800000001, 'shortcut': 42, 'flatscreen': False}
+        for bad_rec in ('{', '[]'):
+            def ssh_rec(cmd, input=None, **kw):
+                if 'update-recovery.json &&' in cmd:
+                    return 'yes'
+                if 'cat ' in cmd and 'update-recovery.json' in cmd:
+                    return bad_rec
+                return ''
+            with self.subTest(bad_rec=bad_rec), patch.object(android, 'ssh', side_effect=ssh_rec):
+                with self.assertRaisesRegex(android.FrameError, 'Corrupt update recovery record'):
+                    android.refresh_art('org.test.app')
+
+        def make_ssh(info_reply):
+            def fake(cmd, input=None, **kw):
+                if 'test -' in cmd:
+                    return ''
+                if cmd == 'python3 -':
+                    return info_reply
+                if cmd == 'echo $HOME':
+                    return '/home/steamos'
+                return ''
+            return fake
+
+        with patch.object(android, '_meta_or_fail', return_value=dict(meta)), \
+                patch.object(android, 'ssh', side_effect=make_ssh('[]')):
+            with self.assertRaisesRegex(android.FrameError, 'could not read installed APK info'):
+                android.refresh_art('org.test.app')
+
+        corrupt = json.dumps({'icon_png': '!!!', 'artwork': {'grid': 'YmFubmVy', 'bad': '!!!', 'num': 7}})
+        with patch.object(android, '_meta_or_fail', return_value=dict(meta)), \
+                patch.object(android, 'ssh', side_effect=make_ssh(corrupt)), \
+                patch.object(android, '_shortcut_ids', return_value=set()), \
+                patch.object(android, 'shortcut_tool', return_value='banner\n99\n'), \
+                patch.object(android.frame_artwork, 'prepare', return_value=({}, [])) as prep, \
+                patch.object(android, 'apply_library', return_value={'artwork': {}, 'warnings': []}), \
+                patch.object(android, '_write_meta'):
+            updated = android.refresh_art('org.test.app')
+        self.assertEqual(prep.call_args.args[1], b'')
+        self.assertEqual(prep.call_args.args[2], {'grid': b'banner'})
+        self.assertEqual(updated['shortcut'], 99)
+
+        with patch.object(android, '_meta_or_fail', return_value=dict(meta)), \
+                patch.object(android, 'ssh', side_effect=make_ssh(json.dumps({'icon_png': ''}))):
+            with self.assertRaisesRegex(android.FrameError, 'could not prepare artwork'):
+                android.refresh_art('org.test.app', artwork={'bogus': b'x'})
+
+    def test_script_loaders_use_utf8_encoding(self):
+        import builtins
+        real_open = builtins.open
+        encodings = []
+
+        def tracked_open(file, mode='r', *args, **kwargs):
+            if str(file).endswith(('steam_shortcuts.py', 'library_artwork.js', 'frame_apk.py', 'frame_apk_vr.py')):
+                encodings.append((os.path.basename(str(file)), kwargs.get('encoding')))
+            return real_open(file, mode, *args, **kwargs)
+
+        with patch.object(builtins, 'open', side_effect=tracked_open), \
+                patch.object(android, 'ssh', return_value='{}'):
+            android.shortcut_tool('render', '/tmp/in.json')
+            android._apk_parser_script()
+        self.assertEqual({name for name, _ in encodings},
+                         {'steam_shortcuts.py', 'library_artwork.js', 'frame_apk.py', 'frame_apk_vr.py'})
+        self.assertTrue(all(enc == 'utf-8' for _, enc in encodings), encodings)
+
+    def test_cli_missing_args_and_remove_flag_order(self):
+        for cmd in ('info', 'versions', 'launch', 'stop', 'probe', 'remove'):
+            with self.subTest(cmd=cmd), patch.object(sys, 'argv', ['frame_android.py', cmd]):
+                with self.assertRaises(SystemExit) as caught:
+                    android.main()
+                self.assertIn('error:', str(caught.exception))
+        with patch.object(sys, 'argv', ['frame_android.py', 'remove', '--keep-data', 'org.test.app']), \
+                patch.object(android, 'remove', return_value={'ok': True}) as rem, \
+                patch('builtins.print'):
+            android.main()
+        rem.assert_called_once_with('org.test.app', keep_data=True)
+
+
 class CopyAndSshTests(unittest.TestCase):
     """The commands behind an install fail as FrameErrors with readable words, and a large APK
     gets the time it needs."""

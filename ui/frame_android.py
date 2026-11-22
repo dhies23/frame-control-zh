@@ -43,6 +43,10 @@ LEPTON_API = 30
 SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8']
 
 
+def _valid_pkg(pkg):
+    return isinstance(pkg, str) and bool(PKG_RE.fullmatch(pkg))
+
+
 class FrameError(RuntimeError):
     pass
 
@@ -82,10 +86,10 @@ def ssh(cmd, input=None, timeout=120):
 
 
 def shortcut_tool(*args, timeout=60):
-    with open(SHORTCUTS) as f:
+    with open(SHORTCUTS, encoding='utf-8') as f:
         script = f.read()
     if args and args[0] == 'render':
-        with open(os.path.join(ROOT, 'frame/android/library_artwork.js')) as f:
+        with open(os.path.join(ROOT, 'frame/android/library_artwork.js'), encoding='utf-8') as f:
             script = 'ART_RENDERER = ' + repr(f.read()) + '\n' + script
     return ssh('python3 - ' + ' '.join(shlex.quote(a) for a in args), input=script,
                timeout=timeout).strip()
@@ -139,12 +143,14 @@ def newer_android_message(label, min_sdk):
 
 
 def check_installable(info):
-    if info['min_sdk'] and info['min_sdk'] > LEPTON_API:
-        raise FrameError(newer_android_message(info['label'], info['min_sdk']))
-    if info['abis'] and 'arm64-v8a' not in info['abis']:
+    min_sdk = info.get('min_sdk')
+    if isinstance(min_sdk, int) and not isinstance(min_sdk, bool) and min_sdk > LEPTON_API:
+        raise FrameError(newer_android_message(info['label'], min_sdk))
+    abis = info.get('abis') or []
+    if abis and 'arm64-v8a' not in abis:
         # Sites that offer one APK per ABI (Grayjay: arm64-v8a, armeabi-v7a, x86, x86_64,
         # universal) leave the choice to the user; say which file to fetch instead.
-        raise FrameError(f"{info['label']} has no arm64-v8a build ({', '.join(info['abis'])}); Lepton is 64-bit ARM only. "
+        raise FrameError(f"{info['label']} has no arm64-v8a build ({', '.join(abis)}); Lepton is 64-bit ARM only. "
                          "This file is for other devices: download the APK marked arm64-v8a "
                          "(or arm64, or universal) and install that instead")
 
@@ -555,7 +561,7 @@ def install(apk_path, flatscreen=None, name=None, source=None, icon_png=None, xr
             info['icon_png'] = icon_png
         check_installable(info)
         pkg = info['package']
-        if not PKG_RE.match(pkg):
+        if not _valid_pkg(pkg):
             raise FrameError(f'unexpected package name {pkg!r}')
         if flatscreen is None:
             flatscreen = not info['vr']
@@ -735,15 +741,26 @@ def apply_library(shortcut, label, directory, images, vr=None, home=None, exe=''
     ssh(f'cat > {shlex.quote(plan)}', input=json.dumps(manifest))
     absolute = f'{home}/{plan}' if not plan.startswith('/') else plan
     # The Frame retries once with generated art, each attempt allowed 75 s.
-    rendered = json.loads(shortcut_tool('render', absolute, timeout=200))
-    art = rendered['paths']
-    if set(art) != set(frame_artwork.SLOTS):
+    try:
+        rendered = json.loads(shortcut_tool('render', absolute, timeout=200))
+    except ValueError as e:
+        raise FrameError(f'Steam artwork renderer returned invalid output: {e}') from e
+    art = rendered.get('paths') if isinstance(rendered, dict) else None
+    if not isinstance(art, dict) or set(art) != set(frame_artwork.SLOTS):
         raise FrameError('Steam artwork renderer did not produce every slot')
-    result = json.loads(shortcut_tool('configure', str(shortcut), label, exe, start_dir, art['icon'],
-                                     '' if vr is None else '1' if vr else '0', json.dumps(art),
-                                     json.dumps({'category': category, 'details': details or {},
-                                                 'fill_only': fill_only}), timeout=120))
-    result['warnings'] = rendered.get('warnings', []) + result.get('warnings', [])
+    try:
+        result = json.loads(shortcut_tool('configure', str(shortcut), label, exe, start_dir, art['icon'],
+                                          '' if vr is None else '1' if vr else '0', json.dumps(art),
+                                          json.dumps({'category': category, 'details': details or {},
+                                                      'fill_only': fill_only}), timeout=120))
+    except ValueError as e:
+        raise FrameError(f'Steam shortcut configuration returned invalid output: {e}') from e
+    if not isinstance(result, dict):
+        raise FrameError('Steam shortcut configuration returned invalid output')
+    rendered_warnings = rendered.get('warnings')
+    result_warnings = result.get('warnings')
+    result['warnings'] = (list(rendered_warnings) if isinstance(rendered_warnings, list) else []) + \
+        (list(result_warnings) if isinstance(result_warnings, list) else [])
     result['artwork'] = art
     if category == 'Android':
         ssh(f'cat > {shlex.quote(d)}/shortcut.id', input=str(int(shortcut)))
@@ -774,7 +791,7 @@ def _apk_parser_script():
     """Frame-side Python preamble that loads this copy's stdlib APK parser (frame_apk)."""
     script = 'import sys, types, json, base64\n'
     for module in ('frame_apk', 'frame_apk_vr'):
-        with open(os.path.join(ROOT, 'ui', module + '.py')) as f:
+        with open(os.path.join(ROOT, 'ui', module + '.py'), encoding='utf-8') as f:
             source = f.read()
         script += f'm = types.ModuleType({module!r}); sys.modules[{module!r}] = m; exec({source!r}, m.__dict__)\n'
     return script
@@ -783,7 +800,7 @@ def _apk_parser_script():
 def installed_version_code(pkg):
     """The version code of pkg's installed app.apk, read on the Frame (only its manifest
     crosses the link), or None if there is no readable APK. Connection failures raise."""
-    if not PKG_RE.match(pkg or ''):
+    if not _valid_pkg(pkg):
         raise FrameError(f'bad package name {pkg!r}')
     script = _apk_parser_script() + f"""try:
     code = sys.modules['frame_apk'].apk_info({(APPS_DIR + '/' + pkg + '/app.apk')!r}).get('version_code')
@@ -800,7 +817,8 @@ print(json.dumps(code if isinstance(code, int) else None))
 
 def art_missing(m):
     """True when a Frame Control install has no complete Steam artwork on record."""
-    return set((m or {}).get('artwork') or {}) != set(frame_artwork.SLOTS)
+    art = m.get('artwork') if isinstance(m, dict) else None
+    return not isinstance(art, dict) or set(art) != set(frame_artwork.SLOTS)
 
 
 def refresh_art(pkg=None, artwork=None, fill_only=False):
@@ -815,7 +833,7 @@ def refresh_art(pkg=None, artwork=None, fill_only=False):
             except Exception as e:  # one app's failure must not stop the others
                 results.append({'package': app['package'], 'label': app.get('label'), 'error': str(e) or type(e).__name__})
         return results
-    if not PKG_RE.fullmatch(pkg or ''):
+    if not _valid_pkg(pkg):
         raise FrameError(f'bad package name {pkg!r}')
     with _install_lock:  # shared with install and remove: a removed app is never recreated
         d = f'{APPS_DIR}/{pkg}'
@@ -823,7 +841,15 @@ def refresh_art(pkg=None, artwork=None, fill_only=False):
         if not recovering and ssh(f'test -e {d}/.frame-update-backup && echo yes || true').strip() == 'yes':
             raise FrameError(f'Update snapshot at {d}/.frame-update-backup has no recovery record; '
                              'rollback is unconfirmed. Inspect and preserve the snapshot before repair')
-        recovery = json.loads(ssh(f'cat {d}/update-recovery.json')) if recovering else {}
+        if recovering:
+            try:
+                recovery = json.loads(ssh(f'cat {d}/update-recovery.json'))
+            except ValueError as e:
+                raise FrameError(f'Corrupt update recovery record at {d}/update-recovery.json: {e}') from e
+            if not isinstance(recovery, dict):
+                raise FrameError(f'Corrupt update recovery record at {d}/update-recovery.json')
+        else:
+            recovery = {}
         if recovery.get('repair_completed') is True:
             m = _meta_or_fail(pkg)
             _finish_update_recovery(d)
@@ -850,14 +876,34 @@ def refresh_art(pkg=None, artwork=None, fill_only=False):
         script += f"info = sys.modules['frame_apk'].apk_info({(d + '/app.apk')!r})\n"
         script += "info['icon_png'] = base64.b64encode(info.get('icon_png') or b'').decode()\n"
         script += cached_art_script(d) + "info['artwork'] = cached\nprint(json.dumps(info))\n"
-        info = json.loads(ssh('python3 -', input=script))
-        icon = base64.b64decode(info['icon_png'])
-        cached = {k: base64.b64decode(v) for k, v in info.get('artwork', {}).items()}
-        images, warnings = frame_artwork.prepare(m['label'], icon, artwork if artwork is not None else cached)
+        try:
+            info = json.loads(ssh('python3 -', input=script))
+        except ValueError as e:
+            raise FrameError(f'could not read installed APK info: {e}') from e
+        if not isinstance(info, dict):
+            raise FrameError('could not read installed APK info')
+        icon_b64 = info.get('icon_png')
+        try:
+            icon = base64.b64decode(icon_b64, validate=True) if isinstance(icon_b64, str) and icon_b64 else b''
+        except ValueError:
+            icon = b''
+        raw_art = info.get('artwork') if isinstance(info.get('artwork'), dict) else {}
+        cached = {}
+        for k, v in raw_art.items():
+            if isinstance(k, str) and isinstance(v, str) and v:
+                try:
+                    cached[k] = base64.b64decode(v, validate=True)
+                except ValueError:
+                    pass
+        try:
+            images, warnings = frame_artwork.prepare(m['label'], icon, artwork if artwork is not None else cached)
+        except (ValueError, OSError) as e:
+            raise FrameError(f'could not prepare artwork: {e}') from e
         home = ssh('echo $HOME').strip()
         created = False
         if not m['shortcut'] or m['shortcut'] not in _shortcut_ids():
-            m['shortcut'] = _int(shortcut_tool('add', m['label'], f'{home}/{d}/launch.sh', f'{home}/{d}'))
+            reply = shortcut_tool('add', m['label'], f'{home}/{d}/launch.sh', f'{home}/{d}')
+            m['shortcut'] = _int(reply.strip().splitlines()[-1] if reply.strip() else None)
             if not m['shortcut']:
                 raise FrameError('Steam did not create the missing shortcut')
             m['game_id'] = game_id(m['shortcut'])
@@ -888,6 +934,8 @@ def refresh_art(pkg=None, artwork=None, fill_only=False):
         return m
 
 def _int(v):
+    if isinstance(v, bool):
+        return None
     try:
         n = int(v)
         return n if n > 0 else None
@@ -896,6 +944,8 @@ def _int(v):
 
 
 def read_meta(pkg):
+    if not _valid_pkg(pkg):
+        return None
     try:
         m = json.loads(ssh(f'cat {APPS_DIR}/{pkg}/meta.json 2>/dev/null || true') or 'null')
     except (ValueError, FrameError):
@@ -905,7 +955,7 @@ def read_meta(pkg):
 
 def _clean_meta(m):
     """A usable meta dict with integer ids, or None if it's missing what we need."""
-    if not isinstance(m, dict) or not PKG_RE.match(str(m.get('package', ''))):
+    if not isinstance(m, dict) or not _valid_pkg(m.get('package')):
         return None
     iid, shortcut = _int(m.get('instance')), _int(m.get('shortcut'))
     if not iid:
@@ -953,7 +1003,7 @@ def list_apps():
 
 
 def _meta_or_fail(pkg):
-    if not PKG_RE.match(pkg or ''):
+    if not _valid_pkg(pkg):
         raise FrameError(f'bad package name {pkg!r}')
     m = read_meta(pkg)
     if not m:
@@ -1065,6 +1115,8 @@ def main():
     cmd, *args = sys.argv[1:] or ['help']
     try:
         if cmd in ('info', 'versions'):
+            if not args:
+                raise FrameError(f'{cmd} requires APK' if cmd == 'info' else f'{cmd} requires APK or PACKAGE')
             import frame_apk_versions
             if cmd == 'info':
                 info = apk_info(args[0])
@@ -1119,9 +1171,14 @@ def main():
             if any(a['art_missing'] for a in r):
                 print('Some apps have no Steam artwork: python3 ui/frame_android.py refresh-art --all', file=sys.stderr)
         elif cmd in ('launch', 'stop', 'probe'):
+            if len(args) != 1:
+                raise FrameError(f'usage: {cmd} PACKAGE')
             r = globals()[cmd](args[0])
         elif cmd == 'remove':
-            r = remove(args[0], keep_data='--keep-data' in args)
+            pkgs = [a for a in args if a != '--keep-data']
+            if len(pkgs) != 1:
+                raise FrameError('usage: remove [--keep-data] PACKAGE')
+            r = remove(pkgs[0], keep_data='--keep-data' in args)
         else:
             sys.exit(__doc__)
     except (FrameError, OSError) as e:
