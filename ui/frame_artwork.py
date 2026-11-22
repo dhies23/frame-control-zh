@@ -14,14 +14,18 @@ def chunk(kind, data):
     return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
 
 
+PNG_DEPTHS = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8), 4: (8, 16), 6: (8, 16)}
+
+
 def png_size(data):
     """IHDR dimensions of a PNG of any bit depth or interlace; Steam's Chromium decodes the pixels."""
-    if len(data) < 33 or data[12:16] != b'IHDR' or struct.unpack_from('>I', data, 8)[0] != 13:
+    if (not isinstance(data, bytes) or not data.startswith(PNG) or len(data) < 33 or
+            data[12:16] != b'IHDR' or struct.unpack_from('>I', data, 8)[0] != 13):
         raise ValueError('invalid PNG header')
     if zlib.crc32(data[12:29]) != struct.unpack_from('>I', data, 29)[0]:
         raise ValueError('invalid PNG checksum')
-    w, h, depth, color = struct.unpack_from('>IIBB', data, 16)
-    if color not in (0, 2, 3, 4, 6) or depth not in (1, 2, 4, 8, 16):
+    w, h, depth, color, compression, filter_method, interlace = struct.unpack_from('>IIBBBBB', data, 16)
+    if depth not in PNG_DEPTHS.get(color, ()) or compression != 0 or filter_method != 0 or interlace not in (0, 1):
         raise ValueError('unsupported PNG encoding')
     if not w or not h or w * h > MAX_PIXELS or w > 8192 or h > 8192:
         raise ValueError('PNG dimensions exceed limits')
@@ -42,7 +46,7 @@ def _gif_blocks(data, pos):
 def gif_frame(data):
     """A GIF's first frame as a minimal single-frame GIF, so no frame count or oversized frame
     reaches the Frame's Chromium. Raises ValueError for anything malformed or out of bounds."""
-    if data[:6] not in (b'GIF87a', b'GIF89a') or len(data) < 13:
+    if not isinstance(data, bytes) or data[:6] not in (b'GIF87a', b'GIF89a') or len(data) < 13:
         raise ValueError('invalid GIF')
     sw, sh, flags = struct.unpack_from('<HHB', data, 6)
     if not sw or not sh or sw * sh > MAX_PIXELS or max(sw, sh) > 4096:
@@ -89,12 +93,19 @@ def image_type(data):
     if data.startswith(b'\xff\xd8'):
         # Check JPEG SOF dimensions without depending on an image library; trailing padding is fine.
         pos = 2
-        while pos + 4 <= len(data) and data[pos] == 255:
-            marker = data[pos + 1]
-            pos += 2
-            if marker == 255:
-                pos -= 1
+        while pos + 2 <= len(data) and data[pos] == 255:
+            while pos < len(data) and data[pos] == 255:
+                pos += 1
+            if pos >= len(data):
+                break
+            marker = data[pos]
+            pos += 1
+            if marker in (0x00, 0xd8, 0xd9, 0xda):
+                break
+            if marker == 0x01 or 0xd0 <= marker <= 0xd7:
                 continue
+            if pos + 2 > len(data):
+                break
             size = struct.unpack_from('>H', data, pos)[0]
             if size < 2 or pos + size > len(data):
                 break
@@ -121,7 +132,7 @@ def prepare(label, icon_png=None, artwork=None, budget=90):
 
     Every source is optional: any failure falls back to generated art, within budget seconds overall."""
     import frame_steamgriddb
-    artwork = artwork or {}
+    artwork = {} if artwork is None else artwork
     allowed = set(SLOTS) | {'banner', 'feature_graphic', 'screenshots', 'screenshot'}
     if not isinstance(artwork, dict) or set(artwork) - allowed:
         raise ValueError('unknown artwork slot')
@@ -150,8 +161,13 @@ def prepare(label, icon_png=None, artwork=None, budget=90):
         provider, provider_warnings = frame_steamgriddb.lookup(label, deadline)
     except Exception:
         provider, provider_warnings = {}, ['SteamGridDB unavailable; using source or generated art']
-    warnings.extend(provider_warnings)
+    if not isinstance(provider, dict):
+        provider = {}
+    if isinstance(provider_warnings, (list, tuple)):
+        warnings.extend(str(w) for w in provider_warnings)
     for slot, value in provider.items():
+        if slot not in SLOTS:
+            continue
         image = get(value)
         if image:
             supplied[slot] = image
