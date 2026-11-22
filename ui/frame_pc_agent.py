@@ -335,7 +335,7 @@ class Session:
                         self.stats.report(m)
                     except MALFORMED:
                         pass
-                    if t == 'rx' and isinstance(m.get('s'), int):
+                    if t == 'rx' and type(m.get('s')) is int:
                         self.controller.call('ack', m['s'] & 0xffffffff, self.native.now())
                 elif t in ('m', 'wheel', 'k', 'text', 'release'):
                     with self.input_lock:
