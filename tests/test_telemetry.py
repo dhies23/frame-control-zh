@@ -1075,5 +1075,72 @@ class ReportProblem(Base):
         self.assertEqual(fr.cut("hello", -5), "")
 
 
+class Hardening(Base):
+    def test_corrupt_settings_telemetry_and_package_json_fall_back_safely(self):
+        tm.SETTINGS.write_text(json.dumps({
+            "id": "", "usage": "yes", "compat": 1, "diagnostics": [],
+            "notice_shown": "no", "notice_version": "bad",
+            "frames_seen": None, "compat_sent": "nope",
+        }), encoding="utf-8")
+        s = tm.settings()
+        self.assertTrue(isinstance(s["id"], str) and s["id"])
+        self.assertIs(s["usage"], True)
+        self.assertEqual(s["notice_version"], 0)
+        self.assertEqual(s["frames_seen"], [])
+        self.assertEqual(s["compat_sent"], [])
+        self.assertFalse(tm.state()["noticeShown"])
+        tm.frame_seen("20260101", "3.7")
+        self.assertEqual(tm.settings()["frames_seen"], ["20260101/3.7"])
+
+        fake_root = tm.STATE / "root"
+        (fake_root / "ui").mkdir(parents=True)
+        (fake_root / "app").mkdir(parents=True)
+        (fake_root / "ui" / "telemetry.json").write_text("[]", encoding="utf-8")
+        (fake_root / "app" / "package.json").write_text("[]", encoding="utf-8")
+        with mock.patch.object(tm, "HERE", fake_root / "ui"), \
+             mock.patch.dict(os.environ, {"FRAME_CONTROL_VERSION": "", "FRAME_CONTROL_POSTHOG_HOST": "",
+                                          "FRAME_CONTROL_POSTHOG_KEY": "", "FRAME_CONTROL_POSTHOG_PROJECT": ""}):
+            self.assertEqual(tm.config()["host"], tm.DEFAULT_HOST)
+            self.assertEqual(tm.app_version(), "dev")
+
+    def test_non_dict_bodies_and_properties_raise_value_error(self):
+        for bad in (None, [], "nope", 42):
+            with self.assertRaises(ValueError):
+                tm.update_settings(bad)
+            with self.assertRaises(ValueError):
+                tm.page_event(bad)
+        with self.assertRaises(ValueError):
+            tm.page_event({"event": "tab_viewed", "properties": ["bad"]})
+
+    def test_read_lines_and_drop_unwanted_tolerate_corrupt_utf8_and_non_dict_rows(self):
+        good = {"event": "app_opened", "uuid": "u-1", "properties": {"level": "usage"}}
+        with open(tm.OUTBOX, "wb") as f:
+            f.write(b"\xff\xfe bad-bytes\n")
+            f.write(b'"not-a-dict"\n')
+            f.write(b'{"event": "bad", "properties": "not-a-dict"}\n')
+            f.write((json.dumps(good) + "\n").encode("utf-8"))
+        rows = tm._read_lines(tm.OUTBOX)
+        self.assertTrue(all(isinstance(r, dict) for r in rows))
+        tm.update_settings({"usage": True})
+        self.assertEqual([e["uuid"] for e in self.queued()], ["u-1"])
+
+    def test_write_lines_cleans_tmp_file_on_replace_failure(self):
+        tmp = Path(str(tm.OUTBOX) + ".tmp")
+        with mock.patch.object(tm.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                tm._write_lines(tm.OUTBOX, [{"event": "x"}])
+        self.assertFalse(tmp.exists())
+
+    def test_diagnostic_prunes_expired_seen_errors(self):
+        tm.update_settings({"diagnostics": True})
+        old = time.time() - tm.REPEAT_WINDOW - 10
+        tm._seen_errors["expected|frame_unreachable"] = old
+        for i in range(520):
+            tm._seen_errors[f"where|err-{i}"] = old
+        tm.diagnostic("fresh", RuntimeError("boom"))
+        self.assertIn("expected|frame_unreachable", tm._seen_errors)
+        self.assertLess(len(tm._seen_errors), 10)
+
+
 if __name__ == "__main__":
     unittest.main()

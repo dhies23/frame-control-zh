@@ -91,12 +91,16 @@ _wake = threading.Event()
 def config():
     """PostHog host and project key: the environment, else ui/telemetry.json."""
     try:
-        with open(HERE / 'telemetry.json') as f:
+        with open(HERE / 'telemetry.json', encoding='utf-8') as f:
             c = json.load(f)
+        if not isinstance(c, dict):
+            c = {}
     except (OSError, ValueError):
         c = {}
-    host = os.environ.get('FRAME_CONTROL_POSTHOG_HOST') or c.get('host') or DEFAULT_HOST
-    key = os.environ.get('FRAME_CONTROL_POSTHOG_KEY') or c.get('key') or ''
+    raw_host = os.environ.get('FRAME_CONTROL_POSTHOG_HOST') or c.get('host') or DEFAULT_HOST
+    host = raw_host if isinstance(raw_host, str) else DEFAULT_HOST
+    raw_key = os.environ.get('FRAME_CONTROL_POSTHOG_KEY') or c.get('key') or ''
+    key = raw_key if isinstance(raw_key, str) else ''
     project = os.environ.get('FRAME_CONTROL_POSTHOG_PROJECT') or c.get('project') or ''
     return {'host': host.rstrip('/'), 'key': key, 'project': str(project)}
 
@@ -122,10 +126,23 @@ def settings():
     with _lock:
         s = _defaults()
         try:
-            with open(SETTINGS) as f:
+            with open(SETTINGS, encoding='utf-8') as f:
                 saved = json.load(f)
             if isinstance(saved, dict):
-                s.update({k: v for k, v in saved.items() if k in s})
+                if isinstance(saved.get('id'), str) and saved['id']:
+                    s['id'] = saved['id']
+                for key in ('usage', 'compat', 'diagnostics', 'notice_shown', 'installed_sent'):
+                    if isinstance(saved.get(key), bool):
+                        s[key] = saved[key]
+                nv = saved.get('notice_version')
+                if type(nv) is int and nv >= 0:
+                    s['notice_version'] = nv
+                for key in ('last_version', 'last_open_day'):
+                    if isinstance(saved.get(key), str) or saved.get(key) is None:
+                        s[key] = saved.get(key)
+                for key in ('frames_seen', 'compat_sent'):
+                    if isinstance(saved.get(key), list):
+                        s[key] = [item for item in saved[key] if isinstance(item, str)]
         except (OSError, ValueError):
             pass
         if not SETTINGS.exists():
@@ -134,13 +151,16 @@ def settings():
 
 
 def _save(s):
+    tmp = SETTINGS.with_suffix('.tmp')
     try:
         STATE.mkdir(parents=True, exist_ok=True)
-        tmp = SETTINGS.with_suffix('.tmp')
-        tmp.write_text(json.dumps(s, indent=1))
+        tmp.write_text(json.dumps(s, indent=1), encoding='utf-8')
         os.replace(tmp, SETTINGS)
     except OSError:
-        pass
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def enabled(level):
@@ -154,6 +174,8 @@ def enabled(level):
 def update_settings(changes):
     """Apply the page's choices. Turning a level off drops its unsent events; a send already
     under way finishes first, so nothing leaves after this returns."""
+    if not isinstance(changes, dict):
+        raise ValueError('expected a JSON object')
     with _send_lock, _lock:
         s = settings()
         if changes.get('noticeShown'):
@@ -361,8 +383,10 @@ def app_version():
     if v:
         return v
     try:
-        with open(HERE.parent / 'app' / 'package.json') as f:
-            return json.load(f).get('version') or 'dev'
+        with open(HERE.parent / 'app' / 'package.json', encoding='utf-8') as f:
+            data = json.load(f)
+        ver = data.get('version') if isinstance(data, dict) else None
+        return ver if isinstance(ver, str) and ver else 'dev'
     except (OSError, ValueError):
         return 'dev'
 
@@ -386,11 +410,16 @@ def capture(event, props=None, level='usage'):
 
 def page_event(body):
     """An event from the page, checked against PAGE_EVENTS."""
+    if not isinstance(body, dict):
+        raise ValueError('expected a JSON object')
     name = body.get('event')
     allowed = PAGE_EVENTS.get(name)
     if allowed is None:
         raise ValueError('unknown event')
-    props = {k: str(v)[:40] for k, v in (body.get('properties') or {}).items() if k in allowed}
+    raw_props = body.get('properties')
+    if raw_props is not None and not isinstance(raw_props, dict):
+        raise ValueError('invalid properties')
+    props = {k: str(v)[:40] for k, v in (raw_props or {}).items() if k in allowed}
     if name == 'tab_viewed' and props.get('tab') not in TABS:
         raise ValueError('unknown tab')
     return {'queued': capture(name, props)}
@@ -499,6 +528,10 @@ def diagnostic(where, error, tb=None):
             fingerprint = f'{where}|{message[:120]}'
             if now - _seen_errors.get(fingerprint, 0) < REPEAT_WINDOW:
                 return
+        if len(_seen_errors) > 512:
+            for k in [k for k, ts in _seen_errors.items()
+                      if not k.startswith('expected|') and now - ts >= REPEAT_WINDOW]:
+                _seen_errors.pop(k, None)
         _seen_errors[fingerprint] = now
     exc_type = type(error).__name__ if isinstance(error, BaseException) else 'Error'
     frames = []
@@ -557,13 +590,15 @@ def backfill_compat():
 
 def _read_lines(path):
     try:
-        with open(path) as f:
+        with open(path, encoding='utf-8', errors='replace') as f:
             out = []
             for line in f:
                 try:
-                    out.append(json.loads(line))
+                    row = json.loads(line)
                 except ValueError:
-                    pass
+                    continue
+                if isinstance(row, dict):
+                    out.append(row)
             return out
     except OSError:
         return []
@@ -572,16 +607,24 @@ def _read_lines(path):
 def _write_lines(path, rows):
     STATE.mkdir(parents=True, exist_ok=True)
     tmp = Path(str(path) + '.tmp')
-    with open(tmp, 'w') as f:
-        f.writelines(json.dumps(r, ensure_ascii=False) + '\n' for r in rows)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.writelines(json.dumps(r, ensure_ascii=False) + '\n' for r in rows)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _drop_unwanted(s):
     """Unsent events whose level is now off never leave the computer."""
     keep = {level: s[level] for level in LEVELS}
     rows = _read_lines(OUTBOX)
-    kept = [e for e in rows if keep.get(e.get('properties', {}).get('level'), False)]
+    kept = [e for e in rows
+            if isinstance(e.get('properties'), dict) and keep.get(e['properties'].get('level'), False)]
     if len(kept) != len(rows):
         _write_lines(OUTBOX, kept)
 
@@ -592,7 +635,9 @@ def post(batch, timeout=20):
     if not cfg['key']:
         raise SendError('no PostHog project key in this build')
     for e in batch:  # also events queued by versions that didn't add the placeholder address
-        e.setdefault('properties', {})['$ip'] = '0.0.0.0'
+        if not isinstance(e.get('properties'), dict):
+            e['properties'] = {}
+        e['properties']['$ip'] = '0.0.0.0'
     body = json.dumps({'api_key': cfg['key'], 'batch': batch}).encode()
     req = urllib.request.Request(cfg['host'] + '/batch/', data=body, method='POST',
                                  headers={'content-type': 'application/json',
@@ -630,16 +675,19 @@ def flush(timeout=20):
             return 0
         if not _notice_current(s):  # what a newer notice added stays here until it's been seen
             for e in batch:
-                e['properties'].pop('country', None)
+                if isinstance(e.get('properties'), dict):
+                    e['properties'].pop('country', None)
         try:
             post(batch, timeout)
         except SendError:
             return 0
-        sent_ids = {e['uuid'] for e in batch}
+        sent_ids = {e.get('uuid') for e in batch if e.get('uuid') is not None}
         with _lock:
             _write_lines(OUTBOX, [e for e in _read_lines(OUTBOX) if e.get('uuid') not in sent_ids])
             _write_lines(SENT, (_read_lines(SENT) + batch)[-SENT_KEEP:])
-            compat = [e['properties'].get('id') for e in batch if e.get('event') == 'compat_report']
+            compat = [e['properties'].get('id') for e in batch
+                      if e.get('event') == 'compat_report' and isinstance(e.get('properties'), dict)
+                      and isinstance(e['properties'].get('id'), str)]
             if compat:  # remembered only once PostHog has them, so an opt-out before sending can't lose them
                 s = settings()
                 s['compat_sent'] = (s['compat_sent'] + compat)[-5000:]
@@ -654,21 +702,22 @@ def start():
         app_started()
     except Exception:
         pass
-    if _flusher:
-        return
+    with _lock:
+        if _flusher:
+            return
 
-    def loop():
-        while True:
-            try:
-                while flush() == 100:  # a full batch: there may be more
+        def loop():
+            while True:
+                try:
+                    while flush() == 100:  # a full batch: there may be more
+                        pass
+                except Exception:
                     pass
-            except Exception:
-                pass
-            _wake.wait(FLUSH_EVERY)
-            _wake.clear()
+                _wake.wait(FLUSH_EVERY)
+                _wake.clear()
 
-    _flusher = threading.Thread(target=loop, name='telemetry', daemon=True)
-    _flusher.start()
+        _flusher = threading.Thread(target=loop, name='telemetry', daemon=True)
+        _flusher.start()
 
 
 def wake():
