@@ -438,6 +438,102 @@ class Order(unittest.TestCase):
         self.assertEqual(ranked[0][1], "mDNS name")
 
 
+class Hardening(Base):
+    def test_check_port_and_move_address_reject_booleans_and_bad_delta(self):
+        for bad_port in (True, False):
+            with self.assertRaises(fd.DeviceError):
+                fd.check_port(bad_port)
+        d = self.reg.add_device("frame", hosts=["192.168.1.10", "192.168.1.11"])
+        for bad_delta in (True, False, "bad", None):
+            with self.assertRaises(fd.DeviceError):
+                self.reg.move_address(d["id"], "192.168.1.10", bad_delta)
+
+    def test_parse_blocks_ignores_out_of_range_ports(self):
+        cfg = (
+            "# >>> steam-frame (frame-oob) >>>\n"
+            "Host frame-oob\n"
+            "  HostName 192.168.1.77\n"
+            "  Port 70000\n"
+            "Host *\n"
+            "# <<< steam-frame (frame-oob) <<<\n"
+        )
+        blocks = fd.parse_blocks(cfg)
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual((blocks[0]["port"], blocks[0]["port_set"]), (22, False))
+
+    def test_sync_from_config_ignores_bad_hostname_without_aborting_other_blocks(self):
+        (self.ssh / "config").write_text(
+            "# >>> steam-frame (frame-bad) >>>\n"
+            "Host frame-bad\n"
+            "  HostName bad..host\n"
+            "  User steamos\n"
+            "Host *\n"
+            "# <<< steam-frame (frame-bad) <<<\n"
+            "# >>> steam-frame (frame-ok) >>>\n"
+            "Host frame-ok\n"
+            "  HostName 192.168.1.50\n"
+            "  User steamos\n"
+            "Host *\n"
+            "# <<< steam-frame (frame-ok) <<<\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(self.reg.sync_from_config(seed=False))
+        bad = self.reg.by_alias("frame-bad")
+        ok = self.reg.by_alias("frame-ok")
+        self.assertIsNotNone(bad)
+        self.assertEqual(bad["addresses"], [])
+        self.assertIsNotNone(ok)
+        self.assertEqual([a["host"] for a in ok["addresses"]], ["192.168.1.50"])
+
+    def test_corrupt_devices_json_normalizes_networks_dismissed_and_device_fields(self):
+        (self.dir / "devices.json").write_text(json.dumps({
+            "version": 1,
+            "active": "deadbeef",
+            "networks": None,
+            "dismissed": [],
+            "devices": [{
+                "id": "deadbeef",
+                "alias": "frame",
+                "addresses": [{"host": "192.168.1.40", "kind": "lan", "networks": None}],
+            }],
+        }), encoding="utf-8")
+        reg = fd.Registry(self.dir / "devices.json")
+        reg.record_success("deadbeef", "192.168.1.40", "n-1", 1.5)
+        reg.record_network({"id": "n-1", "gateway": "192.168.1.1"})
+        reg.sync_from_config(seed=False)
+        addrs = {a["host"]: a for a in reg.get("deadbeef")["addresses"]}
+        self.assertEqual(addrs["192.168.1.40"]["networks"], ["n-1"])
+        reg.remove_device("deadbeef")
+        self.assertIn("frame", reg.snapshot()["dismissed"])
+
+    def test_save_and_write_pin_clean_tmp_files_on_replace_failure(self):
+        from unittest import mock
+        with mock.patch.object(fd.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.reg.save()
+            with self.assertRaises(OSError):
+                fd._write_pin("deadbeef", [f"{fd.host_key_alias('deadbeef')} {KEY}"])
+        self.assertFalse((self.dir / "devices.json.tmp").exists())
+        self.assertEqual(list(fd.pin_dir().glob(".seed-*")), [])
+
+    def test_repair_permissions_retries_transient_read_permission_error(self):
+        from unittest import mock
+        cfg = self.ssh / "config"
+        real_read_bytes = Path.read_bytes
+        calls = [0]
+
+        def flaky_read(self_path):
+            calls[0] += 1
+            if self_path == cfg and calls[0] == 2:
+                raise PermissionError("held by ssh.exe")
+            return real_read_bytes(self_path)
+
+        with mock.patch.object(Path, "read_bytes", flaky_read), \
+             mock.patch.object(fd.time, "sleep"):
+            self.assertTrue(fd.repair_permissions(cfg))
+        self.assertGreaterEqual(calls[0], 3)
+
+
 if __name__ == "__main__":
     unittest.main()
 
