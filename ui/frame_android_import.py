@@ -44,6 +44,7 @@ def _members(archive):
 def _path(name):
     parts = PurePosixPath(name.rstrip('/')).parts
     if (not parts or len(name) > 512 or len(parts) > 32 or name.startswith('/') or '\\' in name or
+            any(ord(c) < 32 or ord(c) == 127 for c in name) or
             any(p in ('.', '..') or ':' in p or p.rstrip(' .') != p or WINDOWS_DEVICE.fullmatch(p)
                 for p in parts) or
             '/'.join(parts) != name.rstrip('/')):
@@ -165,8 +166,17 @@ def _check_standalone(path):
                for tag, attrs in elements):
             raise android.FrameError('This backup needs split APKs. This importer accepts only a standalone APK; '
                                      'use the documented Quest/CLI split workflow for supported library/asset splits.')
-    except (zipfile.BadZipFile, frame_apk.ApkError, OSError, ValueError, struct.error, IndexError) as error:
+    except (zipfile.BadZipFile, frame_apk.ApkError, OSError, UnicodeError,
+            ValueError, RuntimeError, EOFError, zlib.error, struct.error, IndexError) as error:
         raise android.FrameError('Could not read APK manifest: ' + str(error)) from error
+
+
+def _regular_stat(path):
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st if stat.S_ISREG(st.st_mode) else None
 
 
 def inspect(paths, discover=False):
@@ -176,17 +186,26 @@ def inspect(paths, discover=False):
         raise android.FrameError('Choose one game APK and its .obb game-data files together.')
     files = []
     for value in paths:
+        if not isinstance(value, (str, Path)) or (isinstance(value, str) and not value.strip()):
+            raise android.FrameError('Choose one game APK and its .obb game-data files together.')
         path = Path(value).expanduser().absolute()
-        if path.is_dir():
-            files.extend(p for p in sorted(path.iterdir()) if p.suffix.lower() in ('.apk', '.obb'))
-        else:
-            files.append(path)
+        try:
+            is_dir = path.is_dir()
+            if is_dir:
+                files.extend(p for p in sorted(path.iterdir()) if p.suffix.lower() in ('.apk', '.obb'))
+            else:
+                files.append(path)
+        except OSError as error:
+            raise android.FrameError(f'Could not read {path.name or str(path)}: {error}') from error
     files = list(dict.fromkeys(files))
     if not files or len(files) > 100:
         raise android.FrameError('No Android backup found. Choose a folder containing one APK and its game data.')
+    stats = {}
     for path in files:
-        if path.suffix.lower() not in ('.apk', '.obb') or not path.is_file() or path.stat().st_size == 0:
+        st = _regular_stat(path)
+        if path.suffix.lower() not in ('.apk', '.obb') or st is None or st.st_size == 0:
             raise android.FrameError(f'{path.name}: choose a nonempty APK or .obb game-data file.')
+        stats[path] = st
     apks = [p for p in files if p.suffix.lower() == '.apk']
     apk, splits = None, []
     if apks:
@@ -225,7 +244,11 @@ def inspect(paths, discover=False):
         checked = quest.inspect(info['package'], str(apk), [str(p) for p in splits])
         pkg = checked['package']
         if discover and len(files) == 1:
-            files.extend(p for p in sorted(apk.parent.iterdir())
+            try:
+                siblings = sorted(apk.parent.iterdir())
+            except OSError as error:
+                raise android.FrameError(f'Could not read {apk.parent.name or str(apk.parent)}: {error}') from error
+            files.extend(p for p in siblings
                          if p not in files and OBB.fullmatch(p.name) and OBB.fullmatch(p.name)[2] == pkg)
     else:
         packages = {OBB.fullmatch(p.name)[2] for p in files if OBB.fullmatch(p.name)}
@@ -252,19 +275,22 @@ def inspect(paths, discover=False):
         match = OBB.fullmatch(path.name)
         if not match or match[2] != pkg:
             raise android.FrameError(f'{path.name} does not belong to {checked["label"]}. Choose matching game data.')
-        if not path.is_file() or not path.stat().st_size or path.name in names:
+        st = stats.get(path) or _regular_stat(path)
+        if st is None or not st.st_size or path.name in names:
             raise android.FrameError(f'{path.name}: game-data files must be nonempty and have unique names.')
+        stats[path] = st
         names.add(path.name)
     return {'apk': apk, 'splits': splits, 'obb': obb, 'checked': checked,
-            'signatures': {str(p): (p.stat().st_size, p.stat().st_mtime_ns) for p in [*apks, *obb]}}
+            'signatures': {str(p): (stats[p].st_size, stats[p].st_mtime_ns) for p in [*apks, *obb]}}
 
 
 def public(plan):
     checked = plan['checked']
+    signatures = plan['signatures']
     return {**checked, 'apk': plan['apk'].name if plan['apk'] else None,
             'splits': [p.name for p in plan['splits']],
-            'obb': [{'name': p.name, 'size': p.stat().st_size} for p in plan['obb']],
-            'size': sum(size for size, _ in plan['signatures'].values())}
+            'obb': [{'name': p.name, 'size': signatures[str(p)][0]} for p in plan['obb']],
+            'size': sum(size for size, _ in signatures.values())}
 
 
 def install(plan, display='auto', progress=None):
@@ -274,8 +300,8 @@ def install(plan, display='auto', progress=None):
     if display not in ('auto', 'flat', 'vr'):
         raise android.FrameError('Invalid Android display mode.')
     for path, signature in plan['signatures'].items():
-        p = Path(path)
-        if not p.is_file() or (p.stat().st_size, p.stat().st_mtime_ns) != signature:
+        st = _regular_stat(Path(path))
+        if st is None or (st.st_size, st.st_mtime_ns) != signature:
             raise android.FrameError('The backup changed after it was read. Choose the files again.')
     checked = plan['checked']
     pkg, label = checked['package'], checked['label']
