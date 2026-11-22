@@ -342,6 +342,57 @@ class ArtworkTests(unittest.TestCase):
         # time.monotonic() flaked on Windows, whose clock ticks coarsely.)
         self.assertLessEqual(get.call_args.kwargs['deadline'], deadline)
 
+    def test_steamgriddb_settings_reject_non_dict_and_corrupt_saved_key(self):
+        import frame_steamgriddb as sgdb
+        for bad_body in (None, [], 'nope', 42):
+            with self.assertRaises(ValueError):
+                sgdb.save_settings(bad_body)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / 'artwork-settings.json'
+            with patch.object(sgdb, 'settings_path', return_value=cfg), \
+                 patch.dict(os.environ, {'STEAMGRIDDB_API_KEY': '', 'FRAME_STEAMGRIDDB_API_KEY': ''}):
+                for payload in ({'steamgriddb_api_key': 123},
+                                {'steamgriddb_api_key': 'bad\r\nX-Inject: 1'},
+                                {'steamgriddb_api_key': ['x']}):
+                    cfg.write_text(json.dumps(payload), encoding='utf-8')
+                    self.assertEqual(sgdb.api_key(), '')
+                sgdb.save_settings({'steamgriddb_api_key': 'good_key-123'})
+                self.assertEqual(sgdb.api_key(), 'good_key-123')
+            with patch.object(sgdb, 'settings_path', return_value=cfg), \
+                 patch.dict(os.environ, {'STEAMGRIDDB_API_KEY': 'bad\r\nkey', 'FRAME_STEAMGRIDDB_API_KEY': ''}):
+                self.assertEqual(sgdb.api_key(), '')
+
+    def test_steamgriddb_lookup_guards_non_string_name_bool_id_and_bad_scores(self):
+        import frame_steamgriddb as sgdb
+        with patch.object(sgdb, 'api_key', return_value='secret_key'):
+            self.assertEqual(sgdb.lookup(None), ({}, []))
+            self.assertEqual(sgdb.lookup(123), ({}, []))
+
+            # Boolean game id must not query /grids/game/1.
+            def fake_get_bool(path, key, deadline=None):
+                if path.startswith('/search/autocomplete/'):
+                    return [{'name': 'Demo', 'id': True}]
+                raise AssertionError('unexpected slot fetch for bool id: ' + path)
+
+            with patch.object(sgdb, '_get', side_effect=fake_get_bool):
+                self.assertEqual(sgdb.lookup('Demo'), ({}, []))
+
+            # A single malformed score in a slot must not discard valid records.
+            def fake_get_scores(path, key, deadline=None):
+                if path.startswith('/search/autocomplete/'):
+                    return [{'name': 'Demo', 'id': 42}]
+                if path.startswith('/heroes/game/42'):
+                    return [
+                        {'url': 'https://cdn.example/bad.png', 'score': 'n/a', 'upvotes': None},
+                        {'url': 'https://cdn.example/good.png', 'score': 5, 'upvotes': 3},
+                    ]
+                return []
+
+            with patch.object(sgdb, '_get', side_effect=fake_get_scores):
+                art_urls, warnings = sgdb.lookup('Demo')
+            self.assertEqual(art_urls, {'hero': 'https://cdn.example/good.png'})
+            self.assertEqual(warnings, [])
+
     def test_supplied_jpeg(self):
         data = (FIXTURES / 'icon.jpg').read_bytes()
         self.assertEqual(art.image_type(data), 'jpg')

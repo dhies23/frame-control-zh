@@ -11,6 +11,20 @@ import frame_host
 
 API = 'https://www.steamgriddb.com/api/v2'
 MAX_JSON = 2 * 1024 * 1024
+KEY_RE = re.compile(r'[A-Za-z0-9_-]{1,200}')
+
+
+def _valid_key(value):
+    return isinstance(value, str) and bool(KEY_RE.fullmatch(value))
+
+
+def _score(value):
+    if isinstance(value, bool):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def settings_path():
@@ -20,10 +34,13 @@ def settings_path():
 def api_key():
     env = os.environ.get('STEAMGRIDDB_API_KEY') or os.environ.get('FRAME_STEAMGRIDDB_API_KEY')
     if env:
-        return env.strip()
+        cleaned = env.strip()
+        return cleaned if _valid_key(cleaned) else ''
     try:
-        return str(json.loads(settings_path().read_text()).get('steamgriddb_api_key') or '')
-    except (OSError, ValueError, AttributeError):
+        data = json.loads(settings_path().read_text(encoding='utf-8'))
+        val = data.get('steamgriddb_api_key') if isinstance(data, dict) else ''
+        return val if _valid_key(val) else ''
+    except (OSError, ValueError):
         return ''
 
 
@@ -33,19 +50,25 @@ def settings():
 
 
 def save_settings(body):
+    if not isinstance(body, dict):
+        raise ValueError('enter a valid SteamGridDB API key, or an empty value to remove it')
     key = body.get('steamgriddb_api_key')
-    if not isinstance(key, str) or len(key) > 200 or (key and not re.fullmatch(r'[A-Za-z0-9_-]+', key)):
+    if not isinstance(key, str) or (key and not _valid_key(key)):
         raise ValueError('enter a valid SteamGridDB API key, or an empty value to remove it')
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(prefix='.artwork-', dir=str(path.parent))
     try:
-        with os.fdopen(fd, 'w') as f:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump({'steamgriddb_api_key': key}, f)
+        frame_host.make_private(temp)
         os.replace(temp, path)
     finally:
         if os.path.exists(temp):
-            os.remove(temp)
+            try:
+                os.remove(temp)
+            except OSError:
+                pass
     return settings()
 
 
@@ -68,6 +91,8 @@ def _name(value):
 
 def lookup(name, deadline=None):
     """Best-voted art per slot for an exact title match; unrelated games are never guessed."""
+    if not isinstance(name, str) or not name.strip():
+        return {}, []
     key = api_key()
     if not key:
         return {}, []
@@ -79,7 +104,15 @@ def lookup(name, deadline=None):
         game = next((g for g in matches if isinstance(g, dict) and _name(g.get('name')) in names), None)
         if not game:
             return {}, []
-        gid = int(game['id'])
+        raw_id = game.get('id')
+        if isinstance(raw_id, bool):
+            return {}, []
+        try:
+            gid = int(raw_id)
+        except (TypeError, ValueError):
+            return {}, []
+        if gid <= 0:
+            return {}, []
         result, warnings = {}, []
         for slot, kind, dimensions in [('grid', 'grids', '600x900'), ('wide', 'grids', '920x430'),
                                        ('hero', 'heroes', ''), ('logo', 'logos', ''), ('icon', 'icons', '')]:
@@ -95,7 +128,7 @@ def lookup(name, deadline=None):
                 if dimensions:
                     w, h = map(int, dimensions.split('x'))
                     records = [r for r in records if (r.get('width'), r.get('height')) == (w, h)]
-                records.sort(key=lambda r: (int(r.get('score') or 0), int(r.get('upvotes') or 0)), reverse=True)
+                records.sort(key=lambda r: (_score(r.get('score')), _score(r.get('upvotes'))), reverse=True)
                 if records:
                     result[slot] = records[0]['url']
             except Exception:  # HTTPException, odd JSON: this slot falls back
