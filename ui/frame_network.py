@@ -36,6 +36,8 @@ def run(argv, timeout=TIMEOUT):
 
 
 def valid_ip(text):
+    if not isinstance(text, str):
+        return False
     try:
         ipaddress.ip_address(text)
         return True
@@ -45,7 +47,9 @@ def valid_ip(text):
 
 def norm_mac(text):
     """"b4:fb:e4:1:87:3f" or "B4-FB-E4-01-87-3F" -> "b4:fb:e4:01:87:3f"; None if it isn't a MAC."""
-    parts = re.split(r"[:-]", (text or "").strip())
+    if not isinstance(text, str):
+        return None
+    parts = re.split(r"[:-]", text.strip())
     if len(parts) != 6 or not all(re.fullmatch(r"[0-9A-Fa-f]{1,2}", p) for p in parts):
         return None
     mac = ":".join(p.lower().zfill(2) for p in parts)
@@ -163,22 +167,29 @@ def parse_tailscale(text):
     """
     try:
         data = json.loads(text)
-    except ValueError:
+    except (ValueError, TypeError):
         return {"up": False, "peers": []}
     if not isinstance(data, dict):
         return {"up": False, "peers": []}
-    me = data.get("Self") or {}
+    me = data.get("Self") if isinstance(data.get("Self"), dict) else {}
+    me_ips = me.get("TailscaleIPs") if isinstance(me.get("TailscaleIPs"), list) else []
+    me_dns = me.get("DNSName") if isinstance(me.get("DNSName"), str) else ""
     tailnet = (data.get("CurrentTailnet") or {}).get("Name") if isinstance(data.get("CurrentTailnet"), dict) else None
     out = {"up": data.get("BackendState") == "Running",
-           "ip": next((ip for ip in me.get("TailscaleIPs") or [] if "." in ip), None),
-           "name": (me.get("DNSName") or "").rstrip(".") or None,
+           "ip": next((ip for ip in me_ips if isinstance(ip, str) and "." in ip), None),
+           "name": me_dns.rstrip(".") or None,
            "tailnet": tailnet, "peers": []}
-    for p in (data.get("Peer") or {}).values():
+    peers = data.get("Peer") if isinstance(data.get("Peer"), dict) else {}
+    for p in peers.values():
         if not isinstance(p, dict):
             continue
-        out["peers"].append({"name": p.get("HostName") or "", "dns": (p.get("DNSName") or "").rstrip("."),
-                             "ips": [ip for ip in p.get("TailscaleIPs") or [] if isinstance(ip, str)],
-                             "os": p.get("OS") or "", "online": bool(p.get("Online"))})
+        raw_ips = p.get("TailscaleIPs") if isinstance(p.get("TailscaleIPs"), list) else []
+        name = p.get("HostName") if isinstance(p.get("HostName"), str) else ""
+        dns = p.get("DNSName") if isinstance(p.get("DNSName"), str) else ""
+        os_name = p.get("OS") if isinstance(p.get("OS"), str) else ""
+        out["peers"].append({"name": name, "dns": dns.rstrip("."),
+                             "ips": [ip for ip in raw_ips if isinstance(ip, str)],
+                             "os": os_name, "online": bool(p.get("Online"))})
     return out
 
 
@@ -196,6 +207,8 @@ TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
 
 def is_tailscale(host):
+    if not isinstance(host, str):
+        return False
     host = host.lower().rstrip(".")
     if host.endswith(".ts.net"):
         return True
@@ -208,6 +221,8 @@ def is_tailscale(host):
 
 def guess_kind(host):
     """What sort of address a host is: mdns, tailscale, lan or manual."""
+    if not isinstance(host, str):
+        return "manual"
     h = host.lower().rstrip(".")
     if h.endswith(".local"):
         return "mdns"
