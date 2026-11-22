@@ -239,6 +239,47 @@ class VersionsTest(unittest.TestCase):
                 install.assert_not_called()
         self.network.assert_not_called()
 
+    def test_corrupt_reduced_index_cache_rebuilds_from_raw(self):
+        repo = versions.REPOS[0][1]
+        path = os.path.join(self.tmp.name, 'data', 'index-v2.json.installable-v1')
+        for raw_cache in ('{', 'null', '[]'):
+            with self.subTest(raw_cache=raw_cache):
+                frame_catalog._indexes.pop(path, None)
+                with open(path, 'w') as f:
+                    f.write(raw_cache)
+                self.assertEqual(frame_catalog.load_index(repo, cached_only=True), {})
+                rebuilt = frame_catalog.load_index(repo)
+                self.assertEqual([v['version_code'] for v in rebuilt['org.example.app']], [3, 2])
+        self.network.assert_not_called()
+
+    def test_fetch_apk_validates_filename_strips_query_and_normalizes_sha256(self):
+        import hashlib
+        payload = b'fake-apk-bytes'
+        digest_upper = hashlib.sha256(payload).hexdigest().upper()
+        cache = os.path.join(self.tmp.name, 'apk-cache')
+        with patch.object(frame_catalog, 'CACHE', cache):
+            for bad_url in ('https://f-droid.org/repo/', 'https://f-droid.org/repo/..',
+                            'https://f-droid.org/repo/.hidden.apk'):
+                with self.subTest(bad_url=bad_url), self.assertRaises(frame_android.FrameError):
+                    frame_catalog.fetch_apk({'a': bad_url, 'h': digest_upper, 'n': 'Bad'})
+            self.network.assert_not_called()
+            with patch.object(frame_catalog.urllib.request, 'urlopen', return_value=io.BytesIO(payload)):
+                saved = frame_catalog.fetch_apk({
+                    'a': 'https://f-droid.org/repo/org.example_1.apk?v=2',
+                    'h': digest_upper,
+                    'n': 'Example',
+                })
+            self.assertEqual(os.path.basename(saved), 'org.example_1.apk')
+            with open(saved, 'rb') as f:
+                self.assertEqual(f.read(), payload)
+
+    def test_environment_preserves_missing_steamos_build_id_line(self):
+        saved = dict(frame_catalog._env)
+        frame_catalog._env.clear()
+        self.addCleanup(lambda: (frame_catalog._env.clear(), frame_catalog._env.update(saved)))
+        with patch.object(frame_android, 'ssh', return_value='\n9876543\n'):
+            self.assertEqual(frame_catalog.environment(), {'steamos': None, 'lepton': '9876543'})
+
 
 class UploadVersionsTest(unittest.TestCase):
     def test_endpoint_validation(self):

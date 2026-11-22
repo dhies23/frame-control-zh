@@ -2,7 +2,7 @@
 list, verified downloads, installs into per-app Lepton instances, and
 compatibility reports. Python stdlib only.
 """
-import hashlib, json, os, shutil, sys, tempfile, threading, time, urllib.error, urllib.request
+import hashlib, json, os, shutil, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CATALOG = os.path.join(ROOT, 'apk-catalog')
@@ -130,11 +130,17 @@ def load_index(repo, cached_only=False):
         newer_raw = mtime is not None and os.path.exists(raw) and os.stat(raw).st_mtime_ns > mtime
         if mtime is not None and (cached_only or (time.time() - mtime / 1e9 < 86400 and not newer_raw)):
             cached = _indexes.get(path)
-            if cached is None or cached[0] != mtime:
+            if cached is not None and cached[0] == mtime:
+                return cached[1]
+            try:
                 with open(path) as f:
-                    cached = (mtime, json.load(f))
-                _indexes[path] = cached
-            return cached[1]
+                    loaded = json.load(f)
+            except (OSError, ValueError):
+                loaded = None
+            if isinstance(loaded, dict):
+                _indexes[path] = (mtime, loaded)
+                return loaded
+            _indexes.pop(path, None)
         if cached_only:
             return {}
         os.makedirs(directory, exist_ok=True)
@@ -196,21 +202,25 @@ def _sha256(path):
 
 def fetch_apk(a):
     """Download (or reuse) the APK and verify it against the F-Droid index's SHA-256."""
-    if not a['a'].startswith(APK_HOSTS):
+    if not isinstance(a.get('a'), str) or not a['a'].startswith(APK_HOSTS):
         raise frame_android.FrameError('unexpected APK URL')
-    if not a.get('h'):
+    expected = a.get('h').strip().lower() if isinstance(a.get('h'), str) else ''
+    if not expected:
         raise frame_android.FrameError(f"{a['n']}: the F-Droid index has no SHA-256 for this APK, so it can't be verified")
+    name = urllib.parse.urlsplit(a['a']).path.rsplit('/', 1)[-1]
+    if not name or name in ('.', '..') or name.startswith('.') or '/' in name or '\\' in name or any(ord(c) < 32 for c in name):
+        raise frame_android.FrameError('unexpected APK filename')
     os.makedirs(CACHE, exist_ok=True)
-    path = os.path.join(CACHE, os.path.basename(a['a']))
-    if os.path.exists(path) and _sha256(path) == a['h']:
+    path = os.path.join(CACHE, name)
+    if os.path.isfile(path) and _sha256(path) == expected:
         return path
     # Own temp file per download: concurrent downloads can't clobber or delete each other's.
-    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + '.', suffix='.part', dir=CACHE)
+    fd, tmp = tempfile.mkstemp(prefix=name + '.', suffix='.part', dir=CACHE)
     os.close(fd)
     try:
         with urllib.request.urlopen(a['a'], timeout=60) as r, open(tmp, 'wb') as f:
             shutil.copyfileobj(r, f, 1 << 20)
-        if _sha256(tmp) != a['h']:
+        if _sha256(tmp) != expected:
             raise frame_android.FrameError('SHA-256 mismatch against the F-Droid index; download discarded')
         os.replace(tmp, path)  # only a verified file ever reaches the cache name
         return path
@@ -245,8 +255,10 @@ def environment():
         out = frame_android.ssh('. /etc/os-release; echo "$BUILD_ID"; '
                                 'sed -n \'s/.*"buildid"[[:space:]]*"\\([0-9]*\\)".*/\\1/p\' '
                                 '~/.local/share/Steam/steamapps/appmanifest_3056000.acf')
-        lines = out.split()
-        _env.update(steamos=lines[0] if lines else None, lepton=lines[1] if len(lines) > 1 else None)
+        lines = out.splitlines()
+        steamos = lines[0].strip() if lines else ''
+        lepton = lines[1].strip() if len(lines) > 1 else ''
+        _env.update(steamos=steamos or None, lepton=lepton or None)
     return _env
 
 
