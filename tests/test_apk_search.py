@@ -250,6 +250,59 @@ class SearchTests(SettingsTest):
                 search.install('one', 'brush')
             mod.download.assert_not_called()
 
+    def test_overrides_tolerates_corrupt_or_non_dict_enabled_json(self):
+        path = search.settings_path()
+        for raw in ('{', '[]', 'null', '"bad"'):
+            with self.subTest(raw=raw):
+                path.write_text(raw, encoding='utf-8')
+                self.assertEqual(search.overrides(), {})
+        mod = fake()
+        with patch.object(search, 'modules', return_value=([mod], [])), \
+                patch.object(Path, 'replace', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                search.set_enabled('one', False)
+        self.assertFalse(path.with_suffix('.tmp').exists())
+
+    def test_report_cache_skips_malformed_rows(self):
+        rows = ['bad', {'package': 123}, {'package': ''}, {'package': 'org.ok', 'rating': 'works'}]
+        cache = search.ReportCache(lambda: rows, lambda r: ('works', ['ok']))
+        cache._refresh()
+        self.assertEqual(cache._snapshot, {'org.ok': ('works', ['ok'])})
+
+    def test_fit_and_verdict_guard_bad_sdk_abis_and_unknown_report_kind(self):
+        self.assertIsNone(search.fit({'min_sdk': '33', 'abis': 123})['installable'])
+        self.assertIsNone(search.fit({'min_sdk': True, 'abis': []})['installable'])
+        self.assertEqual(search.verdict({'min_sdk': '33'})['tone'], 'unknown')
+        self.assertEqual(search.verdict({'min_sdk': 24, 'abis': []}, report=('unexpected', ['line']))['tone'], 'ready')
+
+    def test_group_and_offer_rank_tolerate_mixed_version_codes_and_non_dict_images(self):
+        first = dict(ENTRIES[0], source='a', version_code='5', images=['not-a-dict'])
+        second = dict(ENTRIES[0], source='b', version_code=2, images={})
+        grouped = search.group([first, second])
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(len(grouped[0]['offers']), 2)
+
+    def test_non_dict_search_entries_skipped_and_thread_start_failure_does_not_hang(self):
+        mod = fake('one', lambda s, q, limit=50: ['bad-row', dict(ENTRIES[0])])
+        with patch.object(search, 'modules', return_value=([mod], [])):
+            res = search.search(timeout=1)
+        self.assertEqual(res['sources'][0]['status'], 'ok')
+        self.assertEqual(len(res['apps']), 1)
+
+        class BrokenThread:
+            def __init__(self, *a, **k):
+                pass
+
+            def start(self):
+                raise RuntimeError('cannot start thread')
+
+        mod2 = fake('two')
+        with patch.object(search, 'modules', return_value=([mod2], [])), \
+                patch.object(search.threading, 'Thread', BrokenThread):
+            res2 = search.search(timeout=1)
+        self.assertEqual(res2['sources'][0]['status'], 'error')
+        self.assertIn('cannot start thread', res2['sources'][0]['error'])
+
 
 class EndpointTests(SettingsTest):
     def setUp(self):
