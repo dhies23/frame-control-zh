@@ -372,6 +372,19 @@ class Zips(unittest.TestCase):
         with self.assertRaisesRegex(FrameError, 'not a readable zip'):
             frame_titles.inspect(p)
 
+    def test_control_chars_in_zip_member_path_are_refused(self):
+        for bad in ('game/foo\x00bar.exe', 'game/line\nbreak.exe'):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(FrameError, 'invalid path'):
+                    frame_titles._safe_member(bad)
+
+    def test_corrupt_deflate_stream_raises_frame_error(self):
+        import zlib
+        p = self.zip({'game.bin': b'hello'}, 'corrupt.zip')
+        with mock.patch.object(frame_titles, '_extract_members', side_effect=zlib.error('bad deflate')):
+            with self.assertRaisesRegex(FrameError, 'could not unpack'):
+                frame_titles.extract_zip(p, tempfile.mkdtemp(dir=self.dir))
+
 
 class Names(unittest.TestCase):
     def test_title_id(self):
@@ -483,6 +496,95 @@ class Parms(unittest.TestCase):
                      'steamos-delete', 'devkit_utils/__init__.py', 'LICENSE'):
             self.assertTrue(os.path.isfile(os.path.join(frame_titles.UTILS_LOCAL, name)), name)
         self.assertEqual(len(frame_titles.utils_stamp()), 20)
+
+    def test_json_out_skips_trailing_bracketed_logs_and_checks_type(self):
+        out = '{"directory": "/home/deck/devkit-game/G"}\n[INFO] upload prepared\n'
+        self.assertEqual(frame_titles._json_out(out, 'prep', expect=dict),
+                         {'directory': '/home/deck/devkit-game/G'})
+        with self.assertRaisesRegex(FrameError, 'no usable answer'):
+            frame_titles._json_out('[1, 2]\n', 'prep', expect=dict)
+        with tempfile.TemporaryDirectory() as root:
+            plan = {'id': 'Example', 'name': 'Example', 'root': root, 'size': 3, 'target': 'game.exe',
+                    'runtime': 'proton-experimental', 'source': 'example.zip'}
+            def fake_ssh(cmd, **kwargs):
+                if 'prepare-upload' in cmd:
+                    return '[]'
+                return ''
+            with mock.patch.object(frame_titles, 'ssh', side_effect=fake_ssh), \
+                    mock.patch.object(frame_titles, 'ensure_utils'), \
+                    mock.patch.object(frame_titles.frame_android.frame_artwork, 'prepare', return_value=({}, [])):
+                with self.assertRaisesRegex(FrameError, 'no usable answer'):
+                    frame_titles._install(plan, lambda *_: None)
+
+    def test_copy_tree_uses_run_ssh_and_wraps_missing_binary(self):
+        with mock.patch.object(frame_titles, '_rsync', return_value=False), \
+                mock.patch.object(frame_titles, 'ssh', return_value=''), \
+                mock.patch.object(frame_titles.frame_host, 'run_ssh') as run_ssh:
+            frame_titles._copy_tree('/tmp/src', 'dest')
+        run_ssh.assert_called_once()
+        self.assertEqual(run_ssh.call_args.args[0][0], 'scp')
+        with mock.patch.object(frame_titles, '_rsync', return_value=False), \
+                mock.patch.object(frame_titles, 'ssh', return_value=''), \
+                mock.patch.object(frame_titles.frame_host, 'run_ssh', side_effect=FileNotFoundError('scp')):
+            with self.assertRaisesRegex(FrameError, 'copying src to the Frame failed'):
+                frame_titles._copy_tree('/tmp/src', 'dest')
+
+    def test_library_shortcut_guards_corrupt_payloads_and_bad_appids(self):
+        with mock.patch.object(frame_titles.frame_android, 'shortcut_tool', return_value='not json'):
+            with self.assertRaisesRegex(FrameError, 'shortcut list'):
+                frame_titles._library_shortcut('Game', '/home/steamos/devkit-game/Game')
+        with mock.patch.object(frame_titles.frame_android, 'shortcut_tool', return_value='{}'):
+            with self.assertRaisesRegex(FrameError, 'shortcut list'):
+                frame_titles._library_shortcut('Game', '/home/steamos/devkit-game/Game')
+        with mock.patch.object(frame_titles.frame_android, 'shortcut_tool',
+                               return_value=json.dumps(['bad', {'appid': 7, 'devkit_gameid': 'Game'}])):
+            self.assertEqual(frame_titles._library_shortcut('Game', '/home/steamos/devkit-game/Game'), 7)
+        with mock.patch.object(frame_titles.frame_android, 'shortcut_tool',
+                               return_value=json.dumps([{'appid': True, 'devkit_gameid': 'Game'}])):
+            with self.assertRaisesRegex(FrameError, 'invalid Steam shortcut'):
+                frame_titles._library_shortcut('Game', '/home/steamos/devkit-game/Game')
+
+    def test_list_titles_handles_non_dict_rows_and_corrupt_metadata(self):
+        payload = json.dumps([
+            'not-a-dict',
+            {'id': 123, 'settings': {}, 'meta': {}},
+            {'id': 'Game', 'settings': ['corrupt'], 'meta': 'corrupt', 'argv': 'bad'},
+        ])
+        with mock.patch.object(frame_titles, 'ssh', return_value=payload):
+            titles = frame_titles.list_titles()
+        self.assertEqual(len(titles), 1)
+        self.assertEqual(titles[0]['id'], 'Game')
+        self.assertFalse(titles[0]['registered'])
+        self.assertFalse(titles[0]['frame_control'])
+
+    def test_refresh_art_guards_non_dict_and_corrupt_cached_artwork(self):
+        meta = {'id': 'Game', 'name': 'My Game', 'source': 'game.zip'}
+        def make_ssh(art_reply):
+            def fake_ssh(cmd, input=None, **kwargs):
+                if 'test -d' in cmd:
+                    return 'yes'
+                if 'HOME' in cmd:
+                    return '/home/steamos'
+                if cmd.startswith('cat devkit-game/Game-framecontrol.json'):
+                    return json.dumps(meta)
+                if cmd == 'python3 -':
+                    return art_reply
+                return ''
+            return fake_ssh
+
+        with mock.patch.object(frame_titles, 'ssh', side_effect=make_ssh('[]')):
+            with self.assertRaisesRegex(FrameError, 'no usable answer'):
+                frame_titles.refresh_art('Game')
+
+        corrupt = json.dumps({'artwork': {'bad': '!!!', 'num': 42, 'good': 'YmFubmVy'}, 'icon': '!!!'})
+        with mock.patch.object(frame_titles, 'ssh', side_effect=make_ssh(corrupt)), \
+                mock.patch.object(frame_titles, '_library_shortcut', return_value=7), \
+                mock.patch.object(frame_titles.frame_android.frame_artwork, 'prepare', return_value=({}, [])) as prep, \
+                mock.patch.object(frame_titles.frame_android, 'apply_library', return_value={'artwork': {}, 'warnings': []}):
+            result = frame_titles.refresh_art('Game')
+        self.assertEqual(prep.call_args.args[1], None)
+        self.assertEqual(prep.call_args.args[2], {'good': b'banner'})
+        self.assertEqual(result['shortcut'], 7)
 
 
 if __name__ == '__main__':

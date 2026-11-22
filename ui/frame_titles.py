@@ -19,7 +19,7 @@ Python stdlib only. CLI:
   python3 ui/frame_titles.py install PATH [--name N] [--exe REL] [--runtime R]
   python3 ui/frame_titles.py list | launch ID | remove ID | refresh-art ID|--all
 """
-import base64, hashlib, json, os, posixpath, re, shlex, shutil, stat, struct, subprocess, sys, tempfile, threading, time, zipfile
+import base64, binascii, hashlib, json, os, posixpath, re, shlex, shutil, stat, struct, subprocess, sys, tempfile, threading, time, zipfile, zlib
 
 import frame_android
 import frame_host
@@ -189,19 +189,22 @@ def extract_zip(zpath, dest):
         if total + 256 * 1024**2 > free:
             raise FrameError(f'not enough space on this computer to unpack the zip '
                              f'({total / 1024**3:.1f} GB needed, {free / 1024**3:.1f} GB free)')
+        budget = min(MAX_UNPACKED, max(1024**3, packed * MAX_RATIO))
         try:
-            _extract_members(z, infos, os.path.realpath(dest))
+            _extract_members(z, infos, os.path.realpath(dest), budget=budget)
         except FrameError:
             raise                            # a RuntimeError too, but already worded
-        except (zipfile.BadZipFile, RuntimeError, NotImplementedError, EOFError, OSError) as e:
+        except (zipfile.BadZipFile, zlib.error, RuntimeError, NotImplementedError, EOFError, OSError) as e:
             # Encrypted or corrupt members, unsupported compression, clashing names, a full disk.
             raise FrameError(f'could not unpack {os.path.basename(zpath)}: {e}')
 
 
-def _extract_members(z, infos, root):
+def _extract_members(z, infos, root, budget=None):
     # No symlink is ever created here, so no write can be redirected through one
     # (chained links, Windows without the privilege). Links inside the zip are
     # resolved on paper and materialised as copies once the real files are out.
+    limit = MAX_UNPACKED if budget is None else budget
+    written = 0
     links = {}
     for info in infos:
         rel = _safe_member(info.filename)
@@ -216,14 +219,27 @@ def _extract_members(z, infos, root):
         if stat.S_ISLNK(mode):
             if info.file_size > 4096:          # a link's content is a path, never this big
                 raise FrameError(f'the zip has an oversized link: {info.filename}')
-            link = z.read(info).decode('utf-8', 'replace').replace('\\', '/')
+            with z.open(info) as src:
+                raw = src.read(4097)
+            if len(raw) > 4096:
+                raise FrameError(f'the zip has an oversized link: {info.filename}')
+            link = raw.decode('utf-8', 'replace').replace('\\', '/')
+            if any(ord(c) < 32 or ord(c) == 127 for c in link):
+                raise FrameError(f'the zip has an invalid link target: {info.filename}')
             dest = posixpath.normpath(posixpath.join(posixpath.dirname(rel), link))
             if link.startswith('/') or ':' in link or dest == '..' or dest.startswith('../'):
                 raise FrameError(f'the zip has a link that points outside it: {info.filename}')
             links[rel] = link                  # as written: resolved later, one component at a time
             continue
         with z.open(info) as src, open(target, 'wb') as out:
-            shutil.copyfileobj(src, out, 1 << 20)
+            while True:
+                chunk = src.read(1 << 20)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > limit:
+                    raise FrameError(f'the zip unpacked past {limit / 1024**3:.1f} GB, which looks wrong')
+                out.write(chunk)
         if mode & 0o111:
             os.chmod(target, 0o755)
     _materialise_links(root, links)
@@ -292,6 +308,8 @@ def _materialise_links(root, links):
 def _safe_member(name):
     """The member's relative path with / separators, None to skip it; raises if it escapes."""
     rel = name.replace('\\', '/')
+    if any(ord(c) < 32 or ord(c) == 127 for c in rel):
+        raise FrameError(f'the zip has an invalid path: {name!r}')
     if rel.startswith('/') or re.match(r'^[A-Za-z]:', rel):
         raise FrameError(f'the zip has an absolute path: {name}')
     parts = [p for p in rel.split('/') if p not in ('', '.')]
@@ -580,15 +598,18 @@ def ssh(cmd, input=None, timeout=120):
     return frame_android.ssh(cmd, input=input, timeout=timeout)
 
 
-def _json_out(out, what):
-    """The JSON object a devkit-utils script prints last (its logging goes to stderr)."""
+def _json_out(out, what, expect=None):
+    """The JSON value a devkit-utils script prints last (its logging goes to stderr)."""
     for line in reversed(out.strip().splitlines()):
         line = line.strip()
         if line.startswith('{') or line.startswith('['):
             try:
-                return json.loads(line)
+                parsed = json.loads(line)
             except ValueError:
-                break
+                continue
+            if expect is not None and not isinstance(parsed, expect):
+                continue
+            return parsed
     raise FrameError(f'{what} gave no usable answer: {out.strip()[-300:]!r}')
 
 
@@ -651,12 +672,14 @@ def _copy_tree(src, dest, timeout=3 * 3600, delete=False):
         ssh(f'rm -rf {shlex.quote(dest)}', timeout=60)
         cmd = ['scp', *opts, '-r', src, f'{frame_android.FRAME}:{dest}']
     try:
-        subprocess.run(cmd, check=True, capture_output=True, stdin=subprocess.DEVNULL, text=True,
-                       errors='replace', timeout=timeout)
+        frame_host.run_ssh(cmd, check=True, capture_output=True, stdin=subprocess.DEVNULL, text=True,
+                           errors='replace', timeout=timeout)
     except subprocess.TimeoutExpired:
         raise FrameError(f'copying {name} to the Frame timed out')
     except subprocess.CalledProcessError as e:
         raise FrameError(f'copying {name} to the Frame failed: {(e.stderr or "").strip()[-300:]}')
+    except OSError as e:
+        raise FrameError(f'copying {name} to the Frame failed: {e}')
 
 
 def _rsync():
@@ -716,7 +739,8 @@ def _install(plan, step, artwork=None):
     ensure_utils()
     existed = ssh(f'test -d {GAMES}/{gid} && echo yes || true', timeout=30).strip() == 'yes'
     step('Preparing the title folder', 0.05)
-    ready = _json_out(ssh(devkit_script('prepare-upload', f'--gameid {gid}'), timeout=60), 'steamos-prepare-upload')
+    ready = _json_out(ssh(devkit_script('prepare-upload', f'--gameid {gid}'), timeout=60),
+                      'steamos-prepare-upload', expect=dict)
     directory = str(ready.get('directory') or '')
     if not DIR_RE.match(directory) or not directory.endswith(f'/{GAMES}/{gid}'):
         raise FrameError(f'steamos-prepare-upload returned an unexpected folder {directory!r}')
@@ -740,7 +764,7 @@ def _install(plan, step, artwork=None):
         step('Registering with Steam', 0.9)
         parms = shortcut_parms(gid, directory, launch_target, plan['runtime'])
         reply = _json_out(ssh(f'{PY}steam-client-create-shortcut --parms {shlex.quote(json.dumps(parms))}',
-                              timeout=90), 'steam-client-create-shortcut')
+                              timeout=90), 'steam-client-create-shortcut', expect=dict)
         meta = {'id': gid, 'name': plan['name'], 'target': plan['target'], 'launch_target': launch_target,
                 'runtime': plan['runtime'],
                 'source': plan['source'], 'size': plan['size'], 'installed': time.strftime('%Y-%m-%dT%H:%M:%S'),
@@ -793,12 +817,19 @@ def _library_shortcut(gid, directory):
     so after the saved id this matches the shortcut's executable or start folder inside directory.
     Never by display name: another non-Steam shortcut could share it and would be renamed or deleted.
     """
-    shortcuts = json.loads(frame_android.shortcut_tool('list'))
+    try:
+        raw_shortcuts = json.loads(frame_android.shortcut_tool('list'))
+    except ValueError as e:
+        raise FrameError(f'shortcut list was not valid JSON: {e}')
+    if not isinstance(raw_shortcuts, list):
+        raise FrameError('shortcut list was not a list')
+    shortcuts = [s for s in raw_shortcuts if isinstance(s, dict)]
     matches = [s for s in shortcuts if s.get('devkit_gameid') == gid]
     if not matches:
         try:
             meta = json.loads(ssh(f'cat {GAMES}/{gid}-framecontrol.json 2>/dev/null || true') or 'null')
-            matches = [s for s in shortcuts if meta.get('shortcut') and s.get('appid') == meta.get('shortcut')]
+            if isinstance(meta, dict) and meta.get('shortcut'):
+                matches = [s for s in shortcuts if s.get('appid') == meta.get('shortcut')]
         except (ValueError, AttributeError):
             pass
     if not matches:
@@ -810,7 +841,15 @@ def _library_shortcut(gid, directory):
         matches = [s for s in shortcuts if inside(s.get('exe')) or inside(s.get('start_dir'))]
     if len(matches) > 1:
         raise FrameError('ambiguous Steam shortcut for ' + gid)
-    return int(matches[0]['appid']) if matches else None
+    if not matches:
+        return None
+    appid = matches[0].get('appid')
+    if isinstance(appid, bool):
+        raise FrameError('invalid Steam shortcut id for ' + gid)
+    try:
+        return int(appid)
+    except (TypeError, ValueError):
+        raise FrameError('invalid Steam shortcut id for ' + gid)
 
 
 def _home():
@@ -851,9 +890,23 @@ for name in ('icon.png', 'logo.png'):
         pass
 print(json.dumps({{'artwork': cached, 'icon': icon}}))
 """
-        found = _json_out(ssh('python3 -', input=script, timeout=60), 'the title artwork')
-        cached = {k: base64.b64decode(v) for k, v in (found.get('artwork') or {}).items()}
-        icon = base64.b64decode(found.get('icon') or '') or None
+        found = _json_out(ssh('python3 -', input=script, timeout=60), 'the title artwork', expect=dict)
+        cached = {}
+        raw_art = found.get('artwork')
+        if isinstance(raw_art, dict):
+            for k, v in raw_art.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    try:
+                        cached[k] = base64.b64decode(v, validate=True)
+                    except (binascii.Error, ValueError):
+                        pass
+        icon = None
+        raw_icon = found.get('icon')
+        if isinstance(raw_icon, str) and raw_icon:
+            try:
+                icon = base64.b64decode(raw_icon, validate=True) or None
+            except (binascii.Error, ValueError):
+                icon = None
         name = str(meta.get('name') or gid)
         images, warnings = frame_android.frame_artwork.prepare(name, icon, artwork if artwork is not None else cached)
         shortcut = _library_shortcut(gid, directory)
@@ -891,19 +944,23 @@ print(json.dumps(out))
 
 def list_titles():
     """The Devkit Games on the Frame (any uploaded by Valve's client too)."""
-    raw = _json_out(ssh('python3 -', input=LIST_SCRIPT, timeout=30), 'the title list')
+    raw = _json_out(ssh('python3 -', input=LIST_SCRIPT, timeout=30), 'the title list', expect=list)
     titles = []
-    for t in raw if isinstance(raw, list) else []:
-        if not ID_RE.match(str(t.get('id', ''))):
+    for t in raw:
+        if not isinstance(t, dict):
             continue
-        settings, meta = t.get('settings') or {}, t.get('meta') or {}
+        gid = t.get('id')
+        if not isinstance(gid, str) or not ID_RE.match(gid):
+            continue
+        settings = t.get('settings') if isinstance(t.get('settings'), dict) else {}
+        meta = t.get('meta') if isinstance(t.get('meta'), dict) else {}
         argv = t.get('argv') if isinstance(t.get('argv'), list) else []
         alias = str(settings.get('compat_tool') or '')
-        titles.append({'id': t['id'], 'name': str(meta.get('name') or t['id']),
+        titles.append({'id': gid, 'name': str(meta.get('name') or gid),
                        'target': str(meta.get('target') or (argv[0] if argv else '')),
                        'runtime': alias, 'runtime_label': RUNTIMES.get(alias, {}).get('label', alias or 'not set'),
                        'source': str(meta.get('source') or ''), 'size': meta.get('size'),
-                       'installed': meta.get('installed'), 'registered': t.get('settings') is not None,
+                       'installed': meta.get('installed'), 'registered': isinstance(t.get('settings'), dict),
                        'frame_control': bool(meta),
                        # Only a title whose install couldn't apply art; older installs have no flag and keep theirs.
                        'art_pending': bool(meta.get('art_pending')), 'art_missing': bool(meta.get('art_pending'))})
