@@ -44,6 +44,8 @@ def u16(s):
 
 def cut(s, n):
     """s shortened to at most n UTF-16 units, never splitting a character."""
+    if n <= 0:
+        return ''
     while u16(s) > n:
         s = s[:max(0, len(s) - max(1, (u16(s) - n) // 2))]
     return s
@@ -253,7 +255,8 @@ def diagnostics(activity=(), include_logs=False, limit=DIAG_MAX):
     out = frame_telemetry.scrub('\n'.join(env) + '\n\n' + '\n'.join(conn), limit=limit)
     if not include_logs:
         return cut(out, limit)
-    sections = [('Recent activity (newest first):', [str(a)[:300] for a in list(activity)[:ACTIVITY_LINES] if isinstance(a, str)]),
+    items = activity if isinstance(activity, (list, tuple)) else ()
+    sections = [('Recent activity (newest first):', [a[:300] for a in items[:ACTIVITY_LINES] if isinstance(a, str)]),
                 ('Server log (newest first):', _log_tail())]
     for title, lines in sections:
         if not lines:
@@ -273,8 +276,15 @@ def diagnostics(activity=(), include_logs=False, limit=DIAG_MAX):
 def compose(body):
     """(title, text, diagnostics): the diagnostics exactly as the dialog previewed them (passed
     back, scrubbed again and bounded here)."""
-    title = ' '.join(str(body.get('title') or '').split())
-    text = str(body.get('message') or '').strip()
+    if not isinstance(body, dict):
+        raise ValueError('expected a JSON object')
+    raw_title, raw_text = body.get('title'), body.get('message')
+    if raw_title is not None and not isinstance(raw_title, str):
+        raise ValueError('give it a short title (at least 5 characters)')
+    if raw_text is not None and not isinstance(raw_text, str):
+        raise ValueError('say a little more about what happened (at least 10 characters)')
+    title = ' '.join((raw_title or '').split())
+    text = (raw_text or '').strip()
     if len(title) < 5:
         raise ValueError('give it a short title (at least 5 characters)')
     if len(text) < 10:
@@ -286,10 +296,15 @@ def compose(body):
 
 def send(body):
     """Send the report to PostHog. Returns {"id", "message"}; raises ReportError."""
+    if not isinstance(body, dict):
+        raise ValueError('expected a JSON object')
     kind = body.get('kind') if body.get('kind') in KINDS else 'bug'
     title, text, diag = compose(body)
     followup = frame_contact.flag(body, 'contactFollowup')
-    contact = str(body.get('contact') or '').strip() if followup else ''
+    raw_contact = body.get('contact')
+    if followup and raw_contact is not None and not isinstance(raw_contact, str):
+        raise ValueError('add your email address for follow-up questions, or untick that box')
+    contact = (raw_contact or '').strip() if followup else ''
     if followup and not frame_contact.valid_email(contact):
         raise ValueError('add your email address for follow-up questions, or untick that box')
     started = time.time()  # a removal from now on (even while saving the address) is redacted from the log
@@ -321,24 +336,31 @@ class ReportError(RuntimeError):
     pass
 
 
+def _query_rows(res):
+    rows = res.get('results') if isinstance(res, dict) else None
+    return rows if isinstance(rows, list) else []
+
+
 def inbox(days=30):
     """The maintainer's recent reports from PostHog, newest first (needs the personal API key
     frame_compat_db.sync uses). Column 10 is whether the person may be asked follow-up
     questions now: 'withdrawn' when a later choice from the same copy took it back."""
     import frame_compat_db
     days = int(days)
+    if days < 1:
+        raise ValueError('days must be at least 1')
     res = frame_compat_db._posthog_query(
         "SELECT timestamp, properties.report_id, properties.kind, properties.title, properties.message, "
         "properties.contact, properties.app_version, properties.os, properties.steamos, properties.diagnostics, "
         "properties.contact_followup, properties.contact_id, properties.contact_rev "
         f"FROM events WHERE event = 'problem_report' AND timestamp > now() - INTERVAL {days} DAY "
         "ORDER BY timestamp DESC LIMIT 200")
-    rows = [r for r in res.get('results') or [] if isinstance(r, list) and len(r) == 13]
+    rows = [r for r in _query_rows(res) if isinstance(r, list) and len(r) == 13]
     if any(r[11] and _yes(r[10]) for r in rows):
         later = frame_compat_db._posthog_query(
             "SELECT distinct_id, properties.email, properties.followup, ifNull(toInt(properties.rev), 0) "
             "FROM events WHERE event = 'contact_consent' LIMIT 100000")
-        mark_withdrawn(rows, later.get('results') or [])
+        mark_withdrawn(rows, _query_rows(later))
     return rows
 
 
@@ -386,7 +408,7 @@ def contacts():
         f"argMax(properties.followup, {newest}), argMax(timestamp, {newest}) FROM events "
         "WHERE event = 'contact_consent' GROUP BY distinct_id ORDER BY max(timestamp) LIMIT 100000")
     out = {'updates': [], 'followup': []}
-    for row in res.get('results') or []:
+    for row in _query_rows(res):
         if not isinstance(row, list) or len(row) != 5:
             continue
         _, email, updates, followup, ts = row

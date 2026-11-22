@@ -1041,6 +1041,39 @@ class ReportProblem(Base):
             with self.assertRaisesRegex(fr.ReportError, "no PostHog project key"):
                 fr.send({"title": "Live view stops", "message": "It stops after a minute."})
 
+    def test_report_rejects_non_dict_bodies_and_non_string_fields(self):
+        for bad in (None, [], "nope", 42):
+            with self.assertRaises(ValueError):
+                fr.compose(bad)
+            with self.assertRaises(ValueError):
+                fr.send(bad)
+        with self.assertRaises(ValueError):
+            fr.compose({"title": ["bad title"], "message": "Long enough message."})
+        with self.assertRaises(ValueError):
+            fr.compose({"title": "Valid title", "message": 1234567890})
+        with self.assertRaises(ValueError):
+            fr.send({"title": "Valid title", "message": "Long enough message.",
+                     "contact": ["me@example.com"], "contactFollowup": True})
+
+    def test_diagnostics_ignores_non_list_activity(self):
+        text_int = fr.diagnostics(activity=123, include_logs=True)
+        self.assertIn("Frame Control", text_int)
+        text_str = fr.diagnostics(activity="single-string", include_logs=True)
+        self.assertNotIn("Recent activity (newest first):", text_str)
+
+    def test_inbox_and_contacts_handle_malformed_query_responses(self):
+        for bad_res in (None, [], {"results": 123}):
+            with mock.patch.object(db, "_posthog_query", return_value=bad_res):
+                self.assertEqual(fr.inbox(), [])
+                self.assertEqual(fr.contacts(), {"updates": [], "followup": []})
+        for bad_days in (0, -3):
+            with self.assertRaises(ValueError):
+                fr.inbox(days=bad_days)
+
+    def test_cut_non_positive_limit_returns_empty(self):
+        self.assertEqual(fr.cut("hello", 0), "")
+        self.assertEqual(fr.cut("hello", -5), "")
+
 
 if __name__ == "__main__":
     unittest.main()
