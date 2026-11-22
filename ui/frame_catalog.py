@@ -2,7 +2,7 @@
 list, verified downloads, installs into per-app Lepton instances, and
 compatibility reports. Python stdlib only.
 """
-import hashlib, json, os, shutil, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
+import hashlib, http.client, json, os, shutil, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CATALOG = os.path.join(ROOT, 'apk-catalog')
@@ -22,6 +22,7 @@ INDEX_FILES = {'https://f-droid.org/repo/': 'index-v2.json',
                'https://f-droid.org/archive/': 'index-v2.archive.json',
                'https://apt.izzysoft.de/fdroid/repo/': 'index-v2.izzy.json'}
 APK_HOSTS = tuple(INDEX_FILES)
+MAX_APK = 2 * 1024**3
 _lock = threading.Lock()
 _cache = {'mtime': None, 'sig': None, 'apps': None, 'by_pkg': None}
 _env = {}
@@ -102,9 +103,10 @@ def _reduce_index(path):
                     if not installable(v):
                         continue
                     m, file = v['manifest'], v['file']
+                    uses_sdk = m.get('usesSdk') if isinstance(m.get('usesSdk'), dict) else {}
                     records.append({'version': m.get('versionName', ''),
                                     'version_code': m.get('versionCode', 0),
-                                    'min_sdk': m.get('usesSdk', {}).get('minSdkVersion', 1),
+                                    'min_sdk': uses_sdk.get('minSdkVersion', 1),
                                     'abis': m.get('nativecode') or [],
                                     'name': file['name'], 'sha256': file.get('sha256')})
                 if records:
@@ -133,7 +135,7 @@ def load_index(repo, cached_only=False):
             if cached is not None and cached[0] == mtime:
                 return cached[1]
             try:
-                with open(path) as f:
+                with open(path, encoding='utf-8') as f:
                     loaded = json.load(f)
             except (OSError, ValueError):
                 loaded = None
@@ -155,7 +157,7 @@ def load_index(repo, cached_only=False):
                     shutil.copyfileobj(r, f, 1 << 20)
                 index = _reduce_index(tmp)
                 refreshed = time.time_ns()
-            with open(tmp, 'w') as f:
+            with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(index, f, separators=(',', ':'))
             os.utime(tmp, ns=(refreshed, refreshed))
             os.replace(tmp, path)
@@ -163,7 +165,10 @@ def load_index(repo, cached_only=False):
             return index
         finally:
             if os.path.exists(tmp):
-                os.remove(tmp)
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
 
 
 def catalog():
@@ -208,34 +213,51 @@ def fetch_apk(a):
     if not expected:
         raise frame_android.FrameError(f"{a['n']}: the F-Droid index has no SHA-256 for this APK, so it can't be verified")
     name = urllib.parse.urlsplit(a['a']).path.rsplit('/', 1)[-1]
-    if not name or name in ('.', '..') or name.startswith('.') or '/' in name or '\\' in name or any(ord(c) < 32 for c in name):
+    if (not name or name in ('.', '..') or name.startswith('.') or '/' in name or '\\' in name or ':' in name
+            or any(ord(c) < 32 or ord(c) == 127 for c in name)):
         raise frame_android.FrameError('unexpected APK filename')
     os.makedirs(CACHE, exist_ok=True)
     path = os.path.join(CACHE, name)
-    if os.path.isfile(path) and _sha256(path) == expected:
-        return path
+    try:
+        if os.path.isfile(path) and _sha256(path) == expected:
+            return path
+    except OSError:
+        pass
     # Own temp file per download: concurrent downloads can't clobber or delete each other's.
     fd, tmp = tempfile.mkstemp(prefix=name + '.', suffix='.part', dir=CACHE)
     os.close(fd)
     try:
+        h, written = hashlib.sha256(), 0
         with urllib.request.urlopen(a['a'], timeout=60) as r, open(tmp, 'wb') as f:
-            shutil.copyfileobj(r, f, 1 << 20)
-        if _sha256(tmp) != expected:
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_APK:
+                    raise frame_android.FrameError(f"{a['n']}: APK download too large")
+                h.update(chunk)
+                f.write(chunk)
+        if h.hexdigest() != expected:
             raise frame_android.FrameError('SHA-256 mismatch against the F-Droid index; download discarded')
         os.replace(tmp, path)  # only a verified file ever reaches the cache name
         return path
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
         raise frame_android.FrameError(f"couldn't download {a['n']}: {e}")
     finally:
         if os.path.exists(tmp):
-            os.remove(tmp)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def fetch_icon(a):
-    if not a.get('i', '').startswith('https://f-droid.org/repo/'):
+    icon = a.get('i') if isinstance(a, dict) else None
+    if not isinstance(icon, str) or not icon.startswith('https://f-droid.org/repo/'):
         return None
     try:
-        with urllib.request.urlopen(a['i'], timeout=15) as r:
+        with urllib.request.urlopen(icon, timeout=15) as r:
             data = r.read(2_000_000)
         return data if data[:8] == b'\x89PNG\r\n\x1a\n' else None
     except Exception:
@@ -268,7 +290,7 @@ RUNTIMES = ('instance', 'lepton-dev', 'other')
 def add_report(pkg, version, result=None, rating=None, notes='', via='user', runtime='instance',
                label=None, source=None):
     """One report for any APK (F-Droid or not): did it work, and how was it run."""
-    if not frame_android.PKG_RE.match(pkg or '') or len(pkg) > 200:
+    if not isinstance(pkg, str) or not frame_android.PKG_RE.fullmatch(pkg) or len(pkg) > 200:
         raise ValueError('a report needs a valid package name, e.g. org.example.app')
     if rating not in (None, 'works', 'issues', 'broken'):
         raise ValueError('rating must be works, issues or broken')
@@ -293,8 +315,9 @@ def recent_reports(limit=200):
     """Newest first, with a display name from the report or the catalogue."""
     catalog()
     names = {p: a['n'] for p, a in (_cache['by_pkg'] or {}).items()}
+    rows = [r for r in compat_db.load() if isinstance(r, dict) and isinstance(r.get('package'), str) and r['package']]
     out = []
-    for r in sorted(compat_db.load(), key=lambda r: r.get('date') or '', reverse=True)[:limit]:
+    for r in sorted(rows, key=lambda r: r.get('date') if isinstance(r.get('date'), str) else '', reverse=True)[:limit]:
         out.append({**r, 'name': r.get('label') or names.get(r['package']) or r['package'],
                     'inCatalog': r['package'] in names})
     return out

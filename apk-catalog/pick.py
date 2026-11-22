@@ -9,9 +9,13 @@ LEPTON_SDK = 30
 
 def installable(v):
     m = v['manifest']
-    native = m.get('nativecode') or []
-    return (not native or 'arm64-v8a' in native) and \
-        m.get('usesSdk', {}).get('minSdkVersion', 1) <= LEPTON_SDK
+    native = m.get('nativecode')
+    native = native if isinstance(native, list) else []
+    uses_sdk = m.get('usesSdk') if isinstance(m.get('usesSdk'), dict) else {}
+    min_sdk = uses_sdk.get('minSdkVersion', 1)
+    if isinstance(min_sdk, bool) or not isinstance(min_sdk, int):
+        min_sdk = 1
+    return (not native or 'arm64-v8a' in native) and min_sdk <= LEPTON_SDK
 
 
 def pick_version(p):
