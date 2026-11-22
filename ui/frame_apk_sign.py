@@ -58,6 +58,8 @@ def public_key(key):
 
 def encoded_hash(data, size):
     digest = SHA256_DER + hashlib.sha256(data).digest()
+    if size < len(digest) + 11:
+        raise ValueError('RSA modulus too small')
     return b'\0\1' + b'\xff' * (size - len(digest) - 3) + b'\0' + digest
 
 
@@ -67,6 +69,8 @@ def rsa_sign(data, key):
 
 
 def rsa_verify(data, sig, n, e):
+    if type(n) is not int or type(e) is not int or n.bit_length() < 1024 or e < 3 or e % 2 == 0:
+        raise ValueError('invalid RSA public key')
     size = (n.bit_length() + 7) // 8
     if len(sig) != size or int.from_bytes(sig, 'big') >= n:
         raise ValueError('invalid RSA signature size/value')
@@ -121,7 +125,7 @@ def signing_key(path=None):
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix='.apk-key-', dir=str(path.parent))
         try:
-            with os.fdopen(fd, 'w') as f:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump(key, f)
                 f.flush()
                 os.fsync(f.fileno())
@@ -136,11 +140,17 @@ def signing_key(path=None):
             if os.path.exists(tmp):
                 os.unlink(tmp)
     os.chmod(path, 0o600)  # Windows ignores this; the per-user app-data folder is the protection there
-    key = json.loads(path.read_text())
-    if key['n'].bit_length() != 2048 or key['e'] != 65537:
-        raise ValueError(f'invalid cached APK signing key; delete {path} to make a new one '
-                         '(re-signed apps then need reinstalling)')
-    rsa_verify(b'key check', rsa_sign(b'key check', key), key['n'], key['e'])
+    bad_key = (f'invalid cached APK signing key; delete {path} to make a new one '
+               '(re-signed apps then need reinstalling)')
+    try:
+        key = json.loads(path.read_text(encoding='utf-8'))
+        if (not isinstance(key, dict)
+                or any(type(key.get(k)) is not int for k in ('n', 'e', 'd'))
+                or key['n'].bit_length() != 2048 or key['e'] != 65537 or key['d'] <= 0):
+            raise ValueError(bad_key)
+        rsa_verify(b'key check', rsa_sign(b'key check', key), key['n'], key['e'])
+    except (ValueError, TypeError, KeyError, AttributeError, OverflowError) as exc:
+        raise ValueError(bad_key) from exc
     return key
 
 
@@ -173,6 +183,8 @@ def sign_apk(data, key):
     pair = struct.pack('<Q', 4 + len(value)) + u32(V2) + value
     size = len(pair) + 24
     block = struct.pack('<Q', size) + pair + struct.pack('<Q', size) + MAGIC
+    if cd + len(block) >= 0xffffffff:
+        raise ValueError('ZIP64 APKs are unsupported')
     end = bytearray(data[eo:])
     struct.pack_into('<I', end, 16, cd + len(block))
     return data[:cd] + block + data[cd:eo] + end
@@ -202,6 +214,8 @@ def _der_parts(data):
             count = size & 127
             if not count or count > 4:
                 raise ValueError('invalid DER length')
+            if off + count > len(data):
+                raise ValueError('truncated DER length')
             size = int.from_bytes(data[off:off + count], 'big')
             off += count
         if off + size > len(data):
@@ -234,7 +248,7 @@ def verify(path):
     data = Path(path).read_bytes()
     try:
         eo, cd = _eocd(data)
-        if data[cd - 16:cd] != MAGIC:
+        if cd < 24 or data[cd - 16:cd] != MAGIC:
             raise ValueError('no APK signing block')
         size = struct.unpack_from('<Q', data, cd - 24)[0]
         start = cd - size - 8
@@ -349,6 +363,7 @@ def repack(src, dst, replace=None, add=None, sign=True):
     if sign:
         data = sign_apk(data, signing_key())
     dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix='.apk-', dir=str(dst.parent))
     try:
         with os.fdopen(fd, 'wb') as f:

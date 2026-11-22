@@ -1,6 +1,7 @@
 """Local-only VR manifest, raw ZIP and independent signature checks."""
 import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import io
+import json
 import os
 from pathlib import Path
 import struct
@@ -370,6 +371,54 @@ class VRTests(unittest.TestCase):
             repair.reset_mock()
             frame_android.install('game.apk', xr_compat=False)  # launchable, no layer: install as is
             repair.assert_not_called()
+
+    def test_corrupt_signing_key_raises_actionable_value_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'key.json'
+            cases = (
+                '{not-json',
+                '[]',
+                '{}',
+                json.dumps({'n': 'bad', 'e': 65537, 'd': 1}),
+                json.dumps({'n': self.key['n'], 'e': 65537}),
+                json.dumps({'n': self.key['n'], 'e': True, 'd': self.key['d']}),
+            )
+            for payload in cases:
+                path.write_text(payload, encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'invalid cached APK signing key'):
+                    signing.signing_key(path)
+
+    def test_rsa_verify_and_encoded_hash_reject_degenerate_keys_and_tiny_modulus(self):
+        with self.assertRaisesRegex(ValueError, 'RSA modulus too small'):
+            signing.encoded_hash(b'msg', 54)
+        with self.assertRaisesRegex(ValueError, 'RSA modulus too small'):
+            signing.encoded_hash(b'msg', 20)
+        for bad_e in (0, 1, 2):
+            with self.assertRaisesRegex(ValueError, 'invalid RSA public key'):
+                signing.rsa_verify(b'msg', b'\x00' * 256, self.key['n'], bad_e)
+        small_n = (1 << 511) | 1
+        with self.assertRaisesRegex(ValueError, 'invalid RSA public key'):
+            signing.rsa_verify(b'msg', b'\x00' * 64, small_n, 65537)
+
+    def test_verify_rejects_short_cd_offset_and_truncated_der_length(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad = Path(d) / 'short-cd.apk'
+            # cd=16 makes data[cd-16:cd] == MAGIC while cd-24 is negative (-8).
+            eocd = struct.pack('<IHHHHIIH', 0x06054b50, 0, 0, 0, 0, 0, 16, 0)
+            bad.write_bytes(signing.MAGIC + eocd)
+            with self.assertRaisesRegex(ValueError, 'no APK signing block'):
+                signing.verify(bad)
+        with self.assertRaisesRegex(ValueError, 'truncated DER length'):
+            signing._der_parts(b'\x30\x82\x01')
+
+    def test_repack_creates_missing_parent_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / 'in.apk'
+            dst = Path(d) / 'nested' / 'dir' / 'out.apk'
+            with zipfile.ZipFile(src, 'w') as z:
+                z.writestr('AndroidManifest.xml', manifest(), compress_type=8)
+            signing.repack(src, dst, sign=False)
+            self.assertTrue(dst.is_file())
 
 
 if __name__ == '__main__':
