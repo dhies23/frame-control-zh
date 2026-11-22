@@ -455,9 +455,45 @@ class ArtworkTests(unittest.TestCase):
             art.image_type(art.PNG + b'junk')
 
     def test_bad_artwork_arguments(self):
-        for value in ({'bad': b'bad'}, ['hero']):
+        for value in ({'bad': b'bad'}, ['hero'], [], '', 0, False):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 art.prepare('Game', artwork=value)
+
+    def test_png_size_rejects_bad_signature_depth_color_and_ihdr_flags(self):
+        def raw_png(sig, w, h, depth, color, comp=0, filt=0, interlace=0):
+            return sig + art.chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, depth, color, comp, filt, interlace)) + \
+                art.chunk(b'IEND', b'')
+        self.assertEqual(art.png_size(raw_png(art.PNG, 16, 16, 1, 0)), (16, 16))
+        self.assertEqual(art.png_size(raw_png(art.PNG, 16, 16, 8, 3)), (16, 16))
+        self.assertEqual(art.png_size(raw_png(art.PNG, 16, 16, 8, 4, interlace=1)), (16, 16))
+        for bad in (raw_png(b'NOTAPNG!', 16, 16, 8, 6), 'not-bytes'):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'header'):
+                art.png_size(bad)
+        for params in ((1, 6, 0, 0, 0), (4, 2, 0, 0, 0), (2, 4, 0, 0, 0), (16, 3, 0, 0, 0),
+                       (8, 6, 1, 0, 0), (8, 6, 0, 1, 0), (8, 6, 0, 0, 2)):
+            with self.subTest(params=params), self.assertRaisesRegex(ValueError, 'encoding'):
+                art.png_size(raw_png(art.PNG, 16, 16, *params))
+
+    def test_jpeg_parser_handles_standalone_markers_and_stops_at_sos_or_eoi(self):
+        sof0 = b'\xff\xc0' + struct.pack('>HBHHB', 8, 8, 16, 16, 3) + b'\x00'
+        with_standalone = b'\xff\xd8\xff\x01\xff\xd0' + sof0 + b'\xff\xd9'
+        self.assertEqual(art.image_type(with_standalone), 'jpg')
+        for bad in (b'\xff\xd8\xff\xda' + struct.pack('>H', 2) + sof0 + b'\xff\xd9',
+                    b'\xff\xd8\xff\xd9' + sof0):
+            with self.subTest(bad=bad[:8]), self.assertRaises(ValueError):
+                art.image_type(bad)
+
+    def test_prepare_guards_malformed_provider_results(self):
+        import frame_steamgriddb as sgdb
+        png = (FIXTURES / 'icon.png').read_bytes()
+        with patch.object(sgdb, 'lookup', return_value=({'grid': png, 'unknown': png, 123: png}, ['note'])):
+            supplied, warnings = art.prepare('Game')
+        self.assertEqual(list(supplied), ['grid'])
+        self.assertEqual(warnings, ['note'])
+        with patch.object(sgdb, 'lookup', return_value=(['not-a-dict'], 'not-a-list')):
+            supplied, warnings = art.prepare('Game')
+        self.assertEqual(supplied, {})
+        self.assertEqual(warnings, [])
 
     def test_godot_project_icon(self):
         import io
