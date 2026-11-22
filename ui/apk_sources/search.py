@@ -50,7 +50,7 @@ class ReportCache:
         try:
             by = {}
             for report in self.loader():
-                if report.get('package'):
+                if isinstance(report, dict) and isinstance(report.get('package'), str) and report['package']:
                     by.setdefault(report['package'], []).append(report)
             snapshot = {pkg: v for pkg, rows in by.items() if (v := self.report_verdict(rows))}
             with self._lock:
@@ -90,9 +90,10 @@ def settings_path():
 
 def overrides():
     try:
-        return json.loads(settings_path().read_text())
-    except FileNotFoundError:
+        data = json.loads(settings_path().read_text(encoding='utf-8'))
+    except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def registry():
@@ -135,8 +136,15 @@ def set_enabled(source_id, enabled):
         path = settings_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix('.tmp')
-        tmp.write_text(json.dumps(values))
-        tmp.replace(path)
+        try:
+            tmp.write_text(json.dumps(values), encoding='utf-8')
+            tmp.replace(path)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
     return {'message': source['name'] + (' enabled' if enabled else ' disabled')}
 
 
@@ -166,8 +174,14 @@ def normalise(name):
     return ' '.join(re.findall(r'\w+', unicodedata.normalize('NFKC', name or '').casefold()))
 
 
+def _sdk_int(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def fit(entry):
-    sdk, abis = entry.get('min_sdk'), entry.get('abis')
+    sdk = _sdk_int(entry.get('min_sdk'))
+    raw_abis = entry.get('abis')
+    abis = raw_abis if isinstance(raw_abis, (list, tuple)) else None
     reasons = []
     blocked = (sdk is not None and sdk > 30) or (abis is not None and bool(abis) and 'arm64-v8a' not in abis)
     if sdk is not None and sdk > 30:
@@ -191,21 +205,24 @@ def fit(entry):
 
 def verdict(entry, report=None):
     compatibility = fit(entry)
+    sdk = _sdk_int(entry.get('min_sdk'))
     hints = ' '.join(str(entry.get(k) or '') for k in ('engine', 'vr_engine', 'vr_hints', 'vr_issues')).lower()
     if entry.get('requires_meta_services') is True:
         return {'label': "Needs Meta Quest services; won't run", 'tone': 'blocked'}
-    if entry.get('min_sdk') is not None and entry['min_sdk'] > 30:
+    if sdk is not None and sdk > 30:
         return {'label': 'Might not work: needs a newer Android than the Frame has', 'tone': 'blocked'}
     if compatibility['installable'] is False:
         return {'label': "This version isn't made for the Frame", 'tone': 'blocked'}
     if 'vrapi' in hints:
         return {'label': "Made for older Quest headsets; won't run on the Frame", 'tone': 'blocked'}
     if report:
-        kind, _ = report
-        return {'label': {'works': 'Reported working on the Frame',
-                          'maybe': 'Reported issues on the Frame',
-                          'no': 'Reported not working on the Frame'}[kind],
-                'tone': {'works': 'works', 'maybe': 'issues', 'no': 'warning'}[kind]}
+        kind = report[0]
+        labels = {'works': 'Reported working on the Frame',
+                  'maybe': 'Reported issues on the Frame',
+                  'no': 'Reported not working on the Frame'}
+        tones = {'works': 'works', 'maybe': 'issues', 'no': 'warning'}
+        if kind in labels:
+            return {'label': labels[kind], 'tone': tones[kind]}
     if entry.get('frame_tested') is True:
         return {'label': 'Works on the Frame', 'tone': 'works'}
     if compatibility['installable'] is True:
@@ -231,10 +248,12 @@ def details(source_id, entry_id):
 
 def offer_rank(entry):
     compatible = entry['fit']['installable'] is True
+    raw_vc = entry.get('version_code')
+    vc = raw_vc if isinstance(raw_vc, int) and not isinstance(raw_vc, bool) else 0
     return (entry.get('downloadable') is True and entry['fit']['installable'] is not False,
             entry.get('verified') is True, compatible,
             str(entry.get('updated') or '') if compatible else '',
-            (entry.get('version_code') or 0) if compatible else 0,
+            vc if compatible else 0,
             entry.get('trust') == 'official')
 
 
@@ -263,7 +282,7 @@ def group(entries, query='', vr=None, installable=False, category=None, phone=Fa
 
     def browse(a):  # a headset store: VR first, then apps with artwork, newest first
         o = a['offers'][0]
-        art = o.get('images') or {}
+        art = o.get('images') if isinstance(o.get('images'), dict) else {}
         return (o.get('vr') is not True, not art.get('banner'), not art.get('screenshots'),
                 ''.join(chr(0x10ffff - ord(c)) for c in str(o.get('updated') or '')))
     if not q:
@@ -310,7 +329,8 @@ def _start(key, task):
         queued = None
         try:
             task['entries'] = [dict(e, source=key, source_name=source['name'], trust=source.get('trust'))
-                               for e in module.search(source, query, limit=limit, **kwargs) if e.get('free') is True]
+                               for e in module.search(source, query, limit=limit, **kwargs)
+                               if isinstance(e, dict) and e.get('free') is True]
             task['stale'] = bool(getattr(module, 'stale', lambda s: False)(source))
         except Exception as e:
             task['error'] = str(e)
@@ -323,7 +343,15 @@ def _start(key, task):
                 task['event'].set()
         if queued:
             _start(key, queued)
-    threading.Thread(target=run, daemon=True).start()
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except Exception as e:
+        with _lock:
+            task['error'] = str(e)
+            task['limited'] = False
+            if _running.get(key) is task:
+                del _running[key]
+            task['event'].set()
 
 
 def search(query='', vr=None, source=None, installable=False, timeout=TIMEOUT, limit=50, category=None, phone=False):
