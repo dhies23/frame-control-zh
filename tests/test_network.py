@@ -197,6 +197,29 @@ class Parsers(unittest.TestCase):
         for host, kind in cases.items():
             self.assertEqual(fn.guess_kind(host), kind, host)
 
+    def test_valid_ip_is_tailscale_guess_kind_and_norm_mac_handle_non_strings(self):
+        for bad in (None, 123, True, b"\x7f\x00\x00\x01", ["192.168.1.1"]):
+            with self.subTest(bad=bad):
+                self.assertFalse(fn.valid_ip(bad))
+                self.assertFalse(fn.is_tailscale(bad))
+                self.assertEqual(fn.guess_kind(bad), "manual")
+                self.assertIsNone(fn.norm_mac(bad))
+
+    def test_parse_tailscale_handles_malformed_self_peer_and_non_string_inputs(self):
+        self.assertEqual(fn.parse_tailscale(None), {"up": False, "peers": []})
+        malformed = json.dumps({"BackendState": "Running", "Self": ["bad"], "Peer": ["bad"]})
+        self.assertEqual(fn.parse_tailscale(malformed),
+                         {"up": True, "ip": None, "name": None, "tailnet": None, "peers": []})
+        odd_fields = json.dumps({
+            "BackendState": "Running",
+            "Self": {"DNSName": 123, "TailscaleIPs": [None, 42, "100.64.1.2"]},
+            "Peer": {"k": {"HostName": 9, "DNSName": 42, "TailscaleIPs": "not-list", "OS": 7, "Online": True}},
+        })
+        parsed = fn.parse_tailscale(odd_fields)
+        self.assertEqual(parsed["ip"], "100.64.1.2")
+        self.assertIsNone(parsed["name"])
+        self.assertEqual(parsed["peers"], [{"name": "", "dns": "", "ips": [], "os": "", "online": True}])
+
 
 if __name__ == "__main__":
     unittest.main()
