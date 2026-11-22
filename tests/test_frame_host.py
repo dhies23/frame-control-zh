@@ -85,3 +85,75 @@ class CapturedSSH(unittest.TestCase):
                                    capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=5)
         self.assertEqual(result.returncode, 255)
         self.assertIn("Could not resolve hostname", result.stderr)
+
+
+class HostHelpers(unittest.TestCase):
+    def test_clipboard_text_and_set_clipboard_fall_through_on_timeout_and_oserror(self):
+        flags = {"MAC": False, "WINDOWS": False, "LINUX": True}
+        seen = []
+
+        def read_run(cmd, **kw):
+            seen.append(cmd[0])
+            if cmd[0] == "wl-paste":
+                raise subprocess.TimeoutExpired(cmd, 10)
+            return subprocess.CompletedProcess(cmd, 0, b"hello", b"")
+
+        with mock.patch.multiple(frame_host, **flags), \
+             mock.patch.object(frame_host.shutil, "which", lambda n: f"/bin/{n}"), \
+             mock.patch.object(frame_host.subprocess, "run", side_effect=read_run):
+            self.assertEqual(frame_host.clipboard_text(), "hello")
+        self.assertEqual(seen, ["wl-paste", "xclip"])
+
+        seen_set = []
+
+        def write_run(cmd, **kw):
+            seen_set.append(cmd[0])
+            if cmd[0] == "wl-copy":
+                raise OSError("exec failed")
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        with mock.patch.multiple(frame_host, **flags), \
+             mock.patch.object(frame_host.shutil, "which", lambda n: f"/bin/{n}"), \
+             mock.patch.object(frame_host.subprocess, "run", side_effect=write_run):
+            frame_host.set_clipboard_text("hello")
+        self.assertEqual(seen_set, ["wl-copy", "xclip"])
+
+    def test_adb_rejects_directory_in_adb_env(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"ADB": d}), \
+             mock.patch.object(frame_host, "which", return_value="/usr/bin/adb"):
+            self.assertEqual(frame_host.adb(), "/usr/bin/adb")
+
+    def test_open_terminal_rejects_unsafe_windows_title_and_macos_newlines_or_timeout(self):
+        with mock.patch.multiple(frame_host, MAC=False, WINDOWS=True, LINUX=False):
+            for bad_title in ('Frame "Control"', "Frame %PATH%", "Frame\nControl"):
+                with self.assertRaises(frame_host.HostError):
+                    frame_host.open_terminal(["ssh", "frame"], title=bad_title)
+        with mock.patch.multiple(frame_host, MAC=True, WINDOWS=False, LINUX=False):
+            with self.assertRaises(frame_host.HostError):
+                frame_host.open_terminal(["echo", "line1\nline2"])
+            with mock.patch.object(frame_host.subprocess, "run",
+                                   side_effect=subprocess.TimeoutExpired(["osascript"], 15)) as run:
+                with self.assertRaises(frame_host.HostError):
+                    frame_host.open_terminal(["ssh", "frame"])
+                self.assertEqual(run.call_args.kwargs.get("timeout"), 15)
+
+    def test_open_rdp_brackets_ipv6_for_remmina_and_rejects_control_chars(self):
+        with mock.patch.multiple(frame_host, MAC=False, WINDOWS=False, LINUX=True), \
+             mock.patch.object(frame_host, "check_rdp"), \
+             mock.patch.object(frame_host, "which", lambda n: "/usr/bin/remmina" if n == "remmina" else None), \
+             mock.patch.object(frame_host, "_spawn") as spawn:
+            frame_host.open_rdp("frame", host="fe80::1")
+            spawn.assert_called_once_with(["remmina", "-c", "rdp://steamos@[fe80::1]"])
+            with self.assertRaises(frame_host.HostError):
+                frame_host.open_rdp("frame", host="192.168.1.1\nfoo")
+
+    def test_open_steam_link_falls_back_on_flatpak_timeout(self):
+        with mock.patch.multiple(frame_host, MAC=False, WINDOWS=False, LINUX=True), \
+             mock.patch.object(frame_host, "which", lambda n: "/usr/bin/flatpak" if n == "flatpak" else None), \
+             mock.patch.object(frame_host.subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired(["flatpak"], 10)), \
+             mock.patch.object(frame_host, "open_url") as open_url:
+            msg = frame_host.open_steam_link()
+            self.assertIn("download page", msg)
+            open_url.assert_called_once()

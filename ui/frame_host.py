@@ -202,7 +202,7 @@ def adb():
     if tools:
         extra.append(os.path.join(tools, exe))
     env = os.environ.get("ADB")
-    found = (env if env and os.access(env, os.X_OK) else None) or which("adb", *extra)
+    found = (env if env and os.path.isfile(env) and os.access(env, os.X_OK) else None) or which("adb", *extra)
     if not found:
         raise HostError(f"adb isn't installed on this computer: {install_hint('adb')}")
     return found
@@ -270,10 +270,15 @@ def open_terminal(argv, title="Frame Control"):
     """
     argv = [str(a) for a in argv]
     if MAC:
+        if any(c in a for a in argv for c in "\r\n"):
+            raise HostError("Can't pass newlines to Terminal")
         command = shlex.join(argv).replace("\\", "\\\\").replace('"', '\\"')
-        r = subprocess.run(["osascript", "-e", 'tell application "Terminal"',
-                            "-e", f'do script "{command}"', "-e", "activate", "-e", "end tell"],
-                           capture_output=True, text=True)
+        try:
+            r = subprocess.run(["osascript", "-e", 'tell application "Terminal"',
+                                "-e", f'do script "{command}"', "-e", "activate", "-e", "end tell"],
+                               capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise HostError(f"Couldn't open Terminal: {exc}") from None
         if r.returncode != 0:
             # Usually macOS Automation consent for Terminal was denied.
             raise HostError(f"Couldn't open Terminal: {r.stderr.strip()}")
@@ -284,7 +289,8 @@ def open_terminal(argv, title="Frame Control"):
         # produce backslash-escaped quotes, which cmd doesn't understand.
         # Every argument is quoted, so cmd treats & | < > ^ in them literally. cmd has
         # no escape for a quote inside quotes (and expands %VAR% regardless), so refuse those.
-        if any(c in a for a in argv for c in '"%\r\n'):
+        title = str(title)
+        if any(c in a for a in (*argv, title) for c in '"%\r\n'):
             raise HostError("Can't pass quotes or % to a Windows terminal")
         inner = " ".join(f'"{a}"' for a in argv)
         subprocess.Popen(f'cmd.exe /c start "{title}" cmd.exe /k "{inner}"', **DETACHED)
@@ -321,7 +327,10 @@ def clipboard_text():
     for cmd in cmds:
         if not shutil.which(cmd[0]):
             continue
-        r = subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=10)
+        try:
+            r = subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
         if r.returncode == 0:
             text = r.stdout.decode("utf-8", errors="replace")
             return text[:-2] if WINDOWS and text.endswith("\r\n") else text
@@ -353,7 +362,7 @@ def set_clipboard_text(text):
         try:
             r = subprocess.run(cmd, input=feed, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                env=env, timeout=10)
-        except subprocess.TimeoutExpired:
+        except (OSError, subprocess.TimeoutExpired):
             continue
         if r.returncode == 0:
             return
@@ -412,9 +421,16 @@ def ssh_hostname(alias):
 
 # Apps the UI can hand off to, per platform: (installed-check, launch argv) pairs,
 # and where to get the app when none is installed.
+def _probe_ok(argv, timeout=10):
+    try:
+        return subprocess.run(argv, capture_output=True, stdin=subprocess.DEVNULL, timeout=timeout).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def open_steam_link():
     if MAC:
-        if subprocess.run(["open", "-a", "Steam Link"], capture_output=True).returncode == 0:
+        if _probe_ok(["open", "-a", "Steam Link"]):
             return "Opened Steam Link"
     elif WINDOWS:
         for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles")):
@@ -426,8 +442,7 @@ def open_steam_link():
         if which("steamlink"):
             _spawn([which("steamlink")])
             return "Opened Steam Link"
-        if which("flatpak") and subprocess.run(["flatpak", "info", "com.valvesoftware.SteamLink"],
-                                               capture_output=True).returncode == 0:
+        if which("flatpak") and _probe_ok(["flatpak", "info", "com.valvesoftware.SteamLink"]):
             _spawn(["flatpak", "run", "com.valvesoftware.SteamLink"])
             return "Opened Steam Link"
     open_url("https://store.steampowered.com/remoteplay")
@@ -475,10 +490,12 @@ def rdp_file(host):
 def open_rdp(alias, host=None):
     """Remote desktop to the Frame's xrdp (user steamos), at `host` or where the alias points."""
     host = host or ssh_hostname(alias)
+    if not host or any(c in host for c in "\r\n\0"):
+        raise HostError("That headset address can't be used for remote desktop")
     # The client would open either way and then fail on its own, with nothing said here.
     check_rdp(host)
     if MAC:
-        if subprocess.run(["open", "-a", "Windows App"], capture_output=True).returncode == 0:
+        if _probe_ok(["open", "-a", "Windows App"]):
             return f"Opened Windows App: connect to {host} and {RDP_LOGIN}"
         open_url("https://apps.apple.com/app/windows-app/id1295203466")
         return "Windows App isn't installed; opened its App Store page"
@@ -487,7 +504,8 @@ def open_rdp(alias, host=None):
         # Windows asks about the unsigned connection file first.
         return f"Opened Remote Desktop to {host}: choose Connect, {RDP_LOGIN}"
     if which("remmina"):
-        _spawn(["remmina", "-c", f"rdp://{RDP_USER}@{host}"])
+        uri_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        _spawn(["remmina", "-c", f"rdp://{RDP_USER}@{uri_host}"])
         return f"Opened Remmina to {host}: {RDP_LOGIN}"
     for name in ("xfreerdp3", "xfreerdp"):
         if which(name):
