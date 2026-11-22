@@ -29,7 +29,7 @@ MIRROR = os.path.join(STATE, 'compat-mirror.json')
 FIELDS = ('package', 'version', 'result', 'rating', 'notes', 'via', 'date', 'steamos', 'lepton', 'runtime',
           'label', 'source')
 TTL = 60  # seconds a fetched copy is reused
-_lock = threading.Lock()
+_lock = threading.RLock()
 _load_lock = threading.Lock()  # refreshing the cached reports (load); separate from _lock, which flush takes
 _mem = {'at': 0, 'reports': None, 'source': None}
 
@@ -97,13 +97,21 @@ def fetch_all():
     seen, out, since = set(), [], ''
     for _ in range(200):
         page = _request('/v1/reports?since=' + urllib.parse.quote(since))
-        for row in page.get('reports', []):
-            if row.get('id') and row['id'] not in seen:
+        if not isinstance(page, dict):
+            raise DBError('unexpected compatibility database response')
+        rows = page.get('reports', [])
+        if not isinstance(rows, list):
+            raise DBError('unexpected compatibility database response')
+        for row in rows:
+            if isinstance(row, dict) and row.get('id') and row['id'] not in seen:
                 seen.add(row['id'])
                 out.append(_from_row(row))
-        if not page.get('next') or page['next'] == since:
+        nxt = page.get('next')
+        if nxt is not None and not isinstance(nxt, str):
+            raise DBError('unexpected compatibility database response')
+        if not nxt or nxt == since:
             break
-        since = page['next']
+        since = nxt
     return out
 
 
@@ -128,38 +136,48 @@ def problem(r):
 def _quarantine(lines, why):
     """Keep what can't be sent, with the reason, instead of dropping it."""
     os.makedirs(STATE, exist_ok=True)
-    with open(OUTBOX + '.rejected', 'a') as f:
+    with open(OUTBOX + '.rejected', 'a', encoding='utf-8') as f:
         for line in lines:
             f.write(json.dumps({'why': why, 'at': time.strftime('%Y-%m-%dT%H:%M:%S'), 'line': line}) + '\n')
 
 
 def _outbox():
     """Queued reports. Unreadable or invalid lines move to the .rejected file."""
-    if not os.path.exists(OUTBOX):
-        return []
-    good, bad = [], []
-    with open(OUTBOX) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                r = json.loads(line)
-            except ValueError:
-                bad.append((line.rstrip('\n'), 'unreadable JSON'))
-                continue
-            why = problem(r)
-            (bad.append((line.rstrip('\n'), why)) if why else good.append(r))
-    if bad:
-        for line, why in bad:
-            _quarantine([line], why)
-        _write_outbox(good)
-    return good
+    with _lock:
+        if not os.path.exists(OUTBOX):
+            return []
+        good, bad = [], []
+        with open(OUTBOX, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    bad.append((line.rstrip('\n'), 'unreadable JSON'))
+                    continue
+                why = problem(r)
+                (bad.append((line.rstrip('\n'), why)) if why else good.append(r))
+        if bad:
+            for line, why in bad:
+                _quarantine([line], why)
+            _write_outbox(good)
+        return good
 
 
 def _write_outbox(rows):
-    with open(OUTBOX + '.tmp', 'w') as f:
-        f.writelines(json.dumps(r, ensure_ascii=False) + '\n' for r in rows)
-    os.replace(OUTBOX + '.tmp', OUTBOX)
+    os.makedirs(STATE, exist_ok=True)
+    tmp = OUTBOX + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.writelines(json.dumps(r, ensure_ascii=False) + '\n' for r in rows)
+        os.replace(tmp, OUTBOX)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def flush():
@@ -170,7 +188,12 @@ def flush():
         while pending:
             batch = pending[:100]
             res = _request('/v1/reports', {'reports': [{**r, 'clientId': r['id']} for r in batch]})
-            rejected = set(res.get('rejected') or [])
+            if not isinstance(res, dict):
+                raise DBError('unexpected compatibility database response')
+            raw_rejected = res.get('rejected')
+            if raw_rejected is not None and not isinstance(raw_rejected, list):
+                raise DBError('unexpected compatibility database response')
+            rejected = set(raw_rejected or [])
             if rejected:
                 _quarantine([json.dumps(r) for r in batch if r['id'] in rejected], 'rejected by the server')
             pending = pending[100:]
@@ -180,21 +203,29 @@ def flush():
 
 def _read_mirror():
     try:
-        with open(MIRROR) as f:
-            return [r for r in json.load(f).get('reports', []) if isinstance(r, dict) and r.get('package')]
-    except (OSError, ValueError, AttributeError):
+        with open(MIRROR, encoding='utf-8') as f:
+            data = json.load(f)
+        rows = data.get('reports', []) if isinstance(data, dict) else []
+        if not isinstance(rows, list):
+            return []
+        return [r for r in rows if isinstance(r, dict) and r.get('package')]
+    except (OSError, ValueError):
         return []
 
 
 def _save_mirror(reports):
     """Keep a copy for offline use. Failing to write it mustn't fail the read."""
+    tmp = MIRROR + '.tmp'
     try:
         os.makedirs(STATE, exist_ok=True)
-        with open(MIRROR + '.tmp', 'w') as f:
+        with open(tmp, 'w', encoding='utf-8') as f:
             json.dump({'fetched': time.strftime('%Y-%m-%dT%H:%M:%S'), 'reports': reports}, f)
-        os.replace(MIRROR + '.tmp', MIRROR)
+        os.replace(tmp, MIRROR)
     except OSError:
-        pass
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def load():
@@ -216,8 +247,9 @@ def load():
             except DBError:
                 reports, source = _read_mirror(), 'mirror'
             _mem.update(at=now, reports=reports, source=source)
-    sent = {r.get('id') for r in _mem['reports']}
-    return _mem['reports'] + [r for r in _outbox() if r['id'] not in sent]
+        cached = list(_mem['reports'])
+    sent = {r.get('id') for r in cached}
+    return cached + [r for r in _outbox() if r['id'] not in sent]
 
 
 def add(report):
@@ -228,7 +260,7 @@ def add(report):
     if why:
         raise ValueError(f'report not saved: {why}')
     os.makedirs(STATE, exist_ok=True)
-    with _lock, open(OUTBOX, 'a') as f:
+    with _lock, open(OUTBOX, 'a', encoding='utf-8') as f:
         f.write(json.dumps(r, ensure_ascii=False) + '\n')
     try:
         if shared():
@@ -290,7 +322,12 @@ def community_rows(events, state, cap=SYNC_DAILY_CAP):
     """(reports, skipped): compat_report events as database rows. `state` ({"seen": {id: day},
     "counts": {"reporter|day": n}}) persists between syncs, so an event read twice is handled
     once and each reporter gets at most `cap` reports a day in total."""
-    seen, counts = state.setdefault('seen', {}), state.setdefault('counts', {})
+    seen = state['seen'] if isinstance(state.get('seen'), dict) else state.setdefault('seen', {})
+    if not isinstance(seen, dict):
+        seen = state['seen'] = {}
+    counts = state['counts'] if isinstance(state.get('counts'), dict) else state.setdefault('counts', {})
+    if not isinstance(counts, dict):
+        counts = state['counts'] = {}
     out, skipped = [], []
     for props, reporter, ts in events:
         if isinstance(props, str):
@@ -301,7 +338,8 @@ def community_rows(events, state, cap=SYNC_DAILY_CAP):
         if not isinstance(props, dict):
             skipped.append((None, 'unreadable properties'))
             continue
-        bad = [k for k in (*FIELDS, 'id') if props.get(k) is not None and not isinstance(props[k], (str, int, float))]
+        bad = [k for k in (*FIELDS, 'id')
+               if props.get(k) is not None and (isinstance(props[k], bool) or not isinstance(props[k], (str, int, float)))]
         if bad:
             skipped.append((str(props.get('id'))[:60], f'bad field {bad[0]}'))
             continue
@@ -327,7 +365,7 @@ def community_rows(events, state, cap=SYNC_DAILY_CAP):
 
 def _sync_state():
     try:
-        with open(SYNC_STATE) as f:
+        with open(SYNC_STATE, encoding='utf-8') as f:
             s = json.load(f)
         return s if isinstance(s, dict) else {}
     except (OSError, ValueError):
@@ -337,12 +375,23 @@ def _sync_state():
 def _save_sync_state(s):
     """Forget ids and counts older than the overlap window (plus a margin)."""
     cutoff = time.strftime('%Y-%m-%d', time.gmtime(time.time() - (SYNC_OVERLAP_DAYS + 15) * 86400))
-    s['seen'] = {k: d for k, d in s.get('seen', {}).items() if d >= cutoff}
-    s['counts'] = {k: n for k, n in s.get('counts', {}).items() if k.rsplit('|', 1)[-1] >= cutoff}
+    raw_seen = s.get('seen') if isinstance(s.get('seen'), dict) else {}
+    raw_counts = s.get('counts') if isinstance(s.get('counts'), dict) else {}
+    s['seen'] = {k: d for k, d in raw_seen.items() if isinstance(k, str) and isinstance(d, str) and d >= cutoff}
+    s['counts'] = {k: n for k, n in raw_counts.items()
+                   if isinstance(k, str) and type(n) is int and k.rsplit('|', 1)[-1] >= cutoff}
     os.makedirs(STATE, exist_ok=True)
-    with open(SYNC_STATE + '.tmp', 'w') as f:
-        json.dump(s, f)
-    os.replace(SYNC_STATE + '.tmp', SYNC_STATE)
+    tmp = SYNC_STATE + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(s, f)
+        os.replace(tmp, SYNC_STATE)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def sync(dry_run=False):
@@ -372,7 +421,7 @@ def sync(dry_run=False):
         return rows, skipped
     if rows:
         os.makedirs(STATE, exist_ok=True)
-        with _lock, open(OUTBOX, 'a') as f:
+        with _lock, open(OUTBOX, 'a', encoding='utf-8') as f:
             f.writelines(json.dumps(r, ensure_ascii=False) + '\n' for r in rows)
     # Saved before sending: the rows are in the outbox now, and flush retries them if sending fails.
     _save_sync_state(state)
@@ -388,12 +437,12 @@ def main():
             print(len(fetch_all()))
         elif cmd == 'export':
             reports = fetch_all()
-            with open(args[0], 'w') as f:
+            with open(args[0], 'w', encoding='utf-8') as f:
                 json.dump({'exported': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'source': URL,
                            'count': len(reports), 'reports': reports}, f, indent=1)
             print(f'{len(reports)} reports -> {args[0]}')
         elif cmd == 'import':
-            with open(args[0]) as f:
+            with open(args[0], encoding='utf-8') as f:
                 backup = json.load(f)
             rows = [{**{k: r.get(k) for k in FIELDS}, 'id': r.get('id')} for r in backup['reports']]
             bad = [(r, problem(r)) for r in rows if problem(r)]
@@ -401,8 +450,8 @@ def main():
             for r, why in bad:
                 print(f"skipped {r.get('package')!r}: {why}", file=sys.stderr)
             os.makedirs(STATE, exist_ok=True)
-            with _lock, open(OUTBOX, 'a') as f:
-                f.writelines(json.dumps(r) + '\n' for r in ok)
+            with _lock, open(OUTBOX, 'a', encoding='utf-8') as f:
+                f.writelines(json.dumps(r, ensure_ascii=False) + '\n' for r in ok)
             left = flush()
             print(f'{len(ok)} reports sent, {len(bad)} invalid skipped, {left} still queued; '
                   'reports already in the database were not duplicated')
