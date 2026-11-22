@@ -1355,5 +1355,50 @@ class Server(unittest.TestCase):
         self.assertFalse(meta.status()['connected'])
 
 
+class Hardening(unittest.TestCase):
+    def test_check_token_rejects_non_string_and_status_guards_corrupt_user(self):
+        for bad in (123, ['OCabc'], {'token': TOKEN}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(meta.MetaError):
+                    meta.check_token(bad)
+        with patch.object(meta, '_read_account', return_value={'token': TOKEN, 'user': ['bad'], 'connected': 'now'}):
+            st = meta.status()
+        self.assertTrue(st['connected'])
+        self.assertEqual(st['user'], {'name': ''})
+
+    def test_parse_binary_and_entitlements_guard_newlines_and_malformed_containers(self):
+        self.assertNotIn('package', meta.parse_binary({'package_name': PKG + '\n'}))
+        self.assertEqual(meta._nodes({'nodes': 123, 'edges': 'bad'}), [])
+        self.assertEqual(meta._nodes({'nodes': None, 'edges': 42}), [])
+        self.assertEqual(meta.parse_entitlements({'viewer': ['bad']}), [])
+
+    def test_download_apk_wraps_corrupt_zip_errors(self):
+        import struct
+        app = {'title': 'Game', 'binary_id': '1', 'size': 10, 'sha256': None}
+        for exc in (EOFError('short'), struct.error('bad'), RuntimeError('bad'), OSError('io')):
+            with self.subTest(exc=type(exc).__name__), \
+                    patch.object(meta, 'fetch', return_value={'path': '/tmp/fake.apk'}), \
+                    patch.object(meta.zipfile, 'ZipFile', side_effect=exc):
+                with self.assertRaisesRegex(meta.MetaError, 'not an APK'):
+                    meta.download_apk(app, Path('/tmp'), TOKEN, 0, lambda *a: None, meta.Budget())
+
+    def test_check_space_wraps_oserror(self):
+        with patch.object(meta.shutil, 'disk_usage', side_effect=OSError('disk gone')):
+            with self.assertRaisesRegex(meta.MetaError, 'free space'):
+                meta._check_space(Path('/tmp'), 100, 'Game')
+
+    def test_run_test_rejects_trailing_newline_and_non_string_package(self):
+        with patch.object(android, '_meta_or_fail') as read_meta:
+            for bad in (PKG + '\n', 123, ['com.a.b']):
+                with self.subTest(bad=bad):
+                    with self.assertRaisesRegex(meta.MetaError, 'invalid package'):
+                        meta.run_test(bad)
+        read_meta.assert_not_called()
+
+    def test_report_notes_ignores_boolean_version_code(self):
+        notes = meta.report_notes({'outcome': 'runs', 'version_code': True, 'signals': {}})
+        self.assertNotIn('version code', notes)
+
+
 if __name__ == '__main__':
     unittest.main()

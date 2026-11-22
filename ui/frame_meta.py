@@ -38,6 +38,7 @@ import secrets
 import shutil
 import socket
 import ssl
+import struct
 import sys
 import tempfile
 import threading
@@ -231,7 +232,11 @@ def redact(text, limit=None, token=None):
 def check_token(token):
     """The token, stripped, if it looks like a Meta user access token; else MetaError. The
     rules match what the public tools check before sending one anywhere."""
-    token = (token or '').strip()
+    if token is None:
+        token = ''
+    elif not isinstance(token, str):
+        raise MetaError("That doesn't look like a Meta access token.")
+    token = token.strip()
     if token.lower().startswith('bearer '):
         token = token[7:].strip()
     if not token:
@@ -301,7 +306,10 @@ def _write_account(data):
             pass
     finally:
         if os.path.exists(tmp):
-            os.remove(tmp)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def _session():
@@ -321,10 +329,11 @@ def _current(generation):
 def status():
     """For the page: whether an account is connected and its display name. Never the token."""
     account = _read_account()
-    user = (account or {}).get('user') or {}
+    raw_user = account.get('user') if isinstance(account, dict) else None
+    user = raw_user if isinstance(raw_user, dict) else {}
     return {'connected': bool(account), 'experimental': True, 'warning': WARNING,
             'user': {'name': str(user.get('name') or '')[:80]} if account else None,
-            'connectedAt': (account or {}).get('connected')}
+            'connectedAt': account.get('connected') if isinstance(account, dict) else None}
 
 
 # Sign in with Meta (app/meta-signin.js) names each of its attempts. While a connect from an
@@ -659,7 +668,12 @@ def _nodes(connection):
     if isinstance(connection, list):
         items = connection
     elif isinstance(connection, dict):
-        items = connection.get('nodes') or [e.get('node') for e in connection.get('edges') or [] if isinstance(e, dict)]
+        nodes = connection.get('nodes')
+        if isinstance(nodes, list):
+            items = nodes
+        else:
+            edges = connection.get('edges')
+            items = [e.get('node') for e in edges if isinstance(e, dict)] if isinstance(edges, list) else []
     else:
         items = []
     return [i for i in items if isinstance(i, dict)]
@@ -682,7 +696,7 @@ def parse_binary(binary):
     out = {}
     if str(binary.get('id') or '').isdigit():
         out['binary_id'] = str(binary['id'])
-    if isinstance(binary.get('package_name'), str) and android.PKG_RE.match(binary['package_name']):
+    if isinstance(binary.get('package_name'), str) and android.PKG_RE.fullmatch(binary['package_name']):
         out['package'] = binary['package_name']
     if binary.get('version') not in (None, ''):
         out['version'] = str(binary['version'])[:80]
@@ -710,7 +724,9 @@ def parse_entitlements(data, now=None):
     """The Quest apps an entitlements answer says the account owns, newest facts first.
     Expired or inactive entitlements and other platforms (Rift, Go) are left out."""
     now = now or time.time()
-    user = ((data.get('viewer') or {}).get('user') or {}) if isinstance(data, dict) else {}
+    viewer = data.get('viewer') if isinstance(data, dict) else None
+    user = viewer.get('user') if isinstance(viewer, dict) else None
+    user = user if isinstance(user, dict) else {}
     apps, seen = [], set()
     for node in _nodes(user.get('active_entitlements') if isinstance(user, dict) else None):
         state = str(node.get('active_state') or 'ACTIVE').upper()
@@ -972,7 +988,10 @@ def data_plan(app):
 
 
 def _check_space(work, need, title):
-    free = shutil.disk_usage(str(work)).free
+    try:
+        free = shutil.disk_usage(str(work)).free
+    except OSError as e:
+        raise MetaError(f'Could not check free space for installing {title}: {e}') from e
     if need > free:
         raise MetaError(f'Installing {title} needs about {need / 1024**3:.1f} GB free on this computer '
                         f'({free / 1024**3:.1f} GB available)')
@@ -994,7 +1013,7 @@ def download_apk(app, work, token, generation, report, budget):
         with zipfile.ZipFile(got['path']) as z:
             if 'AndroidManifest.xml' not in z.namelist():
                 raise MetaError(f"What Meta sent for {app['title']} is not an APK")
-    except zipfile.BadZipFile:
+    except (zipfile.BadZipFile, OSError, EOFError, RuntimeError, struct.error, ValueError):
         raise MetaError(f"What Meta sent for {app['title']} is not an APK") from None
     return Path(got['path'])
 
@@ -1026,7 +1045,10 @@ def download(app_id, progress=None):
     app = owned(app_id)
     sweep_cache()
     work = cache_root() / f"{app['package']}-{secrets.token_hex(4)}"
-    work.mkdir(parents=True)
+    try:
+        work.mkdir(parents=True)
+    except OSError as e:
+        raise MetaError(f'Could not create temporary download folder: {e}') from e
     try:
         _check_space(work, (app.get('size') or 0) + sum(f.get('size') or 0 for f, _ in data_plan(app)[0]),
                      app['title'])
@@ -1081,7 +1103,10 @@ def install(app_id, test=False, progress=None, allow_downgrade=False, wait=TEST_
         pkg = app['package']
         sweep_cache()
         work = cache_root() / f'{pkg}-{secrets.token_hex(4)}'
-        work.mkdir(parents=True)
+        try:
+            work.mkdir(parents=True)
+        except OSError as e:
+            raise MetaError(f'Could not create temporary download folder: {e}') from e
         try:
             result = _install(app, work, token, generation, report, test, allow_downgrade)
         finally:
@@ -1352,6 +1377,8 @@ def run_test(pkg, wait=TEST_WAIT, app=None, report_result=True):
     (source meta-store, with the version code), shared only if the person chose to share
     compatibility results; an inconclusive one isn't recorded. The game is left running, as
     Test does, unless it hangs."""
+    if not isinstance(pkg, str) or not android.PKG_RE.fullmatch(pkg):
+        raise MetaError('invalid package name')
     try:
         return _run_test(pkg, wait, app, report_result)
     except MetaError:
@@ -1419,7 +1446,7 @@ def report_notes(verdict):
     parts = [f"Meta library test: {verdict['outcome']}"]
     if verdict.get('cause_key'):
         parts.append(CAUSES[verdict['cause_key']])
-    if isinstance(verdict.get('version_code'), int):
+    if isinstance(verdict.get('version_code'), int) and not isinstance(verdict.get('version_code'), bool):
         parts.append(f"version code {verdict['version_code']}")
     matched = [k for k in verdict.get('signals', {}).get('matched', []) if k in CAUSES]
     if matched:
