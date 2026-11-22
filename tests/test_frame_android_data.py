@@ -68,6 +68,18 @@ class ObbTests(unittest.TestCase):
                 with self.assertRaisesRegex(android.FrameError, 'bad hash'):
                     data._stream('command')
 
+    def test_non_string_package_and_ssh_link_failure_marking(self):
+        for bad_pkg in (123, ['org.example.game']):
+            with self.assertRaisesRegex(android.FrameError, 'invalid package name'):
+                data.install_obb(bad_pkg, [])
+            with self.assertRaisesRegex(android.FrameError, 'invalid package name'):
+                data._meta(bad_pkg)
+        err_proc = subprocess.CompletedProcess([], 255, b'', b'ssh: connect to host frame port 22: Connection timed out\n')
+        with patch.object(data.frame_host, 'run_ssh', return_value=err_proc):
+            with self.assertRaises(android.FrameError) as caught:
+                data._stream('command')
+        self.assertTrue(getattr(caught.exception, 'frame_link_failed', False))
+
 
     @unittest.skipUnless(os.name == 'posix' and shutil.which("sh") and shutil.which("shasum"),
                          "the OBB script runs on the Frame (Linux shell)")
@@ -292,3 +304,50 @@ class BackupTests(unittest.TestCase):
                 target.addfile(tarfile.TarInfo('data'))
             with self.assertRaisesRegex(ValueError, 'directory'):
                 REMOTE['inspect_archive'](archive, PKG, META['instance'])
+
+    def test_backup_creates_parent_handles_race_and_no_hardlink_fs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / PKG).mkdir()
+            (root / PKG / 'save').write_bytes(b'checkpoint')
+            def stream(command, src=None, dst=None):
+                REMOTE['backup'](root, PKG, META['instance'], dst)
+
+            nested = root / 'nested' / 'dir' / 'backup.tar.gz'
+            with patch.object(android, '_meta_or_fail', return_value=META), \
+                    patch.object(data, '_stream', side_effect=stream):
+                result = data.backup_data(PKG, nested)
+            self.assertTrue(nested.is_file())
+            self.assertEqual(result['sha256'], data._sha256(nested))
+
+            raced = root / 'raced.tar.gz'
+            with patch.object(android, '_meta_or_fail', return_value=META), \
+                    patch.object(data, '_stream', side_effect=stream), \
+                    patch.object(data.os, 'link', side_effect=FileExistsError('exists')):
+                with self.assertRaisesRegex(android.FrameError, 'already exists'):
+                    data.backup_data(PKG, raced)
+            self.assertEqual(list(root.glob('.frame-backup-*')), [])
+
+            fat_dest = root / 'fat.tar.gz'
+            with patch.object(android, '_meta_or_fail', return_value=META), \
+                    patch.object(data, '_stream', side_effect=stream), \
+                    patch.object(data.os, 'link', side_effect=PermissionError('no hard links')):
+                fat_result = data.backup_data(PKG, fat_dest)
+            self.assertTrue(fat_dest.is_file())
+            self.assertEqual(fat_dest.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(fat_result['sha256'], data._sha256(fat_dest))
+            self.assertEqual(list(root.glob('.frame-backup-*')), [])
+
+    def test_restore_rejects_non_dict_json_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / PKG).mkdir()
+            (root / PKG / 'save').write_bytes(b'checkpoint')
+            archive = root / 'ok.tar.gz'
+            with archive.open('wb') as out:
+                REMOTE['backup'](root, PKG, META['instance'], out)
+            for payload in (b'null', b'[]', b'"ok"'):
+                with patch.object(android, '_meta_or_fail', return_value=META), \
+                        patch.object(data, '_stream', return_value=payload):
+                    with self.assertRaisesRegex(android.FrameError, 'could not read restore result'):
+                        data.restore_data(PKG, archive)
