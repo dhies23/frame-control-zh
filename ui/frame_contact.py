@@ -51,10 +51,26 @@ def load():
     with _lock:
         s = _defaults()
         try:
-            with open(FILE) as f:
+            with open(FILE, encoding='utf-8') as f:
                 saved = json.load(f)
             if isinstance(saved, dict):
-                s.update({k: v for k, v in saved.items() if k in s})
+                if isinstance(saved.get('id'), str) and saved['id']:
+                    s['id'] = saved['id']
+                if isinstance(saved.get('email'), str):
+                    s['email'] = saved['email']
+                if isinstance(saved.get('updates'), bool):
+                    s['updates'] = saved['updates']
+                if isinstance(saved.get('followup'), bool):
+                    s['followup'] = saved['followup']
+                if saved.get('prompt') in PROMPTS:
+                    s['prompt'] = saved['prompt']
+                pending = saved.get('pending')
+                if (isinstance(pending, dict) and isinstance(pending.get('uuid'), str)
+                        and isinstance(pending.get('properties'), dict)):
+                    s['pending'] = pending
+                rev = saved.get('rev')
+                if type(rev) is int and rev >= 0:
+                    s['rev'] = rev
         except (OSError, ValueError):
             pass
         return s
@@ -63,16 +79,25 @@ def load():
 def _save(s):
     STATE.mkdir(parents=True, exist_ok=True)
     tmp = FILE.with_suffix('.tmp')
-    tmp.write_text(json.dumps(s, indent=1))
-    os.replace(tmp, FILE)
+    try:
+        tmp.write_text(json.dumps(s, indent=1), encoding='utf-8')
+        os.replace(tmp, FILE)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def valid_email(email):
-    return len(email) <= EMAIL_MAX and bool(EMAIL_RE.fullmatch(email))
+    return isinstance(email, str) and len(email) <= EMAIL_MAX and bool(EMAIL_RE.fullmatch(email))
 
 
 def flag(body, key):
     """A consent choice: true only when it really is true (not "false" or 1), left out is no."""
+    if not isinstance(body, dict):
+        raise ValueError('expected a JSON object')
     v = body.get(key)
     if v is not None and not isinstance(v, bool):
         raise ValueError(f'{key} must be true or false')
@@ -159,7 +184,11 @@ def _forget_locally(email):
         rows = frame_telemetry._read_lines(frame_telemetry.SENT)
         hit = False
         for e in rows:
-            p = e.get('properties') or {}
+            if not isinstance(e, dict):
+                continue
+            p = e.get('properties')
+            if not isinstance(p, dict):
+                continue
             for k in ('email', 'contact'):
                 if p.get(k) and str(p[k]).strip().lower() == email.lower():
                     p[k], hit = '<removed>', True
@@ -186,7 +215,12 @@ def save(body):
 
 def _apply(body):
     """save()'s change, kept here and waiting to send. Returns (changed, contact id, rev)."""
-    email = str(body.get('email') or '').strip()
+    if not isinstance(body, dict):
+        raise ValueError('expected a JSON object')
+    raw_email = body.get('email')
+    if raw_email is not None and not isinstance(raw_email, str):
+        raise ValueError("that doesn't look like an email address")
+    email = (raw_email or '').strip()
     updates, followup = flag(body, 'updates'), flag(body, 'followup')
     if email and not valid_email(email):
         raise ValueError("that doesn't look like an email address")
@@ -222,6 +256,8 @@ def _deliver(changed):
 
 def prompt(body):
     """The one-time prompt was shown, or dismissed with No thanks. Either way it stays gone."""
+    if not isinstance(body, dict):
+        raise ValueError('expected a JSON object')
     action = body.get('prompt')
     if action not in ('shown', 'dismissed'):
         raise ValueError('unknown prompt action')
@@ -236,17 +272,18 @@ def prompt(body):
 def start():
     """Retry a change that couldn't be sent, from now on in the background."""
     global _retrier
-    if _retrier:
-        return
+    with _lock:
+        if _retrier:
+            return
 
-    def loop():
-        while True:
-            try:
-                _send_pending()
-            except Exception:
-                pass
-            _wake.wait(RETRY_EVERY)
-            _wake.clear()
+        def loop():
+            while True:
+                try:
+                    _send_pending()
+                except Exception:
+                    pass
+                _wake.wait(RETRY_EVERY)
+                _wake.clear()
 
-    _retrier = threading.Thread(target=loop, name='contact', daemon=True)
-    _retrier.start()
+        _retrier = threading.Thread(target=loop, name='contact', daemon=True)
+        _retrier.start()

@@ -4,6 +4,7 @@ withdrawn when removed, never lost offline, and the one-time prompt stays dismis
 Run: python3 -m unittest discover -s tests
 """
 import sandbox  # noqa: F401  (first: keeps tests off real data and services)
+import json
 import sys
 import threading
 import time
@@ -403,6 +404,62 @@ class Contact(Base):
             with mock.patch.object(fc, "_send_pending", side_effect=lambda block=True: seen.append(("send", server._work[0]))):
                 h.do_POST()
         self.assertEqual(seen, [("send", 0), (200, 0), (200, 0)])
+
+    def test_corrupt_contact_json_fields_do_not_crash_load_save_or_send(self):
+        fc.STATE.mkdir(parents=True, exist_ok=True)
+        fc.FILE.write_text(json.dumps({
+            "id": "", "email": None, "updates": "yes", "followup": 1,
+            "prompt": 99, "pending": "corrupt", "rev": "bad",
+        }), encoding="utf-8")
+        loaded = fc.load()
+        self.assertTrue(isinstance(loaded["id"], str) and loaded["id"])
+        self.assertEqual(loaded["email"], "")
+        self.assertIs(loaded["updates"], False)
+        self.assertIs(loaded["followup"], False)
+        self.assertEqual(loaded["prompt"], "new")
+        self.assertIsNone(loaded["pending"])
+        self.assertEqual(loaded["rev"], 0)
+
+        self.assertTrue(fc._send_pending())
+        self.assertEqual(self.got, [])
+
+        saved = fc.save({"email": "me@example.com", "updates": True})
+        self.assertEqual(saved["email"], "me@example.com")
+        self.assertEqual(fc.load()["rev"], 1)
+        cid, rev = fc.from_report("other@example.com")
+        self.assertEqual((cid, rev), (fc.load()["id"], 2))
+
+    def test_non_dict_bodies_and_non_string_email_raise_value_error(self):
+        for bad in (None, [], "nope", 42):
+            with self.assertRaises(ValueError):
+                fc.save(bad)
+            with self.assertRaises(ValueError):
+                fc.prompt(bad)
+            with self.assertRaises(ValueError):
+                fc.flag(bad, "updates")
+        with self.assertRaises(ValueError):
+            fc.save({"email": ["me@example.com"], "updates": True})
+        self.assertFalse(fc.valid_email(None))
+        self.assertFalse(fc.valid_email(123))
+
+    def test_forget_locally_ignores_malformed_sent_rows(self):
+        tm.STATE.mkdir(parents=True, exist_ok=True)
+        tm.SENT.write_text(
+            '"not-a-dict"\n'
+            '{"event": "bad", "properties": "not-a-dict"}\n'
+            '{"event": "contact_consent", "properties": {"email": "me@example.com"}}\n',
+            encoding="utf-8",
+        )
+        fc._forget_locally("me@example.com")
+        rows = tm._read_lines(tm.SENT)
+        self.assertEqual(rows[-1]["properties"]["email"], "<removed>")
+
+    def test_save_cleans_tmp_file_on_replace_failure(self):
+        tmp = fc.FILE.with_suffix(".tmp")
+        with mock.patch.object(fc.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                fc._save(fc._defaults())
+        self.assertFalse(tmp.exists())
 
 
 # Run these once, in test_telemetry, not again through the import above.
