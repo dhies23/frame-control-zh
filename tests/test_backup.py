@@ -329,6 +329,67 @@ class Remote(unittest.TestCase):
                 remote.restore('saves:1234', '20261023-120000', self.archive([(new_save, b'12345')]))
         self.assertFalse((self.home / new_save).exists())
 
+    def test_safe_rel_target_status_check_and_restore_guard_control_chars_and_malformed_inputs(self):
+        for bad in ('dir/bad\nfile', 'dir/bad\x01file', 'dir/bad\x7ffile'):
+            self.assertFalse(remote.safe_rel(bad), repr(bad))
+        self.assertEqual(remote.target_status('saves:1234', 123), 'refused')
+        self.assertEqual(remote.target_status('saves:1234', None), 'refused')
+        self.assertEqual(remote.check('not-a-dict'), {'parts': []})
+        checked = remote.check({'parts': ['bogus', {'id': 'saves:1234', 'files': 'not-a-list'},
+                                          {'id': 'saves:1234', 'files': [123]}]})
+        self.assertEqual([p['status'] for p in checked['parts']], ['empty', 'refused'])
+        with self.assertRaises(ValueError):
+            remote.restore(123, '20261023-120000', io.BytesIO())
+        with self.assertRaises(ValueError):
+            remote.restore('saves:1234', 123, io.BytesIO())
+
+        manifest(self.home, 1234, 'Test Game')
+        (self.home / (USER % 1234)).mkdir(parents=True)
+        save = USER % 1234 + '/Documents/new.sav'
+        with patch.object(tarfile.TarFile, 'extractfile', return_value=None):
+            with self.assertRaises(ValueError):
+                remote.restore('saves:1234', '20261023-120000', self.archive([(save, b'data')]))
+
+    def test_remote_text_reads_and_systemctl_use_utf8_and_main_catches_zlib_error(self):
+        manifest(self.home, 1234, 'Test Game')
+        os_rel = write(self.home, 'os-release', 'BUILD_ID=1\n')
+        sddm = write(self.home, 'sddm.conf', 'Session=gamescope.desktop\n')
+        orig_read = Path.read_text
+        seen = []
+
+        def tracked_read(path_self, *args, **kwargs):
+            if path_self.name in ('appmanifest_1234.acf', 'os-release', 'sddm.conf'):
+                seen.append((path_self.name, kwargs.get('encoding'), kwargs.get('errors')))
+            return orig_read(path_self, *args, **kwargs)
+
+        with patch.object(Path, 'read_text', tracked_read), \
+                patch.dict(os.environ, {'FRAME_BACKUP_OS_RELEASE': str(os_rel)}), \
+                patch.object(remote, 'SDDM_CONFS', (str(sddm),)), \
+                patch.object(remote, '_session_target', return_value='unknown'), \
+                patch.object(remote, '_running', return_value=False), \
+                patch.object(remote.shutil, 'which', return_value=None):
+            self.assertEqual(remote.game_name('1234'), 'Test Game')
+            self.assertEqual(remote.os_release()['BUILD_ID'], '1')
+            remote.session()
+        self.assertEqual(seen, [
+            ('appmanifest_1234.acf', 'utf-8', 'replace'),
+            ('os-release', 'utf-8', 'replace'),
+            ('sddm.conf', 'utf-8', 'replace'),
+        ])
+
+        with patch.object(remote.os, 'getuid', return_value=1000, create=True), \
+                patch.object(remote.subprocess, 'run',
+                             return_value=subprocess.CompletedProcess([], 0, 'LoadState=not-found\n', '')) as run:
+            remote._session_target('gamescope-session.target')
+        self.assertEqual(run.call_args.kwargs.get('encoding'), 'utf-8')
+        self.assertEqual(run.call_args.kwargs.get('errors'), 'replace')
+
+        for err in (zlib.error('corrupt deflate'), EOFError('truncated')):
+            with patch.object(remote, 'restore', side_effect=err), \
+                    patch.object(remote.sys, 'stderr', io.StringIO()) as stderr:
+                self.assertEqual(remote.main(['restore', 'saves:1234', '20261023-120000']), 1)
+                self.assertTrue(stderr.getvalue().strip())
+
 
 class Session(unittest.TestCase):
     def state(self, targets, running=(), configured=None):
