@@ -818,5 +818,117 @@ finally:
             ws.close()
 
 
+class HardeningTests(unittest.TestCase):
+    def test_dimensions_rejects_non_positive_or_bool_values(self):
+        for args in ((0, 0, 1280), (-10, 100, 1280), (100, 0, 1280), (100, 100, 0), (True, 100, 1280)):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                capture.dimensions(*args)
+
+    def test_pipeline_rejects_malformed_windows_src_and_unknown_encoder(self):
+        for bad_src in ('no-colon', 'window:1:2', 123, None):
+            with self.subTest(src=bad_src), self.assertRaisesRegex(ValueError, 'Invalid Windows capture source'):
+                capture.pipeline({'src': bad_src}, 'win32', 'mfh264enc', 640, 360, 30, 1000000)
+        with self.assertRaisesRegex(ValueError, 'Unsupported encoder'):
+            capture.pipeline({'src': 'test'}, 'linux', 'bogus_enc', 640, 360, 30, 1000000)
+
+    def test_portal_and_windows_input_reject_non_finite_and_bool_or_unhashable_buttons(self):
+        native = mock.Mock()
+        native.lib.fc_portal_input.return_value = 1
+        portal = capture.PortalInput(native, dict(portal=123, w=100, h=50))
+        for bad in (
+            dict(t='m', x='nan', y=0.5),
+            dict(t='m', x=0.5, y='inf'),
+            dict(t='m', x=True, y=0.5),
+            dict(t='wheel', x=0.5, y=0.5, dx='nan', dy=0),
+            dict(t='wheel', x=0.5, y=0.5, dx=0, dy='-inf'),
+        ):
+            with self.subTest(portal_bad=bad), self.assertRaises(ValueError):
+                portal.handle(bad)
+        native.lib.fc_portal_input.reset_mock()
+        portal.handle(dict(t='m', e='down', b=True, x=0.5, y=0.5))
+        portal.handle(dict(t='m', e='down', b=['bad'], x=0.5, y=0.5))
+        # Pointer moves emitted, but neither bool nor unhashable button emitted a click.
+        self.assertFalse(any(c.args[1] == 1 for c in native.lib.fc_portal_input.call_args_list))
+        self.assertEqual(portal.buttons, set())
+
+        host = mock.Mock()
+        host.user.GetSystemMetrics.side_effect = lambda i: {76: 0, 77: 0, 78: 1920, 79: 1080}[i]
+        win = capture.WindowsInput(host, dict(src='display:4', x=0, y=0, w=1920, h=1080))
+        for bad in (
+            dict(t='m', x='nan', y=0.5),
+            dict(t='wheel', x=0.5, y=0.5, dy='nan'),
+            dict(t='wheel', x=0.5, y=0.5, dx='inf'),
+        ):
+            with self.subTest(win_bad=bad), self.assertRaises(ValueError):
+                win.handle(bad)
+        host.send.reset_mock()
+        win.handle(dict(t='m', e='down', b=True, x=0.5, y=0.5))
+        win.handle(dict(t='m', e='down', b=['bad'], x=0.5, y=0.5))
+        # Only absolute pointer move calls (flags == 0xc001), never button clicks.
+        self.assertEqual(len(host.send.call_args_list), 2)
+        self.assertTrue(all(c.kwargs['mouse'][3] == 0xc001 for c in host.send.call_args_list))
+        self.assertEqual(win.buttons, set())
+
+    def test_grants_redeem_and_agent_source_guard_unhashable_inputs(self):
+        grants = agent.Grants('master')
+        self.assertIsNone(grants.redeem('test', {'t': ['bad'], 'r': {'bad': 1}}))
+        native = mock.Mock()
+        with mock.patch.object(agent.sys, 'platform', 'linux'):
+            host = agent.Agent(native, 'master', ROOT / 'ui/mac-view.html')
+        for bad in (['bad'], None, 42):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                host.source(bad)
+
+    def test_bench_rejects_non_finite_parameters(self):
+        native = mock.Mock()
+        with mock.patch.object(agent.sys, 'platform', 'linux'):
+            host = agent.Agent(native, 'master', ROOT / 'ui/mac-view.html')
+        session = mock.Mock(src='test')
+        host.sessions[1] = session
+        for query in ('x=nan', 'y=inf', 'interval=-inf'):
+            with self.subTest(query=query):
+                output = io.BytesIO()
+                handler = agent.Handler.__new__(agent.Handler)
+                handler.server = mock.Mock(agent=host)
+                handler.path = f'/bench?src=test&k=master&{query}'
+                handler.headers = {}
+                handler.wfile = output
+                handler.request_version = 'HTTP/1.1'
+                handler.requestline = f'POST {handler.path} HTTP/1.1'
+                handler.command = 'POST'
+                handler.close_connection = False
+                handler.dispatch('POST')
+                self.assertTrue(output.getvalue().startswith(b'HTTP/1.1 400 '), output.getvalue())
+                session.ws.send.assert_not_called()
+
+    def test_stream_closes_new_controller_if_replacement_fails_before_registration(self):
+        native = mock.Mock()
+        native.lib.fc_new.return_value = 77
+        with mock.patch.object(agent.sys, 'platform', 'linux'):
+            host = agent.Agent(native, 'master', ROOT / 'ui/mac-view.html')
+        existing = mock.Mock(key='old-key', src='test', writer=None)
+        existing.end.side_effect = RuntimeError('stop failed')
+        host.sessions[1] = existing
+        output = io.BytesIO()
+        handler = agent.Handler.__new__(agent.Handler)
+        handler.server = mock.Mock(agent=host)
+        handler.path = '/stream?src=test&k=master'
+        handler.headers = {
+            'Upgrade': 'websocket',
+            'Sec-WebSocket-Version': '13',
+            'Sec-WebSocket-Key': agent.base64.b64encode(b'0123456789abcdef').decode(),
+        }
+        handler.connection = mock.Mock()
+        handler.rfile = io.BytesIO()
+        handler.wfile = output
+        handler.request_version = 'HTTP/1.1'
+        handler.requestline = f'GET {handler.path} HTTP/1.1'
+        handler.command = 'GET'
+        handler.close_connection = False
+        handler.dispatch('GET')
+        self.assertTrue(output.getvalue().startswith(b'HTTP/1.1 400 '), output.getvalue())
+        native.lib.fc_free.assert_called_once_with(77)
+
+
 if __name__ == '__main__':
     unittest.main()
