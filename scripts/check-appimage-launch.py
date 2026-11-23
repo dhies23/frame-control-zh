@@ -7,6 +7,7 @@ is stopped before it exits.
 """
 
 import hashlib
+import http.client
 import os
 from pathlib import Path
 import re
@@ -22,11 +23,28 @@ import urllib.request
 
 
 def server_port(profile):
-    for log in (profile / "config").rglob("server.log"):
-        ports = re.findall(r"--port (\d+)", log.read_text(errors="replace"))
-        if ports:
-            return int(ports[-1])
+    config_dir = profile / "config"
+    if not config_dir.is_dir():
+        return None
+    for log in config_dir.rglob("server.log"):
+        try:
+            text = log.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        ports = re.findall(r"--port ([0-9]+)", text)
+        for raw in reversed(ports):
+            port = int(raw)
+            if 1 <= port <= 65535:
+                return port
     return None
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def port_closed(port):
@@ -42,7 +60,8 @@ def check(appimage):
         raise RuntimeError(f"AppImage is missing or cannot run: {appimage}")
     if not shutil.which("xvfb-run"):
         raise RuntimeError("xvfb-run is required for the AppImage smoke check")
-    digest = hashlib.sha256(appimage.read_bytes()).hexdigest()
+    digest = _sha256_file(appimage)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with tempfile.TemporaryDirectory(prefix="frame-appimage-smoke-") as directory:
         profile = Path(directory)
         (profile / "tmp").mkdir()
@@ -60,7 +79,7 @@ def check(appimage):
         output = profile / "app.log"
         port = None
         passed = False
-        with output.open("w") as log:
+        with output.open("w", encoding="utf-8", errors="replace") as log:
             proc = subprocess.Popen(
                 ["xvfb-run", "-a", "-s", "-screen 0 1280x800x24 -nolisten tcp",
                  str(appimage), "--no-sandbox"],
@@ -75,29 +94,40 @@ def check(appimage):
                     port = server_port(profile)
                     if port is not None:
                         try:
-                            with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2) as response:
+                            with opener.open(f"http://127.0.0.1:{port}/", timeout=2) as response:
                                 if response.status == 200 and response.headers.get("Server", "").startswith("FrameControl/1"):
                                     passed = True
                                     break
-                        except (OSError, urllib.error.URLError):
+                        except (OSError, urllib.error.URLError, http.client.HTTPException):
                             pass
                     time.sleep(0.5)
                 if not passed:
                     raise RuntimeError("AppImage server did not answer within 60 seconds")
             except BaseException:
                 log.flush()
-                print(output.read_text(errors="replace")[-1500:], file=sys.stderr)
+                try:
+                    print(output.read_text(encoding="utf-8", errors="replace")[-1500:], file=sys.stderr)
+                except OSError:
+                    pass
                 raise
             finally:
                 try:
                     os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
+                except OSError:
                     pass
                 try:
                     proc.wait(timeout=15)
                 except subprocess.TimeoutExpired:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                    proc.wait(timeout=10)
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                    try:
+                        proc.wait(timeout=10)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+                except OSError:
+                    pass
         if port is not None:
             for _ in range(20):
                 if port_closed(port):

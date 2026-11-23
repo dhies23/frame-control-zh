@@ -48,8 +48,8 @@ def relay(source, destination, on_packet=None):
     total = 0
     while data := source.read(DATAGRAM):
         pending.extend(data)
-        size = min(len(pending) // PACKET * PACKET, DATAGRAM)
-        if size:
+        while len(pending) >= PACKET:
+            size = min(len(pending) // PACKET * PACKET, DATAGRAM)
             destination.send(bytes(pending[:size]))
             if on_packet:
                 on_packet()
@@ -68,10 +68,16 @@ def stop_child(proc):
         proc.terminate()
         proc.wait(timeout=CHILD_STOP_TIMEOUT)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-    except ProcessLookupError:
-        pass  # another shutdown path already reaped it
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=CHILD_STOP_TIMEOUT)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    except OSError:
+        pass  # another shutdown path already reaped it or access denied on exit race
 
 
 def watch_control(fd, proc, stopped):
@@ -155,9 +161,34 @@ class SignalStop:
             os.set_blocking(self.writer, False)
             self.read = lambda: os.read(self.reader, 64)
             descriptor = self.writer
-        self.previous_fd = signal.set_wakeup_fd(descriptor, warn_on_full_buffer=False)
-        self.previous_handler = signal.signal(signal.SIGTERM, self._signal)
+        try:
+            self.previous_fd = signal.set_wakeup_fd(descriptor, warn_on_full_buffer=False)
+            try:
+                self.previous_handler = signal.signal(signal.SIGTERM, self._signal)
+            except BaseException:
+                try:
+                    signal.set_wakeup_fd(self.previous_fd)
+                except (OSError, ValueError):
+                    pass
+                raise
+        except BaseException:
+            self._close_descriptors()
+            raise
         return self
+
+    def _close_descriptors(self):
+        if os.name == 'nt':
+            for sock in (self.reader, self.writer):
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        else:
+            for fd in (self.reader, self.writer):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     def _signal(self, *_):
         self.stopped = True
@@ -166,19 +197,16 @@ class SignalStop:
         try:
             if signal.SIGTERM in self.read():
                 self.stopped = True
-        except BlockingIOError:
+        except (BlockingIOError, OSError):
             pass
         return self.stopped
 
     def __exit__(self, *_):
-        signal.set_wakeup_fd(self.previous_fd)
-        signal.signal(signal.SIGTERM, self.previous_handler)
-        if os.name == 'nt':
-            self.reader.close()
-            self.writer.close()
-        else:
-            os.close(self.reader)
-            os.close(self.writer)
+        try:
+            signal.set_wakeup_fd(self.previous_fd)
+            signal.signal(signal.SIGTERM, self.previous_handler)
+        finally:
+            self._close_descriptors()
 
 
 def main(argv=None):
@@ -192,7 +220,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not 1024 <= args.port <= 65535:
         parser.error('port must be between 1024 and 65535')
-    if not args.frame or args.frame.startswith('-') or any(c.isspace() for c in args.frame):
+    if (not args.frame or args.frame.startswith('-')
+            or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in args.frame)):
         parser.error('frame must be one SSH host or alias')
     command = remote_command(args.height, args.fps, not args.no_audio)
     ssh = ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
@@ -213,7 +242,12 @@ def main(argv=None):
                 if args.control_stdin:
                     threading.Thread(target=watch_control, args=(sys.stdin.fileno(), proc, stopped), daemon=True).start()
                 amount = relay(proc.stdout, _Sender(udp, target), watchdog.packet)
-                code = proc.wait(timeout=10)
+                try:
+                    code = proc.wait(timeout=10)
+                except subprocess.TimeoutExpired as exc:
+                    if stopped.is_set() or shutdown.stopped:
+                        return 0
+                    raise RuntimeError('Frame SSH stream did not exit cleanly (timed out)') from exc
                 if stopped.is_set() or shutdown.stopped:
                     return 0
                 if watchdog.reason:
@@ -228,7 +262,11 @@ def main(argv=None):
                 if watchdog is not None:
                     watchdog.close()
                 stop_child(proc)
-                proc.stdout.close()
+                if proc.stdout is not None:
+                    try:
+                        proc.stdout.close()
+                    except OSError:
+                        pass
 
 
 class _Sender:

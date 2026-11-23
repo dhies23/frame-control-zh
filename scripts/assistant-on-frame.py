@@ -49,7 +49,8 @@ def main():
         launched = subprocess.run(['zsh', str(ROOT / 'scripts/panel-on-frame.sh'), '--name', 'Frame Control Assistant',
                         'org.chromium.Chromium', '--user-data-dir=' + profile, '--no-first-run',
                         '--disable-background-networking', '--disable-sync',
-                        f'--app=http://127.0.0.1:{args.frame_port}/assistant'], check=True, timeout=45, stdout=subprocess.PIPE, text=True)
+                        f'--app=http://127.0.0.1:{args.frame_port}/assistant'], check=True, timeout=45,
+                        stdout=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
         print(launched.stdout, end='', flush=True)
         match = re.search(r'log (/tmp/panel-on-frame\.[A-Za-z0-9]+)', launched.stdout)
         if match:
@@ -60,12 +61,23 @@ def main():
     except KeyboardInterrupt:
         return 0
     finally:
-        tunnel.terminate()
+        try:
+            tunnel.terminate()
+        except OSError:
+            pass
         try:
             tunnel.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            tunnel.kill()
-            tunnel.wait()
+            try:
+                tunnel.kill()
+            except OSError:
+                pass
+            try:
+                tunnel.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        except OSError:
+            pass
         # Only this unique browser profile, never a shared Chromium instance.
         cleanup = '''import os, pathlib, signal, shutil, sys, time
 profile = sys.argv[1]
@@ -73,22 +85,30 @@ needle = ('--user-data-dir=' + profile).encode()
 owned = []
 for p in pathlib.Path('/proc').iterdir():
     try:
-        if p.name.isdigit() and p.stat().st_uid == os.getuid() and needle in (p / 'cmdline').read_bytes().split(b'\\0'):
+        if p.name.isascii() and p.name.isdigit() and p.stat().st_uid == os.getuid() and needle in (p / 'cmdline').read_bytes().split(b'\\0'):
             owned.append(int(p.name))
     except OSError:
         pass
 for sig in (signal.SIGTERM, signal.SIGKILL):
     for pid in owned:
         try: os.kill(pid, sig)
-        except ProcessLookupError: pass
+        except OSError: pass
     time.sleep(.3)
 shutil.rmtree(profile, ignore_errors=True)
 if sys.argv[2]:
-    pathlib.Path(sys.argv[2]).unlink(missing_ok=True)
+    try:
+        pathlib.Path(sys.argv[2]).unlink(missing_ok=True)
+    except OSError:
+        pass
 '''
-        result = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', alias,
-                                 'python3 - ' + shlex.quote(profile) + ' ' + shlex.quote(log_path)], input=cleanup, text=True, timeout=20)
-        if result.returncode:
+        try:
+            result = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', alias,
+                                     'python3 - ' + shlex.quote(profile) + ' ' + shlex.quote(log_path)],
+                                    input=cleanup, text=True, encoding='utf-8', errors='replace', timeout=20)
+            cleanup_ok = result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            cleanup_ok = False
+        if not cleanup_ok:
             print('Cleanup failed; close the assistant panel and remove ' + profile + ' on the Frame.', file=sys.stderr)
 
 
