@@ -66,7 +66,14 @@ VIDEO_RATE = 8  # Mbit/s at 1080p
 AUDIO_RATE = 160  # kbit/s AAC
 # Room for a full-length recording twice over (the .mkv, then the .mp4 made from it).
 NEED_KB = (VIDEO_RATE * 1000 + AUDIO_RATE) * MAX_SECONDS // 8 * 2 + 512 * 1024
-REC_NAME = re.compile(r"rec-\d{8}-\d{6}")
+REC_NAME = re.compile(r"rec-\d{8}-\d{6}", re.ASCII)
+_WORK_PATH = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*", re.ASCII)
+
+
+def _check_work(work):
+    if not isinstance(work, str) or not _WORK_PATH.fullmatch(work) or any(p in (".", "..") for p in work.split("/")):
+        raise ValueError(f"bad work path {work!r}")
+    return work
 
 
 class ClipError(Exception):
@@ -84,6 +91,7 @@ def probe_command(work=WORK):
 
     One recording runs at a time, so anything left in the folder is from one that was
     cut off (the app quit, or the copy failed); it's removed to free the space."""
+    work = _check_work(work)
     return (f"set -u; export XDG_RUNTIME_DIR=${{XDG_RUNTIME_DIR:-/run/user/$(id -u)}}; "
             f"[ -e {STREAM_DEVICE} ] || {{ echo 'No headset view device ({STREAM_DEVICE}). Is SteamVR running?' >&2; exit 3; }}; "
             f"command -v ffmpeg >/dev/null || {{ echo 'ffmpeg is missing on the Frame' >&2; exit 3; }}; "
@@ -105,6 +113,7 @@ def record_command(name, audio, max_seconds=MAX_SECONDS, work=WORK):
     (seen on a Frame, build 20261015.6141207). If it's still there 10 s later it's
     killed. A recording that ends by itself (the time limit, an error) ends the wait
     too. The shell prints "started" once ffmpeg is running and "exit N" when it has gone."""
+    work = _check_work(work)
     if not isinstance(name, str) or not REC_NAME.fullmatch(name):
         raise ValueError(f"bad recording name {name!r}")
     if isinstance(max_seconds, bool) or not isinstance(max_seconds, int) or not 1 <= max_seconds <= MAX_SECONDS:
@@ -135,6 +144,7 @@ def record_command(name, audio, max_seconds=MAX_SECONDS, work=WORK):
 
 def finish_command(name, work=WORK):
     """After the recording: make the .mp4 the computer gets (no re-encode), on the Frame."""
+    work = _check_work(work)
     if not isinstance(name, str) or not REC_NAME.fullmatch(name):
         raise ValueError(f"bad recording name {name!r}")
     return (f"cd \"$HOME/{work}\" || exit 1; "
@@ -144,6 +154,7 @@ def finish_command(name, work=WORK):
 
 
 def cleanup_command(name, work=WORK):
+    work = _check_work(work)
     if not isinstance(name, str) or not REC_NAME.fullmatch(name):
         raise ValueError(f"bad recording name {name!r}")
     return f"rm -f \"$HOME/{work}/{name}\".*"
@@ -174,7 +185,7 @@ class Recorder:
         with self._lock:
             s = dict(self._state)
         if s["state"] == "recording":
-            s["elapsed"] = round(time.time() - s["started"], 1)
+            s["elapsed"] = max(0.0, round(time.time() - s["started"], 1))
         return s
 
     def start(self):
@@ -268,7 +279,7 @@ class Recorder:
         self.release(proc)
         with self._lock:
             self._proc = None
-            seconds = round(time.time() - self._state["started"])
+            seconds = max(0, round(time.time() - self._state["started"]))
             self._state = dict(self._state, state="saving")
         try:
             self.save(name)
@@ -323,15 +334,26 @@ def _end(proc):
     """Close our end of the channel and make sure the local ssh has gone."""
     _close(proc.stdin)
     try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.terminate()
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-    _close(proc.stdout)
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+    finally:
+        _close(proc.stdout)
 
 
 def _line_reader(pipe):
@@ -365,11 +387,11 @@ def _next_line(lines, timeout):
 STEAM_USERDATA = ".local/share/Steam/userdata"
 KINDS = {"clips": "clip", "video": "background"}
 MAX_DEPTH = 4  # folders below clips/ or video/
-PART = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}")  # no leading dot, so never "." or ".."
-INIT = re.compile(r"init-stream(\d{1,3})\.m4s")
-CHUNK = re.compile(r"chunk-stream(\d{1,3})-(\d{1,9})\.m4s")
-STAMP = re.compile(r"(?:^|_)(\d{1,10})_(\d{8})_(\d{6})$")
-EXPORT_PATH = re.compile(re.escape(WORK) + r"/export-[0-9a-f]{16}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.mp4")
+PART = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}", re.ASCII)  # no leading dot, so never "." or ".."
+INIT = re.compile(r"init-stream(\d{1,3})\.m4s", re.ASCII)
+CHUNK = re.compile(r"chunk-stream(\d{1,3})-(\d{1,9})\.m4s", re.ASCII)
+STAMP = re.compile(r"(?:^|_)(\d{1,10})_(\d{8})_(\d{6})$", re.ASCII)
+EXPORT_PATH = re.compile(re.escape(WORK) + r"/export-[0-9a-f]{16}/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.mp4", re.ASCII)
 
 
 def parse_id(clip_id):
@@ -378,7 +400,7 @@ def parse_id(clip_id):
     Checked before it goes near a path or a shell: plain names only, no "." or "..",
     at most MAX_DEPTH folders. Raises ValueError."""
     parts = clip_id.split("/") if isinstance(clip_id, str) and len(clip_id) <= 600 else []
-    if (len(parts) < 3 or len(parts) > 2 + MAX_DEPTH or not re.fullmatch(r"\d{1,12}", parts[0])
+    if (len(parts) < 3 or len(parts) > 2 + MAX_DEPTH or not re.fullmatch(r"\d{1,12}", parts[0], re.ASCII)
             or parts[1] not in KINDS or not all(PART.fullmatch(p) for p in parts[2:])):
         raise ValueError("bad clip id")
     return parts
@@ -403,16 +425,17 @@ def read_session(folder):
     """{stream number: [init, chunk, chunk...]} for one session folder, chunks in number
     order. A stream without its init segment or without chunks can't be played, so it's left out."""
     inits, chunks = {}, {}
-    for entry in os.scandir(folder):
-        if not entry.is_file(follow_symlinks=False):
-            continue
-        m = INIT.fullmatch(entry.name)
-        if m:
-            inits[int(m[1])] = entry.path
-            continue
-        m = CHUNK.fullmatch(entry.name)
-        if m:
-            chunks.setdefault(int(m[1]), []).append((int(m[2]), entry.path))
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            m = INIT.fullmatch(entry.name)
+            if m:
+                inits[int(m[1])] = entry.path
+                continue
+            m = CHUNK.fullmatch(entry.name)
+            if m:
+                chunks.setdefault(int(m[1]), []).append((int(m[2]), entry.path))
     return {n: [inits[n], *(p for _, p in sorted(chunks[n]))] for n in sorted(inits) if chunks.get(n)}
 
 
@@ -426,7 +449,7 @@ def mpd_duration(text):
     """Seconds from the manifest's mediaPresentationDuration ("PT1M23.4S"), or None."""
     if not isinstance(text, str):
         return None
-    m = re.search(r'mediaPresentationDuration="P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?"', text)
+    m = re.search(r'mediaPresentationDuration="P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?"', text, re.ASCII)
     if not m or not any(m.groups()):
         return None
     d, h, mi, s = m.groups()
@@ -440,7 +463,8 @@ def mpd_duration(text):
 def _sessions(base, depth=0):
     """Folders under base (clips/ or video/) that hold init segments, without following links."""
     try:
-        entries = list(os.scandir(base))
+        with os.scandir(base) as it:
+            entries = list(it)
     except OSError:
         return
     if any(e.is_file(follow_symlinks=False) and INIT.fullmatch(e.name) for e in entries):
@@ -462,10 +486,11 @@ def describe(userdata, clip_id):
     files = [f for s in streams.values() for f in s]
     stats = [os.stat(f) for f in files]
     duration = None
-    mpds = sorted(
-        (e.path for e in os.scandir(folder) if e.name.endswith(".mpd") and e.is_file(follow_symlinks=False)),
-        key=os.path.basename,
-    )
+    with os.scandir(folder) as it:
+        mpds = sorted(
+            (e.path for e in it if e.name.endswith(".mpd") and e.is_file(follow_symlinks=False)),
+            key=os.path.basename,
+        )
     for mpd in mpds:
         try:
             duration = mpd_duration(Path(mpd).read_text(encoding="utf-8", errors="replace")[:20000])
@@ -497,8 +522,9 @@ def list_recordings(userdata):
     """Every Steam recording session on this Frame, newest first (runs on the Frame)."""
     found = []
     try:
-        accounts = sorted(e.name for e in os.scandir(userdata) if e.is_dir(follow_symlinks=False)
-                          and re.fullmatch(r"\d{1,12}", e.name))
+        with os.scandir(userdata) as it:
+            accounts = sorted(e.name for e in it if e.is_dir(follow_symlinks=False)
+                              and re.fullmatch(r"\d{1,12}", e.name, re.ASCII))
     except OSError:
         return []
     for account in accounts:
@@ -564,10 +590,11 @@ def export(userdata, clip_id, home=None):
             raise ClipError("ffmpeg couldn't join the recording: " + (r.stderr.strip()[-1500:] or f"exit {r.returncode}"))
         for f in inputs:
             f.unlink()
+        out_size = out.stat().st_size
     except BaseException:
         shutil.rmtree(out_dir, ignore_errors=True)
         raise
-    return {"path": out.relative_to(home).as_posix(), "size": out.stat().st_size}
+    return {"path": out.relative_to(home).as_posix(), "size": out_size}
 
 
 def _sweep(work, older=6 * 3600):

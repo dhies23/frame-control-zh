@@ -109,6 +109,12 @@ class AutoSync:
             pass
         s["screenshots"], s["clips"] = bool(s["screenshots"]), bool(s["clips"])
         s["since"] = _finite_timestamp(s["since"])
+        s["checked"] = _finite_timestamp(s["checked"])
+        s["copied_time"] = _finite_timestamp(s["copied_time"])
+        s["copied"] = s["copied"] if isinstance(s["copied"], int) and not isinstance(s["copied"], bool) and s["copied"] >= 0 else 0
+        s["waiting"] = s["waiting"] if isinstance(s["waiting"], int) and not isinstance(s["waiting"], bool) and s["waiting"] >= 0 else 0
+        s["paused"] = s["paused"] if isinstance(s["paused"], str) and s["paused"] else None
+        s["error"] = s["error"] if isinstance(s["error"], str) and s["error"] else None
         raw_synced = s["synced"] if isinstance(s["synced"], dict) else {}
         clean_synced = {}
         for dev, per in raw_synced.items():
@@ -130,13 +136,17 @@ class AutoSync:
         return s
 
     def _save(self):
+        tmp = self.path.with_suffix(".tmp")
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self._s, indent=1), encoding="utf-8")
             os.replace(tmp, self.path)
         except OSError:
-            pass  # the settings still apply until the app restarts
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass  # the settings still apply until the app restarts
 
     def enabled(self):
         with self._lock:
@@ -180,8 +190,8 @@ class AutoSync:
             self._tries.clear()
             self._failures.clear()
             self._s["error"] = None
+            self._backoff = 0
             self._save()
-        self._backoff = 0
         self._wake.set()
         return self.state()
 
@@ -190,8 +200,8 @@ class AutoSync:
             self._s["paused"], self._s["error"] = None, None
             self._tries.clear()
             self._failures.clear()
+            self._backoff = 0
             self._save()
-        self._backoff = 0
         self._wake.set()
         return self.state()
 
@@ -333,7 +343,11 @@ class AutoSync:
         if shots:
             if self._interrupted(device, revision):
                 return copied, waiting, False
-            listing = self.list_shots(device)["shots"]
+            raw_shots = self.list_shots(device)
+            raw_list = raw_shots.get("shots") if isinstance(raw_shots, dict) else []
+            listing = [s for s in (raw_list if isinstance(raw_list, list) else [])
+                       if isinstance(s, dict) and isinstance(s.get("id"), str) and s["id"]
+                       and _finite_timestamp(s.get("time")) is not None]
             if self._interrupted(device, revision):
                 return copied, waiting, False
             done = self._synced(device, "shots")
@@ -361,7 +375,12 @@ class AutoSync:
         if clips:
             if self._interrupted(device, revision):
                 return copied, waiting, False
-            listing = [c for c in self.list_clips(device)["clips"] if c.get("kind") == "clip"]
+            raw_clips = self.list_clips(device)
+            raw_list = raw_clips.get("clips") if isinstance(raw_clips, dict) else []
+            listing = [c for c in (raw_list if isinstance(raw_list, list) else [])
+                       if isinstance(c, dict) and c.get("kind") == "clip"
+                       and isinstance(c.get("id"), str) and c["id"]
+                       and _finite_timestamp(c.get("time")) is not None]
             if self._interrupted(device, revision):
                 return copied, waiting, False
             done = self._synced(device, "clips")
@@ -373,7 +392,8 @@ class AutoSync:
                     continue
                 if not self._retry_allowed(device, c["id"]):
                     continue
-                if c.get("idle") is None or c["idle"] < SETTLE:
+                idle = _finite_timestamp(c.get("idle"))
+                if idle is None or idle < SETTLE:
                     waiting += 1  # still being written: copied on a later look
                     continue
                 if self._interrupted(device, revision):

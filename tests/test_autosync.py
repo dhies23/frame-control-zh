@@ -889,5 +889,63 @@ for (const state of [{error: 'Could not copy clip'}, {paused: 'Disk full'}, {}])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+class AutoSyncHardening(unittest.TestCase):
+    def test_load_normalizes_corrupt_scalar_fields_and_save_cleans_tmp_on_replace_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "auto-sync.json"
+            path.write_text(json.dumps({
+                "screenshots": True, "clips": False,
+                "copied": "bad", "waiting": True, "checked": "nan", "copied_time": [],
+                "paused": 123, "error": {"oops": 1},
+            }), encoding="utf-8")
+            sync = fa.AutoSync(
+                lambda d: {"shots": []}, lambda d, ids: None,
+                lambda d: {"clips": []}, lambda d, cid: None,
+                lambda: "frame-a", lambda: False,
+                shots_folder=Path(tmp) / "shots", clips_folder=Path(tmp) / "clips", path=path,
+            )
+            st = sync.state()
+            self.assertEqual(st["copied"], 0)
+            self.assertEqual(st["waiting"], 0)
+            self.assertIsNone(st["checked"])
+            self.assertIsNone(st["copied_time"])
+            self.assertIsNone(st["paused"])
+            self.assertIsNone(st["error"])
+            with mock.patch.object(fa.os, "replace", side_effect=OSError("disk full")):
+                sync._save()
+            self.assertFalse(path.with_suffix(".tmp").exists())
+
+    def test_pass_skips_malformed_shot_and_clip_items_without_aborting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved, exported = [], []
+            sync = fa.AutoSync(
+                lambda d: {"shots": [
+                    "not-a-dict",
+                    {"id": 123, "time": NOW + 5},
+                    {"id": "bad-time", "time": "nope"},
+                    shot(1, NOW + 5),
+                ]},
+                lambda d, ids: saved.append((d, list(ids))),
+                lambda d: {"clips": [
+                    "not-a-dict",
+                    {"id": "bad-idle", "kind": "clip", "time": NOW + 5, "idle": "bad"},
+                    {"id": "bool-idle", "kind": "clip", "time": NOW + 5, "idle": True},
+                    {"id": "bad-time", "kind": "clip", "time": "nope", "idle": 60},
+                    clip(1, NOW + 5, idle=60),
+                ]},
+                lambda d, cid: exported.append((d, cid)),
+                lambda: "frame-a", lambda: False,
+                shots_folder=Path(tmp) / "shots", clips_folder=Path(tmp) / "clips",
+                path=Path(tmp) / "auto-sync.json",
+                clock=lambda: NOW, space=lambda _: 100 * GB,
+            )
+            sync.update({"screenshots": True, "clips": True})
+            delay = sync.tick()
+            self.assertEqual(delay, fa.INTERVAL)
+            self.assertEqual(saved, [("frame-a", [shot(1, 0)["id"]])])
+            self.assertEqual(exported, [("frame-a", clip(1, 0)["id"])])
+            self.assertIsNone(sync.state()["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
