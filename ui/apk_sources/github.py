@@ -75,7 +75,7 @@ def clear_token():
 
 
 def _curated():
-    with open(os.path.join(os.path.dirname(__file__), 'github_curated.json')) as f:
+    with open(os.path.join(os.path.dirname(__file__), 'github_curated.json'), encoding='utf-8') as f:
         return json.load(f)
 
 
@@ -137,13 +137,24 @@ def search(source, query, limit=50):
             raise SourceError('Choose topic:oculus-quest, topic:openxr or topic:quest')
         data = _api('/search/repositories?' + urllib.parse.urlencode(
             {'q': 'topic:' + topic + ' archived:false', 'sort': 'stars', 'per_page': limit}))
+        items = data.get('items') if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return []
         curated = {c['repo'].lower(): c for c in _curated()}
         out = []
-        for repo in data.get('items', []):
-            c = curated.get(repo['full_name'].lower())
-            entry = _entry(source, c or {'repo': repo['full_name'], 'name': repo['name'],
-                           'summary': repo.get('description'), 'vr': True,
-                           'icon': (repo.get('owner') or {}).get('avatar_url')}, bool(c))
+        for repo in items:
+            if not isinstance(repo, dict):
+                continue
+            full_name, name = repo.get('full_name'), repo.get('name')
+            if not isinstance(full_name, str) or not isinstance(name, str):
+                continue
+            owner = repo.get('owner') if isinstance(repo.get('owner'), dict) else {}
+            c = curated.get(full_name.lower())
+            entry = _entry(source, c or {'repo': full_name, 'name': name,
+                           'summary': repo.get('description') if isinstance(repo.get('description'), str) else '',
+                           'vr': True,
+                           'icon': owner.get('avatar_url') if isinstance(owner.get('avatar_url'), str) else None},
+                           bool(c))
             out.append(entry)
         return out
     words = query.lower().split()
@@ -153,6 +164,8 @@ def search(source, query, limit=50):
 
 
 def details(source, entry_id):
+    if not isinstance(entry_id, str):
+        raise SourceError('Invalid GitHub repository')
     c = next((c for c in _curated() if c['repo'].lower() == entry_id.lower()), None)
     if not c:
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', entry_id):
@@ -161,16 +174,26 @@ def details(source, entry_id):
         return {**entry, 'versions': []}
     entry = _entry(source, c)
     releases = _api('/repos/' + c['repo'] + '/releases?per_page=10')
+    if not isinstance(releases, list):
+        raise SourceError('Invalid GitHub response')
     versions = []
     for release in releases:
+        if not isinstance(release, dict):
+            continue
         if release.get('draft') or (release.get('prerelease') and not c.get('allow_prerelease')):
             continue
-        assets = [a for a in release.get('assets', []) if
-                  fnmatch.fnmatch(a['name'].lower(), c['asset_pattern'].lower())]
+        tag = release.get('tag_name')
+        raw_assets = release.get('assets')
+        if not isinstance(tag, str) or not isinstance(raw_assets, list):
+            continue
+        assets = [a for a in raw_assets if isinstance(a, dict) and isinstance(a.get('name'), str)
+                  and isinstance(a.get('browser_download_url'), str)
+                  and fnmatch.fnmatch(a['name'].lower(), c['asset_pattern'].lower())]
         for asset in assets:
-            digest = asset.get('digest') or ''
-            versions.append({'version': release['tag_name'], 'version_code': None,
-                             'asset_id': asset['id'], 'name': asset['name'], 'min_sdk': None,
+            raw_digest = asset.get('digest')
+            digest = raw_digest.strip().lower() if isinstance(raw_digest, str) else ''
+            versions.append({'version': tag, 'version_code': None,
+                             'asset_id': asset.get('id'), 'name': asset['name'], 'min_sdk': None,
                              'prerelease': bool(release.get('prerelease')),
                              'size': asset.get('size'), 'updated': release.get('published_at'),
                              'url': asset['browser_download_url'],
