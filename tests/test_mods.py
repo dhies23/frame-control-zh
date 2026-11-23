@@ -337,6 +337,45 @@ class Start(FakeLibrary):
                 frame_mods.install(APPID)
         self.assertFalse(tmp.exists())
 
+    def test_fetch_wraps_http_exception_and_cleans_part_file(self):
+        import http.client
+        with mock.patch.object(frame_mods.urllib.request, "urlopen",
+                               side_effect=http.client.BadStatusLine("bad")):
+            with self.assertRaisesRegex(frame_mods.Fail, "download failed"):
+                frame_mods.fetch(frame_mods.UEVR["url"], frame_mods.UEVR["sha256"], "sha256")
+        self.assertEqual(list(frame_mods.CACHE.glob("*.part")), [])
+
+    def test_start_handles_wine_oserror_null_error_and_utf8_replace_io(self):
+        with self.assertRaisesRegex(frame_mods.Fail, "UEVR injection failed: no output"):
+            self.run_start('{"error": null}\n')
+
+        env = "WINEPREFIX=/x\0DISPLAY=:1\0PATH=/p\0"
+        with self.environ(env), \
+                mock.patch.object(frame_mods, "loaded", return_value=False), \
+                mock.patch.object(frame_mods, "x11_windows", return_value=[(1, "SkyArk", 1280)]), \
+                mock.patch.object(frame_mods.subprocess, "run", side_effect=FileNotFoundError("wine")), \
+                mock.patch.object(frame_mods.time, "sleep"):
+            with self.assertRaisesRegex(frame_mods.Fail, "wine"):
+                frame_mods.start(APPID)
+
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append(kwargs)
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+
+        with mock.patch.object(frame_mods.subprocess, "run", side_effect=fake_run):
+            frame_mods.x11_windows(":0")
+            frame_mods.frame_submits(APPID)
+        self.assertEqual(len(captured), 2)
+        for kwargs in captured:
+            self.assertEqual(kwargs.get("encoding"), "utf-8")
+            self.assertEqual(kwargs.get("errors"), "replace")
+
+        for bad in ("0", "²"):
+            with self.assertRaisesRegex(frame_mods.Fail, "usage:"):
+                frame_mods.main(["status", bad])
+
 
 class Helper(unittest.TestCase):
     @unittest.skipIf(sys.platform == "win32", "uninstall takes the flock lock, which only exists on the Frame (Linux)")
