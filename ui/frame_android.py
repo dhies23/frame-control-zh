@@ -37,7 +37,7 @@ XR_COMPAT_FILES = {
     # Gzipped in the repo and the app; see frame/openxr-compat/build.sh for why.
     'lib/arm64-v8a/libXrApiLayer_FRAME_compat.so': 'prebuilt/arm64-v8a/libXrApiLayer_FRAME_compat.so.gz',
 }
-PKG_RE = re.compile(r'^[A-Za-z][\w]*(\.[A-Za-z_][\w]*)+$')
+PKG_RE = re.compile(r'^[A-Za-z][\w]*(\.[A-Za-z_][\w]*)+$', re.ASCII)
 LEPTON_ANDROID = 11
 LEPTON_API = 30
 SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8']
@@ -76,6 +76,8 @@ def ssh(cmd, input=None, timeout=120):
                                timeout=timeout, **text)
     except subprocess.TimeoutExpired:
         raise frame_host.link_failure(FrameError(f'timed out talking to {FRAME}'))
+    except OSError as e:
+        raise FrameError(f'could not run ssh to {FRAME}: {e}') from e
     if p.returncode != 0:
         # Bytes input gives bytes output: decode it, so the message isn't "b'...'".
         stderr, stdout = (v if isinstance(v, str) else (v or b'').decode(errors='replace')
@@ -115,8 +117,11 @@ def apk_info(path):
 
 def xr_compat_files(apk_path):
     """The layer's files to add, or {} if the APK has no OpenXR loader or already has the layer."""
-    with zipfile.ZipFile(apk_path) as z:
-        names = set(z.namelist())
+    try:
+        with zipfile.ZipFile(apk_path) as z:
+            names = set(z.namelist())
+    except (OSError, zipfile.BadZipFile, struct.error, EOFError, RuntimeError) as e:
+        raise FrameError(f'{os.path.basename(str(apk_path))}: {e}') from e
     if 'lib/arm64-v8a/libopenxr_loader.so' not in names or names & set(XR_COMPAT_FILES):
         return {}
     add = {}
@@ -179,20 +184,31 @@ def _copy(src, dest, executable=False, timeout=600):
         cmd = ['scp', *SSH_OPTS, src, f'{FRAME}:{dest}']
     try:
         frame_host.run_ssh(cmd, check=True, capture_output=True, stdin=subprocess.DEVNULL, text=True,
-                           errors='replace', timeout=timeout)
+                           encoding='utf-8', errors='replace', timeout=timeout)
     except subprocess.TimeoutExpired:
         raise FrameError(f'copying {name} to the Frame timed out')
     except subprocess.CalledProcessError as e:
         raise FrameError(f'copying {name} to the Frame failed: {(e.stderr or "").strip()[-300:]}')
+    except OSError as e:
+        raise FrameError(f'copying {name} to the Frame failed: {e}') from e
     if executable and not rsync:
         ssh(f'chmod u+x {shlex.quote(dest)}')
 
 
 def _shortcut_ids():
     try:
-        return {int(x['appid']) for x in json.loads(shortcut_tool('list'))}
-    except (ValueError, TypeError, KeyError) as e:
-        raise FrameError(f'could not read the Steam shortcut list: {e}')
+        items = json.loads(shortcut_tool('list'))
+    except ValueError as e:
+        raise FrameError(f'could not read the Steam shortcut list: {e}') from e
+    if not isinstance(items, list):
+        raise FrameError('could not read the Steam shortcut list: expected a list')
+    ids = set()
+    for item in items:
+        appid = _int(item.get('appid')) if isinstance(item, dict) else None
+        if appid is None:
+            raise FrameError('could not read the Steam shortcut list: invalid appid')
+        ids.add(appid)
+    return ids
 
 
 def _write_meta(d, meta):
@@ -309,7 +325,7 @@ def split_entries(base, splits):
             with zipfile.ZipFile(path) as z:
                 for member in z.infolist():
                     entry = member.filename
-                    if entry.endswith('/') or SPLIT_OWN.match(entry):
+                    if entry.endswith('/') or SPLIT_OWN.fullmatch(entry):
                         continue
                     if entry == 'resources.arsc':
                         # A config split for native code may carry an empty table; any resource needs merging.
@@ -320,10 +336,10 @@ def split_entries(base, splits):
                     if entry.startswith('res/'):
                         raise FrameError(f'{label} holds screen-density or language resources ({entry}); Frame '
                                          'Control can only merge splits that add native libraries or assets')
-                    if re.match(r'^classes\d*\.dex$', entry):
+                    if re.fullmatch(r'classes[0-9]*\.dex', entry):
                         raise FrameError(f'{label} contains code ({entry}); Frame Control can only merge splits '
                                          'that add native libraries or assets')
-                    if not SPLIT_ADDS.match(entry):
+                    if not SPLIT_ADDS.fullmatch(entry):
                         raise FrameError(f'{label} contains {entry}; Frame Control can only merge splits that '
                                          'add native libraries or assets')
                     if entry in taken:
@@ -340,7 +356,8 @@ def split_entries(base, splits):
                     taken.add(entry)
                     plan[entry] = (path, entry, member.file_size)
         return plan
-    except (OSError, zipfile.BadZipFile, struct.error, IndexError, frame_apk.ApkError) as e:
+    except (OSError, zipfile.BadZipFile, struct.error, IndexError, EOFError, RuntimeError, zlib.error,
+            frame_apk.ApkError) as e:
         raise FrameError(f'could not read the split APKs: {e}') from e
 
 
@@ -431,9 +448,12 @@ def read_member(path, member):
     exactly its size and a deflated stream must end exactly at the end of its data, with
     nothing after it. Output is bounded by the declared size: never trusts zipfile, which
     stops early at a smaller declared size."""
-    with zipfile.ZipFile(path) as z:
-        info = z.getinfo(member)
-        starts = sorted({i.header_offset for i in z.infolist()} | {z.start_dir})
+    try:
+        with zipfile.ZipFile(path) as z:
+            info = z.getinfo(member)
+            starts = sorted({i.header_offset for i in z.infolist()} | {z.start_dir})
+    except (KeyError, OSError, zipfile.BadZipFile, struct.error, EOFError, RuntimeError) as e:
+        raise FrameError(f'{member} in {os.path.basename(str(path))}: {e}') from e
     name, size = f'{member} in {os.path.basename(path)}', info.file_size
     if info.flag_bits & 1 or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
         raise FrameError(f'{name} is encrypted or uses a compression Android does not')
@@ -526,7 +546,8 @@ def merge_splits(base, splits, dst):
             original = frame_apk._read(z, 'AndroidManifest.xml', frame_apk.MAX_MANIFEST)
         manifest = drop_split_required(original)
         repack(base, dst, replace={'AndroidManifest.xml': manifest} if manifest != original else None, add=add)
-    except (OSError, ValueError, IndexError, struct.error, zipfile.BadZipFile, frame_apk.ApkError) as e:
+    except (OSError, ValueError, IndexError, struct.error, EOFError, RuntimeError, zlib.error,
+            zipfile.BadZipFile, frame_apk.ApkError) as e:
         raise FrameError(f'could not merge the split APKs: {e}') from e
     return {'merged': sorted(os.path.basename(p) for p in splits), 'entries': len(plan)}
 
@@ -535,8 +556,11 @@ def split_size(splits):
     """Bytes a merge adds, from the split headers (merge_splits enforces the real sizes)."""
     total = 0
     for path in splits:
-        with zipfile.ZipFile(path) as z:
-            total += sum(m.file_size for m in z.infolist() if SPLIT_ADDS.match(m.filename))
+        try:
+            with zipfile.ZipFile(path) as z:
+                total += sum(m.file_size for m in z.infolist() if SPLIT_ADDS.fullmatch(m.filename))
+        except (OSError, zipfile.BadZipFile, struct.error, EOFError, RuntimeError) as e:
+            raise FrameError(f'could not read split APK {os.path.basename(str(path))}: {e}') from e
     return total
 
 
@@ -1042,7 +1066,8 @@ def _remove(pkg, keep_data):
         # Best effort: Steam may not be running, and the files must still go.
         try:
             result = json.loads(shortcut_tool('remove', str(int(m['shortcut']))) or '{}')
-            m['library_warnings'] = result.get('warnings', [])
+            warnings = result.get('warnings', [])
+            m['library_warnings'] = list(warnings) if isinstance(warnings, list) else []
         except (FrameError, ValueError, AttributeError) as e:
             m['library_warnings'] = [f'Steam shortcut not removed: {e}']
     iid = int(m['instance'])

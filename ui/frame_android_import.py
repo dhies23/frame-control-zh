@@ -127,7 +127,7 @@ def unpack_bundle(path, root):
         entries = _unpack(Path(path), Path(root), {'bytes': 0, 'files': 0})
     except android.FrameError:
         raise
-    except (OSError, ValueError, RuntimeError, EOFError, struct.error, zlib.error,
+    except (OSError, TypeError, ValueError, RuntimeError, EOFError, struct.error, zlib.error,
             zipfile.BadZipFile) as error:
         raise android.FrameError('Could not read Android bundle: ' + str(error)) from error
     paths = [str(local) for local, _, _, _ in entries]
@@ -147,7 +147,7 @@ def _apk_identity(path):
         split = (attrs.get('split') or (None, None, None))[2]
         code = (attrs.get('versionCode') or (None, None, None))[1]
         major = (attrs.get('versionCodeMajor') or (None, 0, None))[1]
-        if not package or not android.PKG_RE.fullmatch(package):
+        if not isinstance(package, str) or not android.PKG_RE.fullmatch(package):
             raise android.FrameError(f'{path.name}: no valid package in APK manifest')
         return package, split, (major, code) if code is not None else None
     except (zipfile.BadZipFile, frame_apk.ApkError, OSError, UnicodeError,
@@ -174,7 +174,7 @@ def _check_standalone(path):
 def _regular_stat(path):
     try:
         st = path.stat()
-    except OSError:
+    except (OSError, ValueError):
         return None
     return st if stat.S_ISREG(st.st_mode) else None
 
@@ -188,15 +188,17 @@ def inspect(paths, discover=False):
     for value in paths:
         if not isinstance(value, (str, Path)) or (isinstance(value, str) and not value.strip()):
             raise android.FrameError('Choose one game APK and its .obb game-data files together.')
-        path = Path(value).expanduser().absolute()
+        if '\x00' in str(value):
+            raise android.FrameError('Could not read invalid path.')
         try:
+            path = Path(value).expanduser().absolute()
             is_dir = path.is_dir()
             if is_dir:
                 files.extend(p for p in sorted(path.iterdir()) if p.suffix.lower() in ('.apk', '.obb'))
             else:
                 files.append(path)
-        except OSError as error:
-            raise android.FrameError(f'Could not read {path.name or str(path)}: {error}') from error
+        except (OSError, ValueError, RuntimeError) as error:
+            raise android.FrameError(f'Could not read {str(value)}: {error}') from error
     files = list(dict.fromkeys(files))
     if not files or len(files) > 100:
         raise android.FrameError('No Android backup found. Choose a folder containing one APK and its game data.')
@@ -261,6 +263,7 @@ def inspect(paths, discover=False):
         if not meta:
             raise android.FrameError('This game is not installed. Add its APK alongside these game-data files.')
         checked = {k: meta.get(k) for k in ('package', 'label', 'version', 'version_code')}
+        checked['label'] = meta.get('label') or pkg
         checked['version_code'] = quest._installed_code(pkg, meta)
         if checked['version_code'] is None:
             raise android.FrameError('Add the matching APK so Frame Control can check which game version this data belongs to.')
@@ -354,3 +357,6 @@ def install(plan, display='auto', progress=None):
             detail = ('The game is closed.' if closed else f'Close the game on the Frame ({why}).')
             raise android.FrameError(f'{label} is installed, but its game-data setup did not finish: {error}. '
                                      f'{detail} Import the same backup again to retry.') from error
+        except BaseException:
+            quest._close(pkg)
+            raise
