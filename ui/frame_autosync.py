@@ -26,6 +26,7 @@ The server supplies how to reach the headset, so this can be tested without one:
 """
 import errno
 import json
+import math
 import os
 import shutil
 import threading
@@ -70,6 +71,12 @@ def _defaults():
             "checked": None, "copied": 0, "copied_time": None, "error": None, "waiting": 0}
 
 
+def _finite_timestamp(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return value
+    return None
+
+
 class AutoSync:
     def __init__(self, list_shots, save_shots, list_clips, export_clip, device, busy, offline=lambda e: None,
                  shots_folder=None, clips_folder=None, path=None, clock=time.time, space=free_space):
@@ -95,25 +102,38 @@ class AutoSync:
     def _load(self):
         s = _defaults()
         try:
-            saved = json.loads(self.path.read_text())
+            saved = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(saved, dict):
                 s.update({k: v for k, v in saved.items() if k in s})
         except (OSError, ValueError):
             pass
         s["screenshots"], s["clips"] = bool(s["screenshots"]), bool(s["clips"])
-        if not isinstance(s["synced"], dict):
-            s["synced"] = {}
-        if not isinstance(s["sinceByKind"], dict):
-            s["sinceByKind"] = {}
+        s["since"] = _finite_timestamp(s["since"])
+        raw_synced = s["synced"] if isinstance(s["synced"], dict) else {}
+        clean_synced = {}
+        for dev, per in raw_synced.items():
+            if not isinstance(dev, str) or not isinstance(per, dict):
+                continue
+            clean_per = {}
+            for kind, ids in per.items():
+                if isinstance(kind, str) and isinstance(ids, list):
+                    clean_per[kind] = [i for i in ids if isinstance(i, str)][-KEEP:]
+            if clean_per:
+                clean_synced[dev] = clean_per
+        s["synced"] = clean_synced
+        raw_by_kind = s["sinceByKind"] if isinstance(s["sinceByKind"], dict) else {}
         # Keep the old shared date for existing enabled switches on upgrade.
-        s["sinceByKind"] = {kind: s["sinceByKind"].get(kind, s["since"]) for kind in KINDS}
+        s["sinceByKind"] = {
+            kind: _finite_timestamp(raw_by_kind[kind]) if kind in raw_by_kind else s["since"]
+            for kind in KINDS
+        }
         return s
 
     def _save(self):
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self._s, indent=1))
+            tmp.write_text(json.dumps(self._s, indent=1), encoding="utf-8")
             os.replace(tmp, self.path)
         except OSError:
             pass  # the settings still apply until the app restarts
@@ -133,6 +153,8 @@ class AutoSync:
 
     def update(self, changes):
         """{"screenshots": bool, "clips": bool}: enabling each kind starts its date now."""
+        if not isinstance(changes, dict):
+            changes = {}
         with self._lock:
             was = self.enabled()
             before = self._s["screenshots"], self._s["clips"]
@@ -240,16 +262,30 @@ class AutoSync:
 
     def _synced(self, device, kind):
         with self._lock:
-            return set(self._s["synced"].get(device, {}).get(kind, []))
+            per = self._s["synced"].get(device)
+            if not isinstance(per, dict):
+                return set()
+            items = per.get(kind)
+            return set(items) if isinstance(items, list) else set()
 
     def _mark(self, device, kind, ids):
         with self._lock:
             for item in ids:
                 self._tries.pop((device, item), None)
                 self._failures.pop((device, item), None)
-            per = self._s["synced"].setdefault(device, {})
-            have = per.get(kind, [])
-            new = [i for i in ids if i not in set(have)]
+            per = self._s["synced"].get(device)
+            if not isinstance(per, dict):
+                per = {}
+                self._s["synced"][device] = per
+            have = per.get(kind)
+            if not isinstance(have, list):
+                have = []
+            seen = set(have)
+            new = []
+            for i in ids:
+                if i not in seen:
+                    seen.add(i)
+                    new.append(i)
             if new:
                 per[kind] = (have + new)[-KEEP:]
                 self._save()

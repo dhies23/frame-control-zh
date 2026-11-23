@@ -698,6 +698,65 @@ class AutoSyncTest(unittest.TestCase):
         t.join(5)
         self.assertFalse(t.is_alive())
 
+    def test_load_and_save_use_utf8_encoding(self):
+        orig_read = Path.read_text
+        orig_write = Path.write_text
+        seen = []
+
+        def tracked_read(path_self, *args, **kwargs):
+            if path_self.name == "utf8-sync.json":
+                seen.append(("read", kwargs.get("encoding")))
+            return orig_read(path_self, *args, **kwargs)
+
+        def tracked_write(path_self, *args, **kwargs):
+            if path_self.name == "utf8-sync.tmp":
+                seen.append(("write", kwargs.get("encoding")))
+            return orig_write(path_self, *args, **kwargs)
+
+        path = self.dir / "utf8-sync.json"
+        with mock.patch.object(Path, "read_text", tracked_read), mock.patch.object(Path, "write_text", tracked_write):
+            sync = self.make(path)
+            sync.update({"screenshots": True})
+            self.make(path)
+        self.assertIn(("write", "utf-8"), seen)
+        self.assertIn(("read", "utf-8"), seen)
+        for op, enc in seen:
+            self.assertEqual(enc, "utf-8", (op, enc))
+
+    def test_corrupt_persisted_synced_and_timestamps_do_not_crash_tick(self):
+        path = self.dir / "corrupt-nested.json"
+        path.write_text(json.dumps({
+            "screenshots": True,
+            "clips": True,
+            "since": "not-a-timestamp",
+            "sinceByKind": {"shots": True, "clips": "bad"},
+            "synced": {
+                "frame-a": "not-a-dict",
+                "frame-b": {"shots": "not-a-list", "clips": [123, None, "valid-id"]},
+            },
+        }), encoding="utf-8")
+        sync = self.make(path)
+        self.assertIsNone(sync.state()["since"])
+        self.assertIsNone(sync.state()["sinceByKind"]["shots"])
+        self.assertIsNone(sync.state()["sinceByKind"]["clips"])
+        self.assertEqual(sync._synced("frame-a", "shots"), set())
+        self.assertEqual(sync._synced("frame-b", "shots"), set())
+        self.assertEqual(sync._synced("frame-b", "clips"), {"valid-id"})
+
+        self.frame.shots = [shot(1, NOW + 5)]
+        self.frame.clips = [clip(1, NOW + 5)]
+        self.assertEqual(sync.tick(), fa.INTERVAL)
+        self.assertEqual(self.frame.saved, [("frame-a", [shot(1, 0)["id"]])])
+        self.assertEqual(self.frame.exported, [("frame-a", clip(1, 0)["id"])])
+
+    def test_mark_deduplicates_within_batch_and_update_guards_non_dict(self):
+        self.sync._mark("frame-a", "shots", ["a", "a", "b", "a"])
+        self.assertEqual(self.sync._s["synced"]["frame-a"]["shots"], ["a", "b"])
+        for bad in (None, [], "screenshots", 42):
+            state = self.sync.update(bad)
+            self.assertFalse(state["screenshots"])
+            self.assertFalse(state["clips"])
+
 
 class Server(unittest.TestCase):
     def test_switch_at_list_callback_entry_does_not_read_or_mark_the_new_headset(self):
