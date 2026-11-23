@@ -45,6 +45,42 @@ class DeckyRelease(unittest.TestCase):
                 frame_decky.change(lambda *a, **k: json.dumps(state), 'install')
             download.assert_not_called()
 
+    def test_release_binary_and_status_hardening(self):
+        data = arm_binary()
+        digest = hashlib.sha256(data).hexdigest()
+        url = f'https://github.com/{frame_decky.REPO}/releases/download/v3.3.0/PluginLoader-arm64'
+        good_info = {'tag_name': 'v3.3.0', 'assets': [{'name': 'PluginLoader-arm64', 'size': len(data),
+                     'digest': 'sha256:' + digest.upper(), 'browser_download_url': url}]}
+
+        # 1. Uppercase SHA-256 hex is accepted and normalized to lowercase
+        with patch.object(frame_decky.urllib.request, 'urlopen',
+                          side_effect=[io.BytesIO(json.dumps(good_info).encode()), io.BytesIO(data)]):
+            self.assertEqual(frame_decky.release_binary(), ('v3.3.0', digest, data))
+
+        # 2. Malformed API shapes raise ValueError (not AttributeError/TypeError)
+        for bad_info in ([], None, {'tag_name': 'v3.3.0', 'assets': None},
+                         {'tag_name': 'v3.3.0', 'assets': ['not-a-dict']}):
+            with patch.object(frame_decky.urllib.request, 'urlopen',
+                              return_value=io.BytesIO(json.dumps(bad_info).encode())):
+                with self.assertRaises(ValueError):
+                    frame_decky.release_binary()
+
+        # 3. Non-HTTPS redirect on binary download is refused
+        class DowngradedResponse(io.BytesIO):
+            def geturl(self):
+                return 'http://insecure.example/PluginLoader-arm64'
+
+        with patch.object(frame_decky.urllib.request, 'urlopen',
+                          side_effect=[io.BytesIO(json.dumps(good_info).encode()), DowngradedResponse(data)]):
+            with self.assertRaisesRegex(ValueError, 'HTTPS'):
+                frame_decky.release_binary()
+
+        # 4. Unhashable action raises ValueError; non-dict status JSON raises ValueError
+        with self.assertRaisesRegex(ValueError, 'Invalid Decky action'):
+            frame_decky.change(lambda *a, **k: '{}', ['install'])
+        with self.assertRaises(ValueError):
+            frame_decky.status(lambda *a, **k: '[]')
+
 
 @unittest.skipIf(os.name == 'nt', 'remote status script runs on Linux')
 class DeckyStatusProbe(unittest.TestCase):

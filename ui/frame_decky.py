@@ -224,22 +224,36 @@ finally:
 '''
 
 
+def _parse_json_object(raw, label):
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError(f'Invalid {label} response')
+    return data
+
+
 def plugin_status(ssh):
     """Fresh managed inventory for panel receipt checks; no OS/service/CEF probes."""
-    return json.loads(ssh('python3 -', stdin=PLUGINS_PROBE, timeout=15))
+    return _parse_json_object(ssh('python3 -', stdin=PLUGINS_PROBE, timeout=15), 'Decky plugin status')
 
 
 def status(ssh):
-    return _with_compatibility(json.loads(ssh('python3 -', stdin=PROBE, timeout=15)))
+    return _with_compatibility(_parse_json_object(ssh('python3 -', stdin=PROBE, timeout=15), 'Decky status'))
 
 
 def panel_status(ssh):
     """Fresh service/ownership/inventory state without OS or CEF diagnostics."""
-    return _with_compatibility(json.loads(ssh('python3 -', stdin=PANEL_STATUS_PROBE, timeout=15)))
+    return _with_compatibility(_parse_json_object(ssh('python3 -', stdin=PANEL_STATUS_PROBE, timeout=15), 'Decky panel status'))
 
 
 def _with_compatibility(result):
-    for plugin in result.get('plugins', []):
+    if not isinstance(result, dict):
+        raise ValueError('Invalid Decky status response')
+    plugins = result.get('plugins', [])
+    if not isinstance(plugins, list):
+        raise ValueError('Invalid Decky plugin inventory')
+    for plugin in plugins:
+        if not isinstance(plugin, dict):
+            raise ValueError('Invalid Decky plugin entry')
         plugin['compatibility'] = framey_compatibility.lookup(
             plugin.get('storeId'), plugin.get('sha256'), plugin.get('version'),
             installed_shims=plugin.get('compatShims', []))
@@ -249,28 +263,42 @@ def _with_compatibility(result):
 def release_binary():
     request = urllib.request.Request(API, headers={'User-Agent': 'Frame-Control'})
     with urllib.request.urlopen(request, timeout=20) as response:
-        info = json.load(response)
+        if hasattr(response, 'geturl') and not str(response.geturl()).startswith('https://'):
+            raise ValueError('Decky release metadata must use HTTPS')
+        raw = response.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024:
+            raise ValueError('Decky release metadata response is too large')
+        info = json.loads(raw.decode('utf-8'))
+    if not isinstance(info, dict):
+        raise ValueError('Invalid Decky release metadata')
     version = info.get('tag_name')
     if not isinstance(version, str) or not TAG.fullmatch(version):
         raise ValueError('Invalid Decky release version')
-    asset = next((a for a in info.get('assets', []) if a.get('name') == 'PluginLoader-arm64'), None)
+    assets = info.get('assets')
+    if not isinstance(assets, list):
+        raise ValueError('Decky release has no valid ARM64 asset')
+    asset = next((a for a in assets if isinstance(a, dict) and a.get('name') == 'PluginLoader-arm64'), None)
     expected_url = f'https://github.com/{REPO}/releases/download/{version}/PluginLoader-arm64'
-    if not asset or asset.get('browser_download_url') != expected_url or not isinstance(asset.get('size'), int) or not 1024 < asset['size'] <= MAX_BINARY:
+    if (not asset or asset.get('browser_download_url') != expected_url or
+            type(asset.get('size')) is not int or not 1024 < asset['size'] <= MAX_BINARY):
         raise ValueError('Decky release has no valid ARM64 asset')
     digest = asset.get('digest', '')
-    if not isinstance(digest, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+    if not isinstance(digest, str) or not re.fullmatch(r'sha256:[0-9a-fA-F]{64}', digest):
         raise ValueError('Decky release has no published SHA-256 digest')
+    expected_digest = digest[7:].lower()
     with urllib.request.urlopen(urllib.request.Request(expected_url, headers={'User-Agent': 'Frame-Control'}), timeout=45) as response:
+        if hasattr(response, 'geturl') and not str(response.geturl()).startswith('https://'):
+            raise ValueError('Decky download redirect must use HTTPS')
         data = response.read(MAX_BINARY + 1)
-    if len(data) != asset['size'] or hashlib.sha256(data).hexdigest() != digest[7:]:
+    if len(data) != asset['size'] or hashlib.sha256(data).hexdigest() != expected_digest:
         raise ValueError('Decky download did not match its published digest')
     if data[:4] != b'\x7fELF' or int.from_bytes(data[18:20], 'little') != 183:
         raise ValueError('Decky download is not an ARM64 Linux binary')
-    return version, digest[7:], data
+    return version, expected_digest, data
 
 
 def change(ssh, action):
-    if action not in ('install', 'update', 'remove'):
+    if not isinstance(action, str) or action not in ('install', 'update', 'remove'):
         raise ValueError('Invalid Decky action')
     current = status(ssh)
     if action == 'remove':

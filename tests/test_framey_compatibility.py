@@ -365,3 +365,11 @@ class Compatibility(unittest.TestCase):
     def test_missing_audit_data_is_unverified(self):
         with patch.object(compatibility, 'DATA', Path('/nonexistent/framey-audit.json')):
             self.assertEqual(compatibility.lookup(12, 'a'*64, '1.0')['status'], 'unverified')
+
+    def test_lookup_returns_isolated_verification_copy(self):
+        record = json.loads(compatibility.DATA.read_text(encoding='utf-8'))['plugins'][0]
+        first = compatibility.lookup(record['id'], record['sha256'], record['version'])
+        original = list(first['verification'])
+        first['verification'].append('mutated-by-caller')
+        second = compatibility.lookup(record['id'], record['sha256'], record['version'])
+        self.assertEqual(second['verification'], original)
