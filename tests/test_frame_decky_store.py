@@ -118,6 +118,56 @@ class ArchiveTests(unittest.TestCase):
                                                   ensure_ascii=False).encode('utf-8'))
         self.assertEqual(frame_decky_store.archive_info(data, digest, name), 'Example')
 
+    def test_rejects_https_downgrade_non_string_folder_and_decompressed_size_spoof(self):
+        class DowngradedResponse(io.BytesIO):
+            def geturl(self):
+                return 'http://insecure.example/store'
+
+        # 1. catalog() refuses non-HTTPS redirect outside fake-Frame E2E container
+        with patch.dict(os.environ, {'FRAME_E2E_CONTAINER': '0'}), \
+             patch.object(frame_decky_store.urllib.request, 'urlopen',
+                          return_value=DowngradedResponse(b'[]')):
+            with self.assertRaisesRegex(ValueError, 'HTTPS'):
+                frame_decky_store.catalog()
+
+        # 2. change() refuses non-HTTPS redirect on ZIP download and non-str folder on remove
+        data, digest = archive()
+        entry = {'id': 9, 'name': 'Example', 'version': '1.0', 'sha256': digest, 'root': False}
+        with patch.dict(os.environ, {'FRAME_E2E_CONTAINER': '0'}), \
+             patch.object(frame_decky, 'status', return_value={'managed': True, 'running': True, 'plugins': []}), \
+             patch.object(frame_decky_store, 'catalog', return_value=[entry]), \
+             patch.object(frame_decky_store.urllib.request, 'urlopen',
+                          return_value=DowngradedResponse(data)):
+            with self.assertRaisesRegex(ValueError, 'HTTPS'):
+                frame_decky_store.change(lambda *a, **k: '{}', 'install', 9)
+
+        with patch.object(frame_decky, 'status', return_value={
+            'managed': True, 'running': True,
+            'plugins': [{'storeId': 9, 'folder': None, 'sha256': digest}],
+        }):
+            with self.assertRaisesRegex(ValueError, 'Unsafe installed plugin folder'):
+                frame_decky_store.change(lambda *a, **k: '{}', 'remove', 9)
+
+        # 3. archive_info() counts actual decompressed bytes even if header file_size is spoofed low
+        small_zip, small_digest = archive()
+        real_open = zipfile.ZipFile.open
+        def inflated_open(self_zf, name, *args, **kwargs):
+            if getattr(name, 'filename', name) == 'Example/dist/index.js':
+                return io.BytesIO(b'A' * 250_000)
+            return real_open(self_zf, name, *args, **kwargs)
+        with patch.object(frame_decky_store, 'MAX_UNPACKED', 200_000), \
+             patch.object(zipfile.ZipFile, 'open', inflated_open):
+            with self.assertRaisesRegex(ValueError, 'limit'):
+                frame_decky_store.archive_info(small_zip, small_digest, 'Example')
+
+        # 4. change() rejects non-dict remote transaction JSON cleanly
+        with patch.object(frame_decky, 'status', return_value={
+            'managed': True, 'running': True,
+            'plugins': [{'storeId': 9, 'folder': 'Example', 'sha256': digest}],
+        }):
+            with self.assertRaisesRegex(ValueError, 'Invalid plugin transaction result'):
+                frame_decky_store.change(lambda *a, **k: '[]', 'remove', 9)
+
     def test_large_asset_checksum_is_verified_beyond_its_header(self):
         good, digest = archive(extra=('Example/assets/large.bin', b'x' * 150_000))
         self.assertEqual(frame_decky_store.archive_info(good, digest, 'Example'), 'Example')

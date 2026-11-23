@@ -84,13 +84,20 @@ def _urls():
     return STORE_URL, CDN
 
 
+def _check_https_response(response, label):
+    if (os.environ.get('FRAME_E2E_CONTAINER') != '1' and hasattr(response, 'geturl')
+            and not str(response.geturl()).startswith('https://')):
+        raise ValueError(f'{label} must use HTTPS')
+
+
 def catalog():
     request = urllib.request.Request(_urls()[0], headers={'User-Agent': 'Frame-Control'})
     with urllib.request.urlopen(request, timeout=15) as response:
+        _check_https_response(response, 'Decky store catalog')
         raw = response.read(MAX_STORE + 1)
     if len(raw) > MAX_STORE:
         raise ValueError('Decky store response is too large')
-    records = json.loads(raw)
+    records = json.loads(raw.decode('utf-8'))
     if not isinstance(records, list):
         raise ValueError('Invalid Decky store response')
     result = []
@@ -169,6 +176,7 @@ def archive_info(data, expected_hash, expected_name):
                        and folder == 'decky-wine-cellar')
         seen = {}
         tree = {}
+        total_unpacked = 0
         for entry in files:
             name = entry.filename
             mode = entry.external_attr >> 16
@@ -205,12 +213,20 @@ def archive_info(data, expected_hash, expected_name):
                 continue
             with archive.open(entry) as source:
                 header = source.read(20)
+                member_bytes = len(header)
+                total_unpacked += member_bytes
                 # ZipExtFile checks the member's CRC only at EOF. A good
                 # binary header does not prove that a larger asset is intact.
-                # Stream the rest within the archive's existing size limits
+                # Stream the rest within the archive's actual decompressed limits
                 # before approving it for transfer or the author checker.
-                while source.read(64 * 1024):
-                    pass
+                while True:
+                    chunk = source.read(64 * 1024)
+                    if not chunk:
+                        break
+                    member_bytes += len(chunk)
+                    total_unpacked += len(chunk)
+                    if member_bytes > 30 * 1024 * 1024 or total_unpacked > MAX_UNPACKED:
+                        raise ValueError('Plugin archive exceeds the file or size limit')
             if header[:4] == b'\x7fELF' and int.from_bytes(header[18:20], 'little') != 183:
                 if not ((fileserver and name == 'DeckyFileServer/bin/backend'
                          and hashlib.sha256(archive.read(entry)).hexdigest() == FILESERVER_ORIGINAL)
@@ -3176,7 +3192,7 @@ finally:
 
 def change(ssh, action, plugin_id, report=lambda stage, percent=None: None, reviewed_hash=None,
            installed_hash=None):
-    if action not in ('install', 'update', 'remove') or type(plugin_id) is not int or plugin_id <= 0:
+    if not isinstance(action, str) or action not in ('install', 'update', 'remove') or type(plugin_id) is not int or plugin_id <= 0:
         raise ValueError('Choose a valid store plugin action')
     if reviewed_hash is not None and (action == 'remove' or not isinstance(reviewed_hash, str)
                                       or not SHA.fullmatch(reviewed_hash)):
@@ -3198,7 +3214,7 @@ def change(ssh, action, plugin_id, report=lambda stage, percent=None: None, revi
     if action == 'remove':
         if len(installed) != 1:
             raise ValueError('Only an installed Frame Control store plugin can be removed')
-        folder = installed[0]['folder']
+        folder = installed[0].get('folder')
         plugin = {'sha256': '0' * 64, 'version': 'removed'}
     else:
         report('Reading official store', 15)
@@ -3224,12 +3240,13 @@ def change(ssh, action, plugin_id, report=lambda stage, percent=None: None, revi
         report('Downloading plugin archive', 30)
         url = _urls()[1] + plugin['sha256'] + '.zip'
         with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Frame-Control'}), timeout=35) as response:
+            _check_https_response(response, 'Decky plugin archive download')
             data = response.read(MAX_ZIP + 1)
         report('Verifying plugin archive', 50)
         folder = archive_info(data, plugin['sha256'], plugin['name'])
-        if action == 'update' and installed[0]['folder'] != folder:
+        if action == 'update' and installed[0].get('folder') != folder:
             raise ValueError('The store changed its plugin folder; remove the old version before installing')
-    if not SAFE_FOLDER.fullmatch(folder):
+    if not isinstance(folder, str) or not SAFE_FOLDER.fullmatch(folder):
         raise ValueError('Unsafe installed plugin folder')
     previous = installed[0].get('sha256') if action != 'install' else None
     expected_installed = previous if isinstance(previous, str) and SHA.fullmatch(previous) else '-'
@@ -3240,8 +3257,11 @@ def change(ssh, action, plugin_id, report=lambda stage, percent=None: None, revi
             report('Sending archive to Frame', 65)
             ssh('umask 077; cat > ' + remote, stdin=data, text=False, timeout=120)
         report({'install':'Installing', 'update':'Updating', 'remove':'Removing'}[action] + ' plugin on Frame', 80)
-        return json.loads(ssh(f'python3 - {action} {token} {plugin_id} {plugin["sha256"]} {folder} {plugin["version"]} {expected_installed}',
-                              stdin=apply_script(plugin_id, plugin["sha256"]), timeout=90))
+        result = json.loads(ssh(f'python3 - {action} {token} {plugin_id} {plugin["sha256"]} {folder} {plugin["version"]} {expected_installed}',
+                                stdin=apply_script(plugin_id, plugin["sha256"]), timeout=90))
+        if not isinstance(result, dict):
+            raise ValueError('Invalid plugin transaction result')
+        return result
     finally:
         if data is not None:
             try: ssh('rm -f ' + remote, timeout=10)
