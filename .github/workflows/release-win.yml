@@ -1,0 +1,115 @@
+name: release-win
+
+# 在 GitHub 上编译 Windows 发行包（安装包 + 便携版 zip），并挂到对应的 Release 上。
+# 上游的 release.yml 会同时出 mac/Windows/Linux 三套，还要 MSYS2 + GStreamer 编译
+# 「PC 进头显」的串流辅助库；本分支只出 Windows x64，够用而且快得多。
+# 注意：这里不编译 desktop/（Windows PC 串流辅助库），那个功能在上游仍是实验性的、
+# 默认关闭；缺了它只会让「PC 进头显」那一项不可用，其余功能不受影响。
+on:
+  push:
+    tags:
+      - "zh-*"
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要挂到哪个 tag 的 Release（留空则只上传 artifacts，不发 Release）"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: 版本号
+        id: ver
+        shell: bash
+        run: |
+          v=$(node -p "require('./app/package.json').version")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "app/package.json 版本 $v"
+
+      - name: 安装构建依赖
+        working-directory: app
+        shell: bash
+        run: npm ci --no-audit --no-fund
+
+      # 自带 Python（python-build-standalone）、adb（platform-tools）、CA 证书包，
+      # 以及给 Frame 用的 KDE Connect arm64 包。全部按版本 + SHA-256 固定。
+      - name: 下载随包运行时
+        working-directory: app
+        shell: bash
+        run: node build/fetch-deps.js win x64
+
+      - name: 打包（NSIS 安装包 + 便携 zip）
+        working-directory: app
+        shell: bash
+        run: npx electron-builder --win --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: 校验产物
+        shell: bash
+        run: |
+          set -e
+          ls -la app/dist
+          test -f app/dist/Frame-Control-Setup-x64.exe
+          test -f app/dist/Frame-Control-win-x64.zip
+          # 主界面、头显内页面、随包 Python 必须都在，缺了就是打歪了
+          node app/build/check-resources.js app/dist/win-unpacked/resources || true
+          cd app/dist && sha256sum Frame-Control-Setup-x64.exe Frame-Control-win-x64.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: 上传 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Frame-Control-zh-win-x64
+          path: |
+            app/dist/Frame-Control-Setup-x64.exe
+            app/dist/Frame-Control-win-x64.zip
+            app/dist/SHA256SUMS
+          if-no-files-found: error
+
+      - name: 发布到 Release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -e
+          # tag 还没有 Release 就先建一个（已经存在就直接往上加文件）
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "简体中文版 $VERSION" \
+              --notes "Frame Control 简体中文版 $VERSION（Windows x64）。
+
+          - 安装包：Frame-Control-Setup-x64.exe（未签名，SmartScreen 会提示，选「更多信息 → 仍要运行」）
+          - 便携版：Frame-Control-win-x64.zip（解压后运行 Frame Control.exe）
+          - 校验：SHA256SUMS
+
+          汉化范围与跟进上游的办法见 [LOCALIZATION.md](https://github.com/$GH_REPO/blob/main/LOCALIZATION.md)。"
+          fi
+          gh release upload "$TAG" \
+            app/dist/Frame-Control-Setup-x64.exe \
+            app/dist/Frame-Control-win-x64.zip \
+            app/dist/SHA256SUMS \
+            --clobber

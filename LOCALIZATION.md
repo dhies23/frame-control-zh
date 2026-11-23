@@ -44,7 +44,8 @@
 - **文档**：`docs/` 下 70 多篇 Markdown 保持英文，只有 `README.md` 是中文。
 - **官网与静态站点**：`site/`、`docs/install.html`。
 - **iOS / Android 原生端**：`ios/`、`android/` 的界面字符串。
-- **测试**：`tests/` 里大量断言直接比对英文界面文字，汉化后这些断言会失败，所以本分支**移除了 `.github/workflows/`**（上游 CI 是给英文界面写的）。上游的 Python 单元测试大部分与文案无关，本地仍可运行。
+- **测试**：`tests/` 里大量断言直接比对英文界面文字，汉化后这些断言会失败，所以本分支**删掉了上游的 CI**（`checks.yml` 等是给英文界面写的，留着只会每次推送都红）。`.github/workflows/` 里现在只剩一个 `release-win.yml`：在 GitHub 上编译 Windows 安装包与便携 zip 并挂到 Release。上游的 Python 单元测试大部分与文案无关，本地仍可运行。
+- **Windows「PC 进头显」串流辅助库**：上游 CI 用 MSYS2 + GStreamer 现场编译 `desktop/`，本分支的 release 工作流没有编它。该功能在上游仍是实验性的、默认关闭；缺了它只是这一项不可用。
 - 品牌名、命令、路径、URL、版本号、协议名（`Frame Control`、`SteamVR`、`Decky`、`APK`、`SSH`、`Wi-Fi` 等）按惯例保留英文。
 
 ## 翻译是怎么做的

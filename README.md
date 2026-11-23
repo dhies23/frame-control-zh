@@ -131,9 +131,13 @@ SSH、SFTP、Steam Link、远程桌面、音量、睡眠、重启和关机。
 
 ### 本中文分支怎么装
 
-这个分支是**源码汉化版**，本仓库不提供预编译安装包。上游的安装包（下一节那张表）装出来是**英文界面**。想要中文界面，目前有两条路：
+这个分支是**源码汉化版 + GitHub Actions 编译的 Windows 包**。上游的安装包（下一节那张表）装出来是**英文界面**。想要中文界面，有三条路：
 
-**1. 直接跑本地 Web 界面（最省事，Windows / macOS / Linux 通用）**
+**0. 直接下 Windows 包（最省事）**
+
+到本仓库的 [Releases](https://github.com/dhies23/frame-control-zh/releases) 下最新的 `Frame-Control-Setup-x64.exe`（安装包）或 `Frame-Control-win-x64.zip`（便携版，解压即用）。这两个是 GitHub Actions 用本仓库源码现编的，界面是中文。安装包没有代码签名，SmartScreen 会提示，选「更多信息 → 仍要运行」；校验值见 Release 里的 `SHA256SUMS`。
+
+**1. 从源码跑本地 Web 界面（Windows / macOS / Linux 通用）**
 
 ```sh
 git clone https://github.com/dhies23/frame-control-zh.git
@@ -151,9 +155,9 @@ npm install
 npm start
 ```
 
-需要 Node.js 20 以上。`npm start` 会走 `app/build/fetch-deps.js` 打包依赖，另外还有 `npm run dist:win` / `dist:linux` / `dist:mac` 可以出安装包。这条路依赖 electron-builder 的网络下载，本分支没有在 CI 里验证过。
+需要 Node.js 20 以上。`npm start` 会走 `app/build/fetch-deps.js` 打包依赖，另外还有 `npm run dist:win` / `dist:linux` / `dist:mac` 可以出安装包。这条路依赖 electron-builder 的网络下载；本分支的 [`.github/workflows/release-win.yml`](.github/workflows/release-win.yml) 走的就是同一套流程。
 
-两条路用的是同一套 `ui/` 界面文件，所以中文界面效果一致。
+这三条路用的是同一套 `ui/` 界面文件，所以中文界面效果一致。
 
 ### 上游官方安装包（英文界面）
 
