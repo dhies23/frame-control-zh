@@ -15,7 +15,12 @@ APPIMAGE_LAUNCH = 'HTTP 200; FrameControl/1; server stopped'
 def verify(report, release, tag):
     if not isinstance(report, dict) or not isinstance(release, dict):
         raise ValueError('audit report or release is not an object')
-    if (report.get('tag') != tag or report.get('releaseId') != release.get('id')
+    if not isinstance(tag, str) or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', tag):
+        raise ValueError('release tag must look like v0.4.62')
+    release_id = release.get('id')
+    report_id = report.get('releaseId')
+    if (report.get('tag') != tag or type(release_id) is not int or release_id <= 0
+            or type(report_id) is not int or report_id != release_id
             or report.get('draftAtAudit') is not True or release.get('draft') is not True):
         raise ValueError('audit report does not identify this exact draft and tag')
     audited_tag = report.get('tagNameAtAudit')
@@ -28,14 +33,20 @@ def verify(report, release, tag):
     assets = release.get('assets')
     if not isinstance(assets, list):
         raise ValueError('release assets are missing')
-    by_name = {asset.get('name'): asset for asset in assets if isinstance(asset, dict)}
-    if len(by_name) != len(assets):
-        raise ValueError('release assets have duplicate or invalid names')
+    by_name = {}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            raise ValueError('release assets have duplicate or invalid names')
+        name = asset.get('name')
+        if not isinstance(name, str) or not name or name in by_name:
+            raise ValueError('release assets have duplicate or invalid names')
+        by_name[name] = asset
     if set(by_name) - set(INSTALLERS) - {'SHA256SUMS', 'update.json'}:
         raise ValueError('release has assets outside the audited installer set')
     sums = by_name.get('SHA256SUMS') or {}
-    sums_digest = sums.get('digest') or ''
-    if (not re.fullmatch(r'sha256:[0-9a-fA-F]{64}', sums_digest)
+    sums_digest = sums.get('digest')
+    if (not isinstance(sums_digest, str)
+            or not re.fullmatch(r'sha256:[0-9a-fA-F]{64}', sums_digest)
             or report.get('sha256sumsSha256') != sums_digest[7:].lower()):
         raise ValueError('audited SHA256SUMS differs from the draft')
 
@@ -49,11 +60,12 @@ def verify(report, release, tag):
     for row in rows:
         name = row['name']
         asset = by_name.get(name) or {}
-        digest = str(asset.get('digest') or '')
-        if (not re.fullmatch(r'sha256:[0-9a-fA-F]{64}', digest)
+        digest = asset.get('digest')
+        if (not isinstance(digest, str)
+                or not re.fullmatch(r'sha256:[0-9a-fA-F]{64}', digest)
                 or type(asset.get('size')) is not int or asset['size'] <= 0
                 or row.get('sha256') != digest[7:].lower()
-                or row.get('size') != asset['size']):
+                or type(row.get('size')) is not int or row.get('size') != asset['size']):
             raise ValueError(f'audited installer differs from draft: {name}')
         if name.endswith('.dmg'):
             good = row.get('udifTrailer') == 'ok'
