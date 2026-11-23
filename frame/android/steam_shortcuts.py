@@ -15,9 +15,15 @@ DEVTOOLS = 'http://127.0.0.1:8080/json'
 
 
 def target_ws():
-    for t in json.load(urllib.request.urlopen(DEVTOOLS, timeout=5)):
-        if t.get('title') == 'SharedJSContext':
-            return t['webSocketDebuggerUrl']
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(DEVTOOLS, timeout=5) as resp:
+        targets = json.load(resp)
+    if isinstance(targets, list):
+        for t in targets:
+            if isinstance(t, dict) and t.get('title') == 'SharedJSContext':
+                url = t.get('webSocketDebuggerUrl')
+                if isinstance(url, str) and url.startswith('ws://'):
+                    return url
     sys.exit('SharedJSContext not found: is the Steam client running?')
 
 
@@ -25,19 +31,36 @@ class WS:
     """Just enough RFC 6455 for one CDP request/response on loopback."""
 
     def __init__(self, url, timeout=20):
+        if not isinstance(url, str) or not url.startswith('ws://'):
+            raise ValueError('expected a ws:// WebSocket URL')
         host_port, path = url[len('ws://'):].split('/', 1)
-        host, port = host_port.split(':')
+        host, port = host_port.split(':', 1)
         self.s = socket.create_connection((host, int(port)), timeout=timeout)
-        key = base64.b64encode(os.urandom(16)).decode()
-        self.s.sendall((f'GET /{path} HTTP/1.1\r\nHost: {host_port}\r\nUpgrade: websocket\r\n'
-                        f'Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n'
-                        'Sec-WebSocket-Version: 13\r\n\r\n').encode())
-        buf = b''
-        while b'\r\n\r\n' not in buf:
-            buf += self.s.recv(4096)
-        if b' 101 ' not in buf.split(b'\r\n', 1)[0]:
-            sys.exit('websocket handshake failed')
-        self.rest = buf.split(b'\r\n\r\n', 1)[1]
+        try:
+            key = base64.b64encode(os.urandom(16)).decode('ascii')
+            self.s.sendall((f'GET /{path} HTTP/1.1\r\nHost: {host_port}\r\nUpgrade: websocket\r\n'
+                            f'Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n'
+                            'Sec-WebSocket-Version: 13\r\n\r\n').encode('ascii'))
+            buf = b''
+            while b'\r\n\r\n' not in buf:
+                chunk = self.s.recv(4096)
+                if not chunk:
+                    raise EOFError('websocket handshake closed early')
+                buf += chunk
+                if len(buf) > 65536:
+                    raise ValueError('websocket handshake response too large')
+            if b' 101 ' not in buf.split(b'\r\n', 1)[0]:
+                sys.exit('websocket handshake failed')
+            self.rest = buf.split(b'\r\n\r\n', 1)[1]
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        try:
+            self.s.close()
+        except OSError:
+            pass
 
     def _read(self, n):
         while len(self.rest) < n:
@@ -48,37 +71,55 @@ class WS:
         out, self.rest = self.rest[:n], self.rest[n:]
         return out
 
-    def send(self, text):
-        data = text.encode()
+    def _send_frame(self, opcode, data):
         mask = os.urandom(4)
         n = len(data)
-        head = bytes([0x81]) + (bytes([0x80 | n]) if n < 126 else
-                                bytes([0x80 | 126]) + struct.pack('>H', n) if n < 65536 else
-                                bytes([0x80 | 127]) + struct.pack('>Q', n))
+        head = bytes([0x80 | opcode]) + (bytes([0x80 | n]) if n < 126 else
+                                         bytes([0x80 | 126]) + struct.pack('>H', n) if n < 65536 else
+                                         bytes([0x80 | 127]) + struct.pack('>Q', n))
         self.s.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+    def send(self, text):
+        self._send_frame(0x1, text.encode('utf-8'))
 
     def recv(self):
         msg = b''
         while True:
             b0, b1 = self._read(2)
+            opcode = b0 & 0x0f
+            masked = bool(b1 & 0x80)
             n = b1 & 0x7f
             if n == 126:
                 n = struct.unpack('>H', self._read(2))[0]
             elif n == 127:
                 n = struct.unpack('>Q', self._read(8))[0]
-            msg += self._read(n)
+            mask = self._read(4) if masked else None
+            payload = self._read(n)
+            if mask is not None:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            if opcode == 0x8:  # close
+                raise EOFError('websocket closed by peer')
+            if opcode == 0x9:  # ping
+                self._send_frame(0xA, payload)
+                continue
+            if opcode == 0xA:  # pong
+                continue
+            msg += payload
             if b0 & 0x80:
-                return msg.decode()
+                return msg.decode('utf-8')
 
 
 def evaluate(js, timeout=20):
     ws = WS(target_ws(), timeout)
-    ws.send(json.dumps({'id': 1, 'method': 'Runtime.evaluate', 'params': {
-        'expression': js, 'awaitPromise': True, 'returnByValue': True}}))
-    while True:
-        r = json.loads(ws.recv())
-        if r.get('id') == 1:
-            break
+    try:
+        ws.send(json.dumps({'id': 1, 'method': 'Runtime.evaluate', 'params': {
+            'expression': js, 'awaitPromise': True, 'returnByValue': True}}))
+        while True:
+            r = json.loads(ws.recv())
+            if isinstance(r, dict) and r.get('id') == 1:
+                break
+    finally:
+        ws.close()
     res = r.get('result', {})
     if 'exceptionDetails' in res:
         sys.exit('JS error: ' + json.dumps(res['exceptionDetails'])[:500])
@@ -151,7 +192,7 @@ MAX_ART = 12 * 1024 * 1024  # Steam's custom artwork limit per slot
 
 
 def render(plan):
-    with open(plan) as f:
+    with open(plan, encoding='utf-8') as f:
         source = json.load(f)
     images = {}
     for slot, path in source['images'].items():
@@ -160,10 +201,10 @@ def render(plan):
             data = f.read(MAX_ART + 1)
         if len(data) > MAX_ART:
             raise ValueError('source artwork too large')
-        images[slot] = [ext, base64.b64encode(data).decode()]
+        images[slot] = [ext, base64.b64encode(data).decode('ascii')]
     renderer = globals().get('ART_RENDERER')
     if renderer is None:
-        with open(os.path.join(os.path.dirname(__file__), 'library_artwork.js')) as f:
+        with open(os.path.join(os.path.dirname(__file__), 'library_artwork.js'), encoding='utf-8') as f:
             renderer = f.read()
     try:
         return _render(plan, renderer, source['label'], images)
@@ -178,23 +219,40 @@ def _render(plan, renderer, label, images):
     # A 4K photo takes seconds to decode and encode on the Frame; allow well beyond that.
     result = evaluate(renderer + '\nrenderLibraryArtwork(' + json.dumps({'label': label, 'images': images}) + ')',
                       timeout=75)
-    if not isinstance(result, dict) or set(result.get('images', {})) != set(ASSETS):
+    if (not isinstance(result, dict) or not isinstance(result.get('images'), dict)
+            or set(result['images']) != set(ASSETS)):
         raise ValueError('incomplete artwork render')
     paths = {}
-    for slot, (ext, encoded) in result['images'].items():
-        data = base64.b64decode(encoded, validate=True)
-        signature = {'png': b'\x89PNG\r\n\x1a\n', 'jpg': b'\xff\xd8\xff'}.get(ext)
-        if not signature or not data.startswith(signature) or len(data) > MAX_ART:
-            raise ValueError(slot + ' render is ' + str(len(data)) + ' bytes of ' + str(ext))
-        paths[slot] = os.path.join(os.path.dirname(plan), slot + '.' + ext)
-        with open(paths[slot] + '.tmp', 'wb') as f:
-            f.write(data)
-    for slot, path in paths.items():
-        os.replace(path + '.tmp', path)
-        for stale in ('png', 'jpg'):
-            other = os.path.join(os.path.dirname(plan), slot + '.' + stale)
-            if other != path and os.path.exists(other):
-                os.remove(other)
+    written_tmps = []
+    try:
+        for slot, pair in result['images'].items():
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                raise ValueError(slot + ' render entry is malformed')
+            ext, encoded = pair
+            if not isinstance(ext, str) or not isinstance(encoded, str):
+                raise ValueError(slot + ' render payload is not text')
+            data = base64.b64decode(encoded, validate=True)
+            signature = {'png': b'\x89PNG\r\n\x1a\n', 'jpg': b'\xff\xd8\xff'}.get(ext)
+            if not signature or not data.startswith(signature) or len(data) > MAX_ART:
+                raise ValueError(slot + ' render is ' + str(len(data)) + ' bytes of ' + str(ext))
+            paths[slot] = os.path.join(os.path.dirname(plan), slot + '.' + ext)
+            tmp_path = paths[slot] + '.tmp'
+            written_tmps.append(tmp_path)
+            with open(tmp_path, 'wb') as f:
+                f.write(data)
+        for slot, path in paths.items():
+            os.replace(path + '.tmp', path)
+            for stale in ('png', 'jpg'):
+                other = os.path.join(os.path.dirname(plan), slot + '.' + stale)
+                if other != path and os.path.exists(other):
+                    os.remove(other)
+    except BaseException:
+        for tmp_path in written_tmps:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        raise
     return {'paths': paths, 'warnings': list(result.get('warnings', []))}
 
 
