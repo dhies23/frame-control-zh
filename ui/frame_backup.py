@@ -26,9 +26,9 @@ import frame_android as android
 import frame_host
 
 REMOTE = Path(__file__).resolve().parent / 'frame_backup_remote.py'
-NAME = re.compile(r'^\d{4}-\d{2}-\d{2}-\d{6}$')
-ARCHIVE = re.compile(r'^(saves|settings|android)/[A-Za-z0-9._-]{1,200}\.tar\.gz$')
-PART = re.compile(r'^(saves:(\d{1,10}|linux)|settings:(steam|system)|android:[A-Za-z][\w]*(\.[A-Za-z_][\w]*)+)$')
+NAME = re.compile(r'^\d{4}-\d{2}-\d{2}-\d{6}$', re.ASCII)
+ARCHIVE = re.compile(r'^(saves|settings|android)/[A-Za-z0-9._-]{1,200}\.tar\.gz$', re.ASCII)
+PART = re.compile(r'^(saves:(\d{1,10}|linux)|settings:(steam|system)|android:[A-Za-z][\w]*(\.[A-Za-z_][\w]*)+)$', re.ASCII)
 KINDS = ('saves', 'settings', 'android')
 FORMAT = 1
 # Fixed SteamOS switches only; never execute a command supplied by remote status.
@@ -194,12 +194,16 @@ def backup(report=lambda stage, percent=None: None, kinds=KINDS, headset=None):
                             'appid': part.get('appid'), 'archive': rel, 'sha256': _sha256(dest),
                             'archive_bytes': dest.stat().st_size, 'files': files,
                             'bytes': sum(f['bytes'] for f in files)})
+            raw_skipped = part.get('skipped')
             skipped += [{'id': part['id'], 'label': label, 'path': s['path'], 'reason': s['reason']}
-                        for s in part.get('skipped', [])
+                        for s in (raw_skipped if isinstance(raw_skipped, list) else [])
                         if isinstance(s, dict) and 'path' in s and 'reason' in s]
         for j, app in enumerate(apps):
             report('Copying ' + app['label'] + ' (Android app data)', 2 + 90 * (len(parts) + j) / total)
-            part_id = 'android:' + app['package']
+            part_id = 'android:' + str(app['package'])
+            if not PART.fullmatch(part_id):
+                skipped.append({'id': part_id, 'label': app['label'], 'reason': 'Not a supported Android package name'})
+                continue
             if app['running']:
                 skipped.append({'id': part_id, 'label': app['label'], 'reason': 'It was open; close it and back up again'})
                 continue
@@ -318,9 +322,12 @@ def restore_plan(name):
         for result in (raw_results if isinstance(raw_results, list) else []):
             if not isinstance(result, dict):
                 continue
-            plan = plans.get(result.get('id'))
+            rid = result.get('id')
+            plan = plans.get(rid) if isinstance(rid, str) else None
             if plan:
-                plan.update(status=result.get('status'), replace=result.get('replace', 0),
+                raw_status = result.get('status')
+                status = raw_status if isinstance(raw_status, str) else 'unknown'
+                plan.update(status=status, replace=result.get('replace', 0),
                             new=result.get('new', 0), held=result.get('held', {}))
     android_parts = [p for p in plans.values() if p['kind'] == 'android' and p['status'] is None]
     if android_parts:
