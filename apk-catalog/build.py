@@ -19,7 +19,15 @@ RANK = {'works': 0, 'likely': 1, 'maybe': 2, 'unlikely': 3, 'no': 4}
 def jsonl(path):
     if not os.path.exists(path):
         return {}
-    return {r['pkg']: r for r in map(json.loads, open(path))}
+    out = {}
+    with open(path, encoding='utf-8') as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            if isinstance(r, dict) and isinstance(r.get('pkg'), str):
+                out[r['pkg']] = r
+    return out
 
 
 def loc(d):
@@ -29,17 +37,30 @@ def loc(d):
 
 
 def ver_tuple(v):
-    m = re.match(r'(\d+)\.(\d+)', v or '')
+    if not isinstance(v, str):
+        return None
+    m = re.match(r'([0-9]+)\.([0-9]+)', v)
     return (int(m[1]), int(m[2])) if m else None
 
 
 def classify(m, s, s2):
     """Return (verdict, reasons). Hard failures first, then crash signals."""
     no, bad, maybe, notes = [], [], [], []
-    min_sdk = m.get('usesSdk', {}).get('minSdkVersion', 1)
+    m = m if isinstance(m, dict) else {}
+    s = s if isinstance(s, dict) else {}
+    s2 = s2 if isinstance(s2, dict) else {}
+    uses_sdk = m.get('usesSdk') if isinstance(m.get('usesSdk'), dict) else {}
+    raw_min_sdk = uses_sdk.get('minSdkVersion', 1)
+    if type(raw_min_sdk) is int:
+        min_sdk = raw_min_sdk
+    elif isinstance(raw_min_sdk, str) and raw_min_sdk.isascii() and raw_min_sdk.isdigit():
+        min_sdk = int(raw_min_sdk)
+    else:
+        min_sdk = 1
     if min_sdk > LEPTON_SDK:
         no.append(f'Needs Android API {min_sdk}; Lepton is Android 11 (API 30), so it won\'t install')
-    native = m.get('nativecode') or s.get('abis') or []
+    raw_native = m.get('nativecode') or s.get('abis') or []
+    native = [a for a in raw_native if isinstance(a, str)] if isinstance(raw_native, list) else []
     if native and 'arm64-v8a' not in native:
         no.append(f'Native code only for {", ".join(native)}; Lepton is 64-bit ARM only, so it won\'t install')
 
@@ -50,7 +71,8 @@ def classify(m, s, s2):
         maybe.append('Uses Jetpack Compose, version unknown: crashes if older than 1.11')
     elif cv:
         notes.append(f'Jetpack Compose {cv} (fine)')
-    fw = set(s.get('frameworks', []))
+    raw_fw = s.get('frameworks', [])
+    fw = {x for x in raw_fw if isinstance(x, str)} if isinstance(raw_fw, list) else set()
     if 'sdl' in fw or s2.get('sdl3'):
         bad.append('SDL app: registers a clipboard listener at start-up and crashes')
     if 'kivy' in fw:
@@ -72,7 +94,8 @@ def classify(m, s, s2):
             maybe.append('Keyboard (IME), not an app you open; untested in Lepton')
         else:
             maybe.append('No launcher icon (widget, tile, wallpaper or plug-in)')
-    feats = s2.get('features', [])
+    raw_feats = s2.get('features', [])
+    feats = [f for f in raw_feats if isinstance(f, str)] if isinstance(raw_feats, list) else []
     if 'android.hardware.touchscreen.multitouch' in feats:
         notes.append('Mentions multi-touch; the Frame pointer is single-touch (inferred)')
     if any(f in feats for f in ('android.hardware.telephony', 'android.hardware.nfc')):
@@ -105,8 +128,12 @@ def finalize(app, reps):
 
 def load_catalog(path=None):
     """Read site/apps.js back into a list (for serve.py and Frame Control)."""
-    src = open(path or os.path.join(HERE, 'site', 'apps.js'), encoding='utf-8').read()
-    return json.loads(src.split('window.APPS=', 1)[1].rstrip().rstrip(';'))
+    with open(path or os.path.join(HERE, 'site', 'apps.js'), encoding='utf-8') as handle:
+        src = handle.read()
+    marker = 'window.APPS='
+    if marker not in src:
+        raise ValueError('catalog file missing window.APPS= marker')
+    return json.loads(src.split(marker, 1)[1].rstrip().rstrip(';'))
 
 
 def main():
