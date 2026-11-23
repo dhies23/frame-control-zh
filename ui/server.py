@@ -1053,8 +1053,12 @@ recorder = frame_clips.Recorder(_record_channel, lambda cmd, timeout: ssh(cmd, t
 
 
 def _headset_record_run(command, timeout):
-    result = subprocess.run(['bash', '-c', command], capture_output=True, text=True,
-                            stdin=subprocess.DEVNULL, timeout=timeout)
+    try:
+        result = subprocess.run(['bash', '-c', command], capture_output=True, text=True,
+                                encoding='utf-8', errors='replace',
+                                stdin=subprocess.DEVNULL, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise frame_clips.ClipError(f'Recording command failed: {exc}') from exc
     if result.returncode:
         raise frame_clips.ClipError((result.stderr or result.stdout).strip()[-600:] or 'Recording command failed')
     return result.stdout
@@ -1219,11 +1223,19 @@ def steam_frame(*args, timeout=40, script="frame_steam.py", source=None):
         # reports stderr instead if there was any, so look in both.
         for line in [*reversed(getattr(e, "stdout", "").splitlines()), *reversed(str(e).splitlines())]:
             try:
-                raise Failure(json.loads(line)["error"]) from None
+                parsed = json.loads(line)
+                if isinstance(parsed, dict) and isinstance(parsed.get("error"), str) and parsed["error"]:
+                    raise Failure(parsed["error"]) from None
             except (ValueError, KeyError, TypeError):
                 continue
         raise
-    return json.loads(out)
+    try:
+        data = json.loads(out)
+    except ValueError:
+        raise Failure("Unexpected response from Frame", 502) from None
+    if not isinstance(data, dict):
+        raise Failure("Unexpected response from Frame", 502)
+    return data
 
 
 def running_frame(*args, timeout=40):
@@ -1296,11 +1308,16 @@ def vr(body):
     if action == 'hud-start':
         script += "m.ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)\n"
         for name, source in sources.items():
-            script += f"p = m.ROOT / {name + '.py'!r}; t = p.with_suffix('.' + str(os.getpid()) + '.tmp')\nt.write_text({source!r}); os.replace(t, p)\n"
+            script += f"p = m.ROOT / {name + '.py'!r}; t = p.with_suffix('.' + str(os.getpid()) + '.tmp')\nt.write_text({source!r}, encoding='utf-8'); os.replace(t, p)\n"
     script += f"try:\n print(json.dumps(m.dispatch({body!r})))\nexcept Exception as e:\n print(json.dumps({{'error': str(e)}}))\n"
-    result = json.loads(ssh('python3 -', stdin=script, timeout=20))
+    try:
+        result = json.loads(ssh('python3 -', stdin=script, timeout=20))
+    except ValueError:
+        raise Failure('Unexpected response from Frame', 502) from None
+    if not isinstance(result, dict):
+        raise Failure('Unexpected response from Frame', 502)
     if result.get('error'):
-        raise Failure(result['error'])
+        raise Failure(str(result['error']))
     return result
 
 
@@ -1499,7 +1516,7 @@ def input_event(event):
         value = event.get(name)
         if value is None:
             continue
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             raise Failure(f"{name} must be a number", 400)
         out[name] = max(-INPUT_MOVE_LIMIT, min(INPUT_MOVE_LIMIT, round(float(value), 2)))
     for name in INPUT_FLAGS:
@@ -1542,7 +1559,7 @@ def input_client():
         return DEVICE
     path = frame_host.data_dir("input-client-id")
     try:
-        saved = path.read_text().strip()
+        saved = path.read_text(encoding="utf-8", errors="replace").strip()
         if re.fullmatch(r"[A-Za-z0-9_-]{4,64}", saved):
             return saved
     except OSError:
@@ -1550,7 +1567,7 @@ def input_client():
     made = (re.sub(r"[^A-Za-z0-9-]", "", INPUT_NAME)[:24] or "computer") + "-" + secrets.token_hex(4)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(made)
+        path.write_text(made, encoding="utf-8")
     except OSError:
         pass  # still works this time; it pairs again next time
     return made
@@ -1565,7 +1582,19 @@ def kdeconnect_packages():
     """[(file, sha256), ...] from frame/kdeconnect/packages.json; [] if it's missing."""
     try:
         manifest = json.loads((KDECONNECT / "packages.json").read_text(encoding="utf-8"))
-        return [(p["file"], p["sha256"]) for p in manifest["packages"]]
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("packages"), list):
+            return []
+        out = []
+        for p in manifest["packages"]:
+            if not isinstance(p, dict):
+                return []
+            name, sha = p.get("file"), p.get("sha256")
+            if not isinstance(name, str) or not name or "/" in name or "\\" in name or name in (".", ".."):
+                return []
+            if not isinstance(sha, str) or not sha:
+                return []
+            out.append((name, sha))
+        return out
     except (OSError, ValueError, KeyError, TypeError):
         return []
 
@@ -1657,10 +1686,10 @@ class InputAgent:
     def discard(self, folder):
         """Remove a copy no agent will take over (best effort; agents tidy up old ones too)."""
         folder = folder.removeprefix("~/")
-        if folder.startswith(f"{KDECONNECT_HOME}/incoming/") and not LOCAL:
+        if re.fullmatch(rf"{re.escape(KDECONNECT_HOME)}/incoming/[0-9a-f]+", folder) and not LOCAL:
             try:
                 context = getattr(self._launch_local, "context", None)
-                ssh(f"rm -rf {folder}", timeout=20, **({"route": context[1]} if context else {}))
+                ssh(f"rm -rf {shlex.quote(folder)}", timeout=20, **({"route": context[1]} if context else {}))
             except (Failure, OSError):
                 pass  # never let tidying up get in the way of reporting and retrying
 
@@ -1841,7 +1870,10 @@ class InputAgent:
                 self.close(proc)
 
     def close(self, proc):
-        proc.terminate()
+        try:
+            proc.terminate()
+        except OSError:
+            pass
 
 
 _input = InputAgent()
@@ -2110,14 +2142,20 @@ def _drain_kde(route, cancel):
 
 # ---- touch: the headset's panels, through gamescope's own input (frame_touch.py) ----
 
-PANEL_WINDOW = re.compile(r"^\d{1,10}$")
-PANEL_DISPLAY = re.compile(r"^:\d{1,2}$")
+PANEL_WINDOW = re.compile(r"^[0-9]{1,10}$")
+PANEL_DISPLAY = re.compile(r"^:[0-9]{1,2}$")
 TOUCH_BUTTONS = ("left", "right", "middle")
 
 
 def panels():
     """The headset's app panels (window, display, name, size) and which has focus."""
-    return json.loads(ssh("python3 - panels", stdin=(HERE / "frame_touch.py").read_text(encoding="utf-8"), timeout=20))
+    try:
+        data = json.loads(ssh("python3 - panels", stdin=(HERE / "frame_touch.py").read_text(encoding="utf-8"), timeout=20))
+    except ValueError:
+        raise Failure("Unexpected response from Frame", 502) from None
+    if not isinstance(data, dict):
+        raise Failure("Unexpected response from Frame", 502)
+    return data
 
 
 def panel_target(q):
@@ -2141,7 +2179,7 @@ def touch_event(event):
 
     def num(name, limit):
         value = event.get(name)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             raise Failure(f"{name} must be a number", 400)
         return max(-limit, min(limit, round(float(value), 4)))
     out = {}
@@ -2185,7 +2223,7 @@ def touch_event(event):
 
 
 def num_value(value, limit):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise Failure("scroll values must be numbers", 400)
     return max(-limit, min(limit, round(float(value), 2)))
 
@@ -2203,7 +2241,10 @@ class TouchAgent(InputAgent):
         try:
             proc.stdin.close()
         except (BrokenPipeError, OSError, ValueError):
-            proc.terminate()
+            try:
+                proc.terminate()
+            except OSError:
+                pass
 
     def deliver(self, report, force=False):
         return ""
@@ -2251,13 +2292,15 @@ def flatpak(body):
 
 def power(what, password):
     """Sleep, restart or shut down from the Frame itself: sudo takes the Developer Mode password on stdin."""
-    if not isinstance(password, str) or not password or "\n" in password:
+    if not isinstance(password, str) or not password or "\n" in password or "\r" in password:
         raise Failure("enter the Developer Mode password", 400)
     try:
         r = subprocess.run(["sudo", "-S", "-k", "-p", "", "systemctl", what], input=password + "\n",
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     except subprocess.TimeoutExpired:
         raise Failure(f"systemctl {what} didn't answer")
+    except OSError as exc:
+        raise Failure(f"systemctl {what} failed: {exc}") from exc
     if r.returncode != 0:
         err = r.stderr.strip()
         raise Failure("that password wasn't accepted" if "incorrect password" in err or "Sorry" in err
@@ -2575,11 +2618,15 @@ def android_backup(body):
     if action == 'begin' or (action == 'inspect' and 'paths' in body):
         paths = body.get('paths', [])
         if not isinstance(paths, list) or len(paths) > 100 or any(
-                not isinstance(p, str) or not os.path.isabs(p) for p in paths):
+                not isinstance(p, str) or '\x00' in p or not os.path.isabs(p) for p in paths):
             raise Failure('Choose local Android backup files.', 400)
         # A dropped PC-game folder continues through the existing title importer.
         if body.get('probe') and len(paths) == 1 and Path(paths[0]).is_dir():
-            if not any(p.suffix.lower() in ('.apk', '.obb') for p in Path(paths[0]).iterdir()):
+            try:
+                has_android = any(p.suffix.lower() in ('.apk', '.obb') for p in Path(paths[0]).iterdir())
+            except OSError as exc:
+                raise Failure(f'Could not read that folder: {exc}', 400) from exc
+            if not has_android:
                 return {'android': False}
         token = secrets.token_hex(12)
         entry = {'paths': paths, 'dirs': [], 'plan': None, 'time': time.time(),
@@ -2713,7 +2760,7 @@ def titles(body):
     if action == "inspect":
         # The app's page passes a dropped folder's path (Electron knows it); browsers upload instead.
         path = str(body.get("path") or "")
-        if not os.path.isabs(path) or not os.path.exists(path):
+        if "\x00" in path or not os.path.isabs(path) or not os.path.exists(path):
             raise Failure("inspect needs the absolute path of a .zip, folder or program", 400)
         return stage_title(path, name=body.get("name") or None)
     if action in ("install", "discard"):
@@ -2731,9 +2778,15 @@ def titles(body):
         with _titles_lock:
             _title_jobs[token] = {"stage": "Starting", "fraction": 0, "done": False, "error": None,
                                   "message": None, "title": None, "time": time.time()}
-        ensure_master()
-        opt = lambda k: str(body.get(k) or "") or None  # noqa: E731
-        busy_thread(_run_title_install, token, entry, opt("name"), opt("exe"), opt("runtime")).start()
+        try:
+            ensure_master()
+            opt = lambda k: str(body.get(k) or "") or None  # noqa: E731
+            busy_thread(_run_title_install, token, entry, opt("name"), opt("exe"), opt("runtime")).start()
+        except BaseException:
+            with _titles_lock:
+                _title_jobs.pop(token, None)
+            _drop_staged(entry)
+            raise
         return {"message": f"Installing {entry['plan']['source']}", "job": token}
     if action not in ("launch", "remove", "refresh-art"):
         raise Failure("unknown action", 400)
