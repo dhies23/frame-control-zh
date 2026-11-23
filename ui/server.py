@@ -224,8 +224,8 @@ def agent_target():
                                                "name": "This headset" if LOCAL else FRAME}
     return {"id": device["id"], "name": device["name"]}
 
-APPID = re.compile(r"^\d{1,10}$")
-FLATPAK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+){2,}$")
+APPID = re.compile(r"^\d{1,10}$", re.ASCII)
+FLATPAK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+){2,}$", re.ASCII)
 MAX_UPLOAD = 8 * 1024**3
 MAX_JSON = 1024**2
 
@@ -440,7 +440,17 @@ def queue_job(label, work, progress=False):
         ahead = len(_queue) - 1 + (1 if _queue_state["running"] else 0)
         start, _queue_state["worker"] = not _queue_state["worker"], True
     if start:
-        threading.Thread(target=_drain_queue, daemon=True).start()
+        try:
+            threading.Thread(target=_drain_queue, daemon=True).start()
+        except Exception as error:
+            with _jobs_lock:
+                _queue[:] = [q for q in _queue if q[0] != job]
+                _jobs[job].update(error=f"Could not start install queue worker: {error}",
+                                  queued=False, stage=None, done=True, time=time.time())
+                if not _queue and not _queue_state["running"]:
+                    _queue_state["worker"] = False
+                _restage_locked()
+            raise
     return {"message": f"{label}: queued, {ahead} before it" if ahead else f"{label}…", "job": job, "queued": ahead}
 
 
@@ -620,9 +630,19 @@ def terminal(argv):
 
 # ---- actions ---------------------------------------------------------------
 
+def _parse_remote_dict(raw, what="headset"):
+    try:
+        parsed = json.loads(raw)
+    except ValueError as e:
+        raise Failure(f"Unexpected answer from the {what}") from e
+    if not isinstance(parsed, dict):
+        raise Failure(f"Unexpected answer from the {what}")
+    return parsed
+
+
 def status(_body):
-    s = json.loads(ssh("python3 -", stdin=(HERE / "frame_status.py").read_text(encoding="utf-8"), timeout=20))
-    osr = s.get("os") if isinstance(s, dict) else None
+    s = _parse_remote_dict(ssh("python3 -", stdin=(HERE / "frame_status.py").read_text(encoding="utf-8"), timeout=20))
+    osr = s.get("os")
     if isinstance(osr, dict):
         # The headset's hash is for usage statistics only; the page and MCP clients don't get it.
         frame_telemetry.frame_seen(osr.get("build"), osr.get("version"), osr.pop("headset", None),
@@ -723,17 +743,20 @@ def framey_check_action(body):
     path = Path.home()/'.local/share/frame-control/headset/worn-check.json'
     with FRAMEY_CHECK_LOCK:
         try:
-            state = json.loads(path.read_text())
+            state = json.loads(path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             raise Failure('No headset interaction check is active', 409)
+        if not isinstance(state, dict):
+            raise Failure('No headset interaction check is active', 409)
         started = state.get('started')
-        if (not isinstance(state.get('nonce'), str) or not isinstance(started, (int, float)) or
-                not 0 <= time.time() - started <= 90):
+        if (not isinstance(state.get('nonce'), str) or isinstance(started, bool)
+                or not isinstance(started, (int, float)) or not math.isfinite(started)
+                or not 0 <= time.time() - started <= 90):
             raise Failure('The headset interaction check expired', 409)
         state[body['kind']] = {'at':time.time(), 'pluginId':body.get('pluginId') if body['kind']=='panel' else None}
         next_path = path.with_name('worn-check-' + secrets.token_hex(4) + '.next')
         try:
-            next_path.write_text(json.dumps(state)+'\n')
+            next_path.write_text(json.dumps(state)+'\n', encoding='utf-8')
             next_path.replace(path)
         finally:
             next_path.unlink(missing_ok=True)
@@ -788,11 +811,11 @@ def comfort(body):
     files = {name: (HERE / name).read_text(encoding="utf-8") for name in COMFORT_FILES}
     version = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()[:16]
     safe_retry = body.get("action") == "status"
-    out = json.loads(ssh("python3 -", stdin=COMFORT_RUN % ({}, version, COMFORT_FILES, json.dumps(body)),
-                         timeout=65, retry=safe_retry))
+    out = _parse_remote_dict(ssh("python3 -", stdin=COMFORT_RUN % ({}, version, COMFORT_FILES, json.dumps(body)),
+                                 timeout=65, retry=safe_retry))
     if out == COMFORT_MISSING:
-        out = json.loads(ssh("python3 -", stdin=COMFORT_RUN % (files, version, COMFORT_FILES, json.dumps(body)),
-                             timeout=65, retry=safe_retry))
+        out = _parse_remote_dict(ssh("python3 -", stdin=COMFORT_RUN % (files, version, COMFORT_FILES, json.dumps(body)),
+                                     timeout=65, retry=safe_retry))
     if out.get("error") and "active" not in out:
         raise Failure(out["error"], 409)
     return out
@@ -821,7 +844,7 @@ def _headset_view():
     if "error" in result:
         raise Failure(str(result["error"]))
     path = str(result["path"])
-    if not re.fullmatch(r"/tmp/frame-vrcap/shot-\d+-vr\.png", path):
+    if not re.fullmatch(r"/tmp/frame-vrcap/shot-\d+-vr\.png", path, re.ASCII):
         raise Failure(f"unexpected capture path {path!r}")
     # Captures show whatever was on screen, so delete even if the copy fails.
     try:
@@ -838,7 +861,7 @@ def _headset_view():
 # with a smaller copy in screenshots/thumbnails/. A shot's id is
 # "<account>/<appid>/<file>", checked here before it goes near a shell.
 SHOT_ROOT = ".local/share/Steam/userdata"
-SHOT_ID = re.compile(r"(\d{1,12})/(\d{1,20})/(\d{14}_\d{1,4}\.(?:jpg|png))")
+SHOT_ID = re.compile(r"(\d{1,12})/(\d{1,20})/(\d{14}_\d{1,4}\.(?:jpg|png))", re.ASCII)
 SHOTS_DIR = Path.home() / "Pictures" / "SteamFrame"
 _shots_copy_lock = threading.Lock()
 LIST_SHOTS = f"""cd ~/{SHOT_ROOT} 2>/dev/null || exit 0
@@ -871,15 +894,22 @@ def list_shots():
         parts = rel.split("/")  # account/760/remote/appid/screenshots/file
         size, _, mtime = rest.partition("\t")
         shot_id = f"{parts[0]}/{parts[3]}/{parts[-1]}" if len(parts) == 6 else ""
-        if not SHOT_ID.fullmatch(shot_id) or not size.isdigit():
+        if not SHOT_ID.fullmatch(shot_id) or not (size.isascii() and size.isdigit()):
             continue
         try:
             when = float(mtime)
         except ValueError:
             continue
+        if not math.isfinite(when):
+            continue
+        size_int = int(size)
         local = shot_local_path(shot_id, device_id)
-        shots.append({"id": shot_id, "appid": parts[3], "file": parts[-1], "size": int(size), "time": when,
-                      "saved": local.exists() and local.stat().st_size == int(size)})
+        try:
+            saved = local.stat().st_size == size_int
+        except OSError:
+            saved = False
+        shots.append({"id": shot_id, "appid": parts[3], "file": parts[-1], "size": size_int, "time": when,
+                      "saved": saved})
     shots.sort(key=lambda s: s["time"], reverse=True)
     return {"shots": shots, "folder": str(SHOTS_DIR)}
 

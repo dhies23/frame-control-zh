@@ -862,6 +862,85 @@ class ServerHardeningTests(unittest.TestCase):
             s.panels()
         self.assertEqual(encodings, [("frame_status.py", "utf-8"), ("frame_touch.py", "utf-8")])
 
+    def test_ascii_only_appid_shot_id_and_capture_path(self):
+        from unittest.mock import patch
+        s = self.server
+        self.assertIsNone(s.APPID.fullmatch("١٢٣"))
+        self.assertIsNone(s.SHOT_ID.fullmatch("١/٢/٢٠٢٦١٠٢٠١٢٠٠٠٠_١.png"))
+        with patch.object(s, "ssh", return_value='{"path": "/tmp/frame-vrcap/shot-١٢٣-vr.png"}\n'):
+            with self.assertRaises(s.Failure):
+                s._headset_view()
+
+    def test_queue_job_resets_worker_flag_if_thread_start_fails(self):
+        import threading
+        from unittest.mock import patch
+        s = self.server
+        with s._jobs_lock:
+            saved_queue = list(s._queue)
+            saved_state = dict(s._queue_state)
+            s._queue.clear()
+            s._queue_state.update(worker=False, running=None)
+        try:
+            with patch.object(threading.Thread, "start", side_effect=RuntimeError("no thread")):
+                with self.assertRaises(RuntimeError):
+                    s.queue_job("Install App", lambda: {"message": "ok"})
+            with s._jobs_lock:
+                self.assertFalse(s._queue_state["worker"])
+                self.assertEqual(s._queue, [])
+            done = threading.Event()
+            queued = s.queue_job("Install App", lambda: done.set() or {"message": "ok"})
+            self.assertTrue(done.wait(3), "subsequent queued job never started after start failure")
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                with s._jobs_lock:
+                    if s._jobs.get(queued["job"], {}).get("done") and not s._queue_state["worker"]:
+                        break
+                time.sleep(0.01)
+        finally:
+            with s._jobs_lock:
+                s._queue[:] = saved_queue
+                s._queue_state.update(saved_state)
+
+    def test_status_and_comfort_wrap_malformed_remote_json_as_failure(self):
+        from unittest.mock import patch
+        s = self.server
+        for bad in ("not-json", "[]", "null"):
+            with self.subTest(bad=bad), patch.object(s, "ssh", return_value=bad):
+                with self.assertRaises(s.Failure):
+                    s.status({})
+                with self.assertRaises(s.Failure):
+                    s.comfort({"action": "status"})
+
+    def test_framey_check_action_rejects_bool_and_non_finite_started(self):
+        from unittest.mock import patch
+        s = self.server
+        for raw in ('{"nonce": "n", "started": true}', '{"nonce": "n", "started": NaN}'):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp)
+                p = home / ".local/share/frame-control/headset/worn-check.json"
+                p.parent.mkdir(parents=True)
+                p.write_text(raw, encoding="utf-8")
+                with patch.object(s, "HEADSET_RUNTIME", True), \
+                        patch.object(Path, "home", return_value=home), \
+                        patch.object(s.time, "time", return_value=10.0):
+                    with self.assertRaises(s.Failure) as caught:
+                        s.framey_check_action({"kind": "input"})
+                    self.assertEqual(caught.exception.status, 409)
+
+    def test_list_shots_rejects_unicode_size_and_non_finite_mtime(self):
+        from unittest.mock import patch
+        s = self.server
+        lines = "\n".join([
+            "1/760/remote/620/screenshots/20261020120000_1.png\t١٢٣\t1000.0",
+            "1/760/remote/620/screenshots/20261020120001_1.png\t123\tnan",
+            "1/760/remote/620/screenshots/20261020120002_1.png\t123\tinf",
+            "1/760/remote/620/screenshots/20261020120003_1.png\t123\t1000.0",
+        ])
+        with patch.object(s, "ssh", return_value=lines), \
+                patch.object(s, "agent_target", return_value={"id": "frame-a"}):
+            got = s.list_shots()
+        self.assertEqual([x["id"] for x in got["shots"]], ["1/620/20261020120003_1.png"])
+
 
 if __name__ == "__main__":
     unittest.main()
