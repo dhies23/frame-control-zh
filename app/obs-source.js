@@ -17,7 +17,7 @@ function createObsSource({ prepare, spawn, onState = () => {}, supported = true 
   }
   async function start(alias, port = 15099) {
     if (!supported) return status();
-    if (!ALIAS.test(alias || '')) throw new Error('Select a valid headset first.');
+    if (typeof alias !== 'string' || !ALIAS.test(alias)) throw new Error('Select a valid headset first.');
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('OBS port must be a whole number from 1024 to 65535.');
     if (child || state.state === 'starting') return status();
     const id = ++attempt;

@@ -8,17 +8,17 @@ const MAX_URL = 2048;
 
 // {kind: "manifest" | "url", target} or null if raw isn't a usable install link.
 function parseInstallLink(raw) {
-  if (typeof raw !== "string" || raw.length > MAX_LINK || !raw.toLowerCase().startsWith(`${SCHEME}:`)) return null;
+  if (typeof raw !== "string" || raw.length > MAX_LINK || /[\x00-\x1f\x7f]/.test(raw) || !raw.toLowerCase().startsWith(`${SCHEME}:`)) return null;
   let link;
   try { link = new URL(raw); } catch { return null; }
   // frame-control://install?… puts "install" in the host; accept a trailing slash too.
-  if (link.protocol !== `${SCHEME}:` || link.hostname !== "install" || !["", "/"].includes(link.pathname)) return null;
+  if (link.protocol !== `${SCHEME}:` || link.hostname !== "install" || link.username || link.password || link.port || !["", "/"].includes(link.pathname)) return null;
   const keys = [...new Set(link.searchParams.keys())];
   if (keys.length !== 1 || !["manifest", "url"].includes(keys[0])) return null;
   const values = link.searchParams.getAll(keys[0]);
   if (values.length !== 1) return null;
   const target = values[0];
-  if (!target || target.length > MAX_URL) return null;
+  if (!target || target.length > MAX_URL || /[\x00-\x1f\x7f]/.test(target)) return null;
   let parsed;
   try { parsed = new URL(target); } catch { return null; }
   if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password) return null;

@@ -67,6 +67,8 @@ test('invalid ports and aliases cannot spawn; errors and closed pipes remain vis
     await assert.rejects(f.source.start('frame', port), /port/i);
   }
   await assert.rejects(f.source.start('-bad'), /headset/i);
+  await assert.rejects(f.source.start(['frame']), /headset/i);
+  await assert.rejects(f.source.start({ toString() { return 'frame'; } }), /headset/i);
   assert.equal(f.children.length, 0);
   await f.source.start('frame');
   const { child } = f.children[0];

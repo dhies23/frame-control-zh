@@ -284,6 +284,73 @@ class AssetAudit(unittest.TestCase):
         with self.assertRaises(ValueError):
             rc.checksums({"assets": [{"name": rc.INSTALLERS[0], "digest": 12345}]})
 
+    def test_verify_release_asset_audit_rejects_null_ids_unicode_tags_unhashable_names_and_non_str_digests(self):
+        gate_spec = importlib.util.spec_from_file_location(
+            "verify_release_asset_audit_test", SCRIPT.with_name("verify-release-asset-audit.py")
+        )
+        gate = importlib.util.module_from_spec(gate_spec)
+        gate_spec.loader.exec_module(gate)
+
+        assets, sums = release_assets()
+        sums_sha = hashlib.sha256(sums).hexdigest()
+        base_release = {"id": 42, "tag_name": "untagged-1", "draft": True, "assets": assets}
+        rows = []
+        for asset in assets:
+            name = asset["name"]
+            if name == "SHA256SUMS":
+                continue
+            row = {"name": name, "sha256": asset["digest"][7:], "size": asset["size"]}
+            if name.endswith(".dmg"):
+                row["udifTrailer"] = "ok"
+            elif name.endswith(".zip"):
+                row.update({"zipCrc": "ok", "members": 3})
+                if "-mac-" in name:
+                    row["bundleVersion"] = "9.8.7"
+            elif name.endswith(".exe"):
+                row["peMachine"] = 0x8664
+            elif name.endswith(".AppImage"):
+                row["elfMachine"] = 183 if "arm64" in name else 62
+                if "x86_64" in name:
+                    row["appimageLaunch"] = gate.APPIMAGE_LAUNCH
+            elif name.endswith(".deb"):
+                row.update({"debVersion": "9.8.7", "architecture": "arm64" if "arm64" in name else "amd64"})
+            rows.append(row)
+        base_report = {
+            "tag": "v9.8.7",
+            "releaseId": 42,
+            "draftAtAudit": True,
+            "tagNameAtAudit": "untagged-1",
+            "updateManifest": None,
+            "sha256sumsSha256": sums_sha,
+            "assets": rows,
+        }
+        gate.verify(base_report, base_release, "v9.8.7")
+
+        # 1. Both release.id and report.releaseId are None or bool must fail
+        for bad_id in (None, True, 0, "42"):
+            with self.subTest(bad_id=bad_id):
+                with self.assertRaises(ValueError):
+                    gate.verify({**base_report, "releaseId": bad_id}, {**base_release, "id": bad_id}, "v9.8.7")
+
+        # 2. Invalid / non-ASCII tag must fail
+        with self.assertRaises(ValueError):
+            gate.verify({**base_report, "tag": "v\u2070.\u2074.\u2076"}, base_release, "v\u2070.\u2074.\u2076")
+
+        # 3. Unhashable asset name must raise ValueError (not TypeError)
+        bad_assets = [dict(assets[0], name=["unhashable"]), *assets[1:]]
+        with self.assertRaises(ValueError):
+            gate.verify(base_report, {**base_release, "assets": bad_assets}, "v9.8.7")
+
+        # 4. Non-string SHA256SUMS digest must raise ValueError (not TypeError)
+        bad_sums = [*assets[:-1], dict(assets[-1], digest=12345)]
+        with self.assertRaises(ValueError):
+            gate.verify(base_report, {**base_release, "assets": bad_sums}, "v9.8.7")
+
+        # 5. Boolean row size must not match integer 1
+        bad_rows = [dict(rows[0], size=True), *rows[1:]]
+        with self.assertRaises(ValueError):
+            gate.verify({**base_report, "assets": bad_rows}, base_release, "v9.8.7")
+
 
 if __name__ == "__main__":
     unittest.main()

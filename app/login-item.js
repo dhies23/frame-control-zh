@@ -8,6 +8,9 @@ const MARKER = "# Managed by Frame Control; use Frame > Open at Login to remove.
 const FILE = "com.saphid.frame-control.desktop";
 
 function quoteExec(value) {
+  if (typeof value !== "string" || !value || /[\r\n\0]/.test(value)) {
+    throw new Error("Invalid executable path for login item.");
+  }
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$/g, "\\$").replace(/`/g, "\\`").replace(/%/g, "%%")}"`;
 }
 

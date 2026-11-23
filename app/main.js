@@ -134,12 +134,16 @@ async function startServer() {
   const port = await freePort();
   fs.mkdirSync(LOG_DIR, { recursive: true });
   const log = fs.openSync(LOG, "a");
-  fs.writeSync(log, `\n--- ${new Date().toISOString()} ${python} ${SERVER} --port ${port}\n`);
-  // stdin stays open while the app runs; the server exits cleanly when it closes.
-  const child = spawn(python, [...PY_FLAGS, SERVER, "--port", String(port), "--exit-on-eof"],
-                      { env, stdio: ["pipe", log, log], windowsHide: true });
+  let child;
+  try {
+    fs.writeSync(log, `\n--- ${new Date().toISOString()} ${python} ${SERVER} --port ${port}\n`);
+    // stdin stays open while the app runs; the server exits cleanly when it closes.
+    child = spawn(python, [...PY_FLAGS, SERVER, "--port", String(port), "--exit-on-eof"],
+                  { env, stdio: ["pipe", log, log], windowsHide: true });
+  } finally {
+    fs.closeSync(log);
+  }
   child.stdin.on("error", () => {});
-  fs.closeSync(log);
   server = child;
   let exited = null;
   child.once("error", (err) => {
@@ -356,7 +360,7 @@ function openSsh() {
   const body = JSON.stringify({ what: "terminal" });
   const req = http.request(new URL("/api/open", url), {
     method: "POST", timeout: 15000,
-    headers: { "Content-Type": "application/json", "X-Frame-UI": "1", "Content-Length": Buffer.byteLength(body) },
+    headers: { "Content-Type": "application/json", "X-Frame-UI": process.env.FRAME_UI_KEY || "1", "Content-Length": Buffer.byteLength(body) },
   }, (res) => {
     let data = "";
     res.on("data", (c) => { data += c; });
@@ -620,7 +624,11 @@ function createWindow(showOnReady = !process.argv.includes("--hidden") || !tray)
     return { action: "deny" };
   });
   win.webContents.on("will-navigate", (e, target) => {
-    if (!url || new URL(target).origin !== new URL(url).origin) e.preventDefault();
+    try {
+      if (!url || new URL(target).origin !== new URL(url).origin) e.preventDefault();
+    } catch {
+      e.preventDefault();
+    }
   });
   // A reload or a new page must ask for links again before it gets any.
   win.webContents.on("did-start-loading", () => { linkPage = null; });

@@ -80,7 +80,8 @@ function resourcesDir(context) {
 
 function size(file) {
   try {
-    return fs.statSync(file).size;
+    const st = fs.statSync(file);
+    return st.isFile() ? st.size : -1;
   } catch {
     return -1;
   }

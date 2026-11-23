@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createLoginItem } = require("../login-item");
+const { createLoginItem, quoteExec } = require("../login-item");
 
 test("Linux login toggle creates and removes only its own desktop entry", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "frame-login-test-"));
@@ -55,3 +55,9 @@ for (const platform of ["win32", "darwin"]) {
     assert.deepEqual(calls.at(-1).args, []);
   });
 }
+
+test("quoteExec rejects newlines, carriage returns, NUL bytes, and non-strings", () => {
+  for (const bad of ["/opt/app\nExec=evil", "/opt/app\rExec=evil", "/opt/app\0bad", "", null, 42]) {
+    assert.throws(() => quoteExec(bad), /executable/i);
+  }
+});
