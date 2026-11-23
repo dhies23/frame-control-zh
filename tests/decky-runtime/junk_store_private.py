@@ -82,7 +82,10 @@ def stop(backend, log, disconnect, after_disconnect=None, *, expect_forced_kill=
     recursion_error = 'RecursionError: maximum recursion depth exceeded' in console
     assert backend.returncode == 0 and not remaining, (backend.returncode, remaining, console)
     if expect_unload_crash:
-        assert recursion_error, console
+        # Unmodified Junk-Store stops Decky's shared event loop and cancels all tasks:
+        # depending on shutdown scheduling it either hits RecursionError or stalls past
+        # Decky's 5 s unload timeout until SIGKILL, never completing _unload().
+        assert recursion_error or (forced == 1 and seconds >= 5), (forced, seconds, console)
         assert 'Junk-Store out!' not in console and 'Unloaded Junk-Store (v1.1.13)' not in console, console
     elif expect_forced_kill:
         assert forced == 1 and seconds >= 5, (forced, seconds, console)
@@ -161,10 +164,11 @@ def probe(backend, loader, env, log, processes, legacy, rpc, until_ready, plugin
     if original_unload:
         # Unmodified Junk-Store cancels all asyncio tasks (including _unload)
         # and stops Decky's shared event loop on SIGTERM, crashing with
-        # RecursionError before completing unload.
+        # RecursionError or stalling until Decky's 5 s SIGKILL without unloading.
         evidence['stops'].append(stop(backend, log, False, expect_unload_crash=True))
         evidence['expectedRegression'] = dict(
             recursionError=evidence['stops'][0]['recursionError'],
+            forcedPluginKills=evidence['stops'][0]['forcedPluginKills'],
             seconds=evidence['stops'][0]['seconds'],
             unloadCompleted=evidence['stops'][0]['unloadCompleted'],
             qualifiedCompatibilityPass=False,
