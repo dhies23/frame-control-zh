@@ -174,8 +174,9 @@ def load_index(repo, cached_only=False):
 def catalog():
     """Rated apps with the database's reports applied."""
     path = os.path.join(CATALOG, 'site', 'apps.js')
-    reps = compat_db.load()
-    sig = (len(reps), max((r.get('date') or '' for r in reps), default=''))
+    raw_reps = compat_db.load()
+    reps = [r for r in raw_reps if isinstance(r, dict)] if isinstance(raw_reps, list) else []
+    sig = (len(reps), max((r.get('date') if isinstance(r.get('date'), str) else '' for r in reps), default=''))
     with _lock:
         mtime = os.path.getmtime(path)
         if _cache['mtime'] != mtime:
@@ -191,7 +192,7 @@ def catalog():
 
 def app(pkg):
     catalog()
-    a = _cache['by_pkg'].get(pkg)
+    a = _cache['by_pkg'].get(pkg) if isinstance(pkg, str) else None
     if not a:
         raise frame_android.FrameError(f'{pkg} is not in the catalogue')
     return a
@@ -207,11 +208,12 @@ def _sha256(path):
 
 def fetch_apk(a):
     """Download (or reuse) the APK and verify it against the F-Droid index's SHA-256."""
-    if not isinstance(a.get('a'), str) or not a['a'].startswith(APK_HOSTS):
+    if not isinstance(a, dict) or not isinstance(a.get('a'), str) or not a['a'].startswith(APK_HOSTS):
         raise frame_android.FrameError('unexpected APK URL')
+    label = a.get('n') or a.get('p') or 'APK'
     expected = a.get('h').strip().lower() if isinstance(a.get('h'), str) else ''
     if not expected:
-        raise frame_android.FrameError(f"{a['n']}: the F-Droid index has no SHA-256 for this APK, so it can't be verified")
+        raise frame_android.FrameError(f"{label}: the F-Droid index has no SHA-256 for this APK, so it can't be verified")
     name = urllib.parse.urlsplit(a['a']).path.rsplit('/', 1)[-1]
     if (not name or name in ('.', '..') or name.startswith('.') or '/' in name or '\\' in name or ':' in name
             or any(ord(c) < 32 or ord(c) == 127 for c in name)):
@@ -235,7 +237,7 @@ def fetch_apk(a):
                     break
                 written += len(chunk)
                 if written > MAX_APK:
-                    raise frame_android.FrameError(f"{a['n']}: APK download too large")
+                    raise frame_android.FrameError(f"{label}: APK download too large")
                 h.update(chunk)
                 f.write(chunk)
         if h.hexdigest() != expected:
@@ -243,7 +245,7 @@ def fetch_apk(a):
         os.replace(tmp, path)  # only a verified file ever reaches the cache name
         return path
     except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
-        raise frame_android.FrameError(f"couldn't download {a['n']}: {e}")
+        raise frame_android.FrameError(f"couldn't download {label}: {e}")
     finally:
         if os.path.exists(tmp):
             try:
@@ -267,7 +269,8 @@ def fetch_icon(a):
 def install(pkg):
     a = app(pkg)
     if a['r'] == 'no' and not a['t']:
-        raise frame_android.FrameError(f"{a['n']} can't run on the Frame: {a['why'][0]}")
+        why = (a.get('why') or ['not compatible'])[0]
+        raise frame_android.FrameError(f"{a['n']} can't run on the Frame: {why}")
     return frame_android.install(fetch_apk(a), name=a['n'], icon_png=fetch_icon(a), source='F-Droid')
 
 
@@ -314,10 +317,13 @@ def add_report(pkg, version, result=None, rating=None, notes='', via='user', run
 def recent_reports(limit=200):
     """Newest first, with a display name from the report or the catalogue."""
     catalog()
+    cap = limit if type(limit) is int else 200
+    if cap <= 0:
+        return []
     names = {p: a['n'] for p, a in (_cache['by_pkg'] or {}).items()}
     rows = [r for r in compat_db.load() if isinstance(r, dict) and isinstance(r.get('package'), str) and r['package']]
     out = []
-    for r in sorted(rows, key=lambda r: r.get('date') if isinstance(r.get('date'), str) else '', reverse=True)[:limit]:
+    for r in sorted(rows, key=lambda r: r.get('date') if isinstance(r.get('date'), str) else '', reverse=True)[:cap]:
         out.append({**r, 'name': r.get('label') or names.get(r['package']) or r['package'],
                     'inCatalog': r['package'] in names})
     return out
