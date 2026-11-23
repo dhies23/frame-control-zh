@@ -157,3 +157,41 @@ class HostHelpers(unittest.TestCase):
             msg = frame_host.open_steam_link()
             self.assertIn("download page", msg)
             open_url.assert_called_once()
+
+    def test_reveal_path_windows_rejects_quotes_and_control_chars(self):
+        with mock.patch.multiple(frame_host, MAC=False, WINDOWS=True, LINUX=False), \
+             mock.patch.object(frame_host.subprocess, "Popen") as popen:
+            for bad in ('C:\\tmp\\"evil', "C:\\tmp\\a\nb", "C:\\tmp\\a\x00b"):
+                with self.assertRaises(frame_host.HostError, msg=repr(bad)):
+                    frame_host.reveal_path(bad)
+            popen.assert_not_called()
+
+    def test_open_terminal_rejects_nul_bytes_and_uses_utf8_replace_for_osascript(self):
+        for flags in ({"MAC": True, "WINDOWS": False, "LINUX": False},
+                      {"MAC": False, "WINDOWS": True, "LINUX": False},
+                      {"MAC": False, "WINDOWS": False, "LINUX": True}):
+            with mock.patch.multiple(frame_host, **flags):
+                with self.assertRaises(frame_host.HostError, msg=str(flags)):
+                    frame_host.open_terminal(["ssh", "frame\x00evil"])
+        with mock.patch.multiple(frame_host, MAC=True, WINDOWS=False, LINUX=False), \
+             mock.patch.object(frame_host.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            frame_host.open_terminal(["ssh", "frame"])
+        self.assertEqual(run.call_args.kwargs.get("encoding"), "utf-8")
+        self.assertEqual(run.call_args.kwargs.get("errors"), "replace")
+
+    def test_ssh_hostname_uses_utf8_replace_and_rdp_guards_bad_hosts(self):
+        with mock.patch.object(frame_host, "run_ssh",
+                               return_value=subprocess.CompletedProcess([], 0, "hostname frame.local\n", "")) as run:
+            self.assertEqual(frame_host.ssh_hostname("frame"), "frame.local")
+        self.assertEqual(run.call_args.kwargs.get("encoding"), "utf-8")
+        self.assertEqual(run.call_args.kwargs.get("errors"), "replace")
+
+        for bad in (None, "", 123, "192.168.1.1\x00", "192.168.1.1 /admin", "192.168.1.1\tbad"):
+            with self.assertRaises(frame_host.HostError, msg=repr(bad)):
+                frame_host.rdp_file(bad)
+        with mock.patch.object(frame_host, "check_rdp") as check:
+            for bad in (123, "192.168.1.1 /admin", "192.168.1.1\x01"):
+                with self.assertRaises(frame_host.HostError, msg=repr(bad)):
+                    frame_host.open_rdp("frame", host=bad)
+            check.assert_not_called()
