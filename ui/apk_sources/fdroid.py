@@ -4,8 +4,10 @@ import base64
 import contextlib
 import errno
 import hashlib
+import http.client
 from html.parser import HTMLParser
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -17,6 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+import zlib
 
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -154,6 +157,8 @@ def _fetch(url, path, maximum, auth=None):
         if e.code in (403, 429):
             raise _web.limited_error(host, _web.throttle(url, e.headers, auth)) from e
         raise
+    except http.client.HTTPException as e:
+        raise SourceError('repository download failed: ' + str(e)) from e
 
 
 def _limited(source, error):
@@ -271,7 +276,8 @@ def _jar(path, member, pin, strong=False):
             content = z.read(member)
             _digest_check(entries[0], '-digest', content, strong)
             return content, fingerprint
-    except (ValueError, KeyError, IndexError, StopIteration, RuntimeError, NotImplementedError, zipfile.BadZipFile) as e:
+    except (ValueError, KeyError, IndexError, StopIteration, RuntimeError, NotImplementedError,
+            zipfile.BadZipFile, zlib.error) as e:
         raise SourceError('invalid signed repository: ' + str(e)) from e
 
 
@@ -281,7 +287,7 @@ def _storage():
 
 def _read():
     try:
-        settings = json.loads(_storage().read_text())
+        settings = json.loads(_storage().read_text(encoding='utf-8'))
         if not isinstance(settings, dict) or not isinstance(settings.get('repos'), list) or not isinstance(settings.get('enabled'), dict):
             raise ValueError('invalid settings structure')
         return settings
@@ -295,7 +301,7 @@ def _write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix='.part')
     try:
-        with os.fdopen(fd, 'w') as f:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump(value, f, separators=(',', ':'))
         os.replace(tmp, path)
     finally:
@@ -309,7 +315,7 @@ def _state_path():
 
 def _states():
     try:
-        states = json.loads(_state_path().read_text())
+        states = json.loads(_state_path().read_text(encoding='utf-8'))
         if not isinstance(states, dict):
             raise ValueError('invalid state structure')
         return states
@@ -416,8 +422,11 @@ class _PlainText(HTMLParser):
 
 
 def _summary(value):
+    text = _text(value)
+    if not isinstance(text, str):
+        return ''
     parser = _PlainText()
-    parser.feed(_text(value))
+    parser.feed(text)
     parser.close()
     return ' '.join(''.join(parser.parts).split())
 
@@ -430,10 +439,12 @@ def _images(meta, base):
         except SourceError:
             return None  # one odd image name mustn't hide the app
 
+    if not isinstance(meta, dict):
+        return {'icon': None, 'banner': None, 'screenshots': []}
     icon = url(_text(meta.get('icon')))
     banner = url(_text(meta.get('featureGraphic')))
     screenshots = []
-    groups = meta.get('screenshots') or {}
+    groups = meta.get('screenshots') if isinstance(meta.get('screenshots'), dict) else {}
     for device, legacy in (('phone', 'phoneScreenshots'), ('sevenInch', 'sevenInchScreenshots')):
         files = _text(groups.get(device)) or _text(meta.get(legacy)) or []
         for file in files if isinstance(files, list) else []:
@@ -458,71 +469,98 @@ def _reduce(path, source):
                 continue
             for pkg in reader.members():
                 item = reader.value()
-                if pkg not in compatible:
+                if pkg not in compatible or not isinstance(item, dict):
                     continue
-                meta = item.get('metadata', {})
-                files = {v['file'].get('name'): v for v in item.get('versions', {}).values()
+                meta = item.get('metadata') if isinstance(item.get('metadata'), dict) else {}
+                raw_versions = item.get('versions') if isinstance(item.get('versions'), dict) else {}
+                files = {v['file'].get('name'): v for v in raw_versions.values()
                          if isinstance(v, dict) and isinstance(v.get('file'), dict)}
                 versions = []
                 for v in compatible[pkg]:
-                    original = files[v['name']]
-                    versions.append(dict(v, size=original['file'].get('size'), updated=_date(original.get('added'))))
+                    original = files.get(v['name']) or {}
+                    file_meta = original.get('file') if isinstance(original.get('file'), dict) else {}
+                    versions.append(dict(v, size=file_meta.get('size'), updated=_date(original.get('added'))))
                 versions.sort(key=lambda v: (v['version_code'], v['abis'] == ['arm64-v8a']), reverse=True)
                 latest = versions[0]
                 images = _images(meta, source['url'])
+                raw_name = _text(meta.get('name'))
+                raw_dev = _text(meta.get('authorName'))
                 result[pkg] = dict(source=source['id'], id=pkg, package=pkg,
-                    name=_text(meta.get('name')) or pkg, summary=_summary(meta.get('summary')),
-                    icon=images['icon'], images=images, developer=_text(meta.get('authorName')) or None,
-                    page=meta.get('webSite') or source['url'], vr=None, free=True,
-                    categories=[c for c in meta.get('categories') or [] if isinstance(c, str)][:8],
-                    license=meta.get('license'), downloadable=bool(latest.get('sha256')),
+                    name=raw_name if isinstance(raw_name, str) and raw_name else pkg,
+                    summary=_summary(meta.get('summary')),
+                    icon=images['icon'], images=images,
+                    developer=raw_dev if isinstance(raw_dev, str) and raw_dev else None,
+                    page=meta.get('webSite') if isinstance(meta.get('webSite'), str) and meta.get('webSite') else source['url'],
+                    vr=None, free=True,
+                    categories=[c for c in meta.get('categories') or [] if isinstance(c, str)][:8]
+                    if isinstance(meta.get('categories'), list) else [],
+                    license=meta.get('license') if isinstance(meta.get('license'), str) else None,
+                    downloadable=bool(latest.get('sha256')),
                     versions=versions, **{k: latest[k] for k in ('version', 'version_code', 'min_sdk', 'abis', 'size', 'updated')})
     return result
 
 
 def _date(value):
-    return time.strftime('%Y-%m-%d', time.gmtime(value / 1000)) if isinstance(value, (int, float)) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    try:
+        return time.strftime('%Y-%m-%d', time.gmtime(value / 1000))
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _v1(content, path):
     index = json.loads(content)
-    apps = {a['packageName']: a for a in index['apps']}
+    if not isinstance(index, dict) or not isinstance(index.get('apps'), list) or not isinstance(index.get('packages'), dict):
+        raise ValueError('invalid v1 index structure')
+    apps = {a['packageName']: a for a in index['apps']
+            if isinstance(a, dict) and isinstance(a.get('packageName'), str)}
     packages = {}
     for pkg, builds in index['packages'].items():
+        if not isinstance(pkg, str) or not isinstance(builds, list):
+            continue
         app = apps.get(pkg, {})
-        localized = app.get('localized', {})
-        meta = {k: _text({locale: fields[k] for locale, fields in localized.items() if fields.get(k)}) or app.get(k)
+        localized = app.get('localized') if isinstance(app.get('localized'), dict) else {}
+        meta = {k: _text({locale: fields[k] for locale, fields in localized.items()
+                          if isinstance(fields, dict) and fields.get(k)}) or app.get(k)
                 for k in ('name', 'summary', 'license', 'webSite', 'authorName')}
-        meta['categories'] = app.get('categories') or []
+        meta['categories'] = app.get('categories') if isinstance(app.get('categories'), list) else []
         for field in ('icon', 'featureGraphic', 'phoneScreenshots', 'sevenInchScreenshots'):
             images = {}
             for locale, fields in localized.items():
+                if not isinstance(locale, str) or not isinstance(fields, dict):
+                    continue
                 value = fields.get(field)
                 if not value:
                     continue
                 prefix = pkg + '/' + locale + '/'
                 if field.endswith('Screenshots'):
-                    images[locale] = [{'name': prefix + field + '/' + name} for name in value[:6]]
-                else:
+                    if isinstance(value, list):
+                        images[locale] = [{'name': prefix + field + '/' + name}
+                                          for name in value[:6] if isinstance(name, str)]
+                elif isinstance(value, str):
                     images[locale] = {'name': prefix + value}
             meta[field] = images
-        if not meta['icon'] and app.get('icon'):
+        if not meta['icon'] and isinstance(app.get('icon'), str) and app['icon']:
             meta['icon'] = {'en-US': {'name': 'icons/' + app['icon']}}
         versions = {}
         for i, v in enumerate(builds):
+            if not isinstance(v, dict) or not isinstance(v.get('apkName'), str) or 'versionCode' not in v:
+                continue
             versions[str(i)] = {'manifest': {'versionName': v.get('versionName'), 'versionCode': v['versionCode'],
                 'usesSdk': {'minSdkVersion': v.get('minSdkVersion', 1)}, 'nativecode': v.get('nativecode', [])},
                 'file': {'name': v['apkName'], 'sha256': v.get('hash') if v.get('hashType') == 'sha256' else None,
                          'size': v.get('size')}, 'added': v.get('added')}
         packages[pkg] = {'metadata': meta, 'versions': versions}
-    path.write_text(json.dumps({'packages': packages}))
-    return (index.get('repo') or {}).get('timestamp')
+    path.write_text(json.dumps({'packages': packages}), encoding='utf-8')
+    repo = index.get('repo')
+    return repo.get('timestamp') if isinstance(repo, dict) else None
 
 
 def _cached(source, cache):
     """(apps, pin, expired) from a cache matching this source, or None."""
     try:
-        saved = json.loads(cache.read_text())
+        saved = json.loads(cache.read_text(encoding='utf-8'))
         if (saved.get('version') == CACHE_VERSION and saved.get('fingerprint') == source.get('fingerprint')
                 and saved.get('url') == source['url']):
             return saved['apps'], saved['fingerprint'], time.time() - cache.stat().st_mtime >= MAX_AGE
@@ -550,7 +588,13 @@ def _refresh_later(source):
                 with _LOCK:
                     _refreshing.pop(source['id'], None)
         _refreshing[source['id']] = thread = threading.Thread(target=run, daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception:
+        with _LOCK:
+            if _refreshing.get(source['id']) is thread:
+                _refreshing.pop(source['id'], None)
+        raise
 
 
 def _source_lock(source_id):
