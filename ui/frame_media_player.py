@@ -99,34 +99,55 @@ class Overlay:
             self.vr.VR_ShutdownInternal()
 
 
+def _stream_index(stream, label='stream'):
+    idx = stream.get('index') if isinstance(stream, dict) else None
+    if isinstance(idx, bool) or not isinstance(idx, int) or idx < 0:
+        raise ValueError(f'Invalid {label} index')
+    return idx
+
+
 def probe(path):
-    result = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', str(path)],
-                            capture_output=True, text=True, timeout=30)
+    try:
+        result = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', str(path)],
+                                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ValueError(f'Cannot read media: {e}') from e
     if result.returncode:
-        raise ValueError(result.stderr[-2000:] or 'Cannot read media')
-    streams = json.loads(result.stdout)['streams']
-    videos = [s for s in streams if s['codec_type'] == 'video'
-              and not s.get('disposition', {}).get('attached_pic')]
+        raise ValueError((result.stderr or '')[-2000:] or 'Cannot read media')
+    try:
+        parsed = json.loads(result.stdout or '')
+    except ValueError as e:
+        raise ValueError(f'Cannot read media: {e}') from e
+    streams = parsed.get('streams') if isinstance(parsed, dict) else None
+    if not isinstance(streams, list):
+        raise ValueError('Cannot read media: missing streams')
+    streams = [s for s in streams if isinstance(s, dict)]
+    def disp(s):
+        d = s.get('disposition')
+        return d if isinstance(d, dict) else {}
+    videos = [s for s in streams if s.get('codec_type') == 'video'
+              and not disp(s).get('attached_pic')]
     if not videos:
         raise ValueError('No image or video stream')
     # A preview track can precede the movie. Honor the container's default,
     # falling back to its first non-artwork video when none is marked.
-    video = next((s for s in videos if s.get('disposition', {}).get('default')), videos[0])
-    audios = [s for s in streams if s['codec_type'] == 'audio']
-    audio = next((s for s in audios if s.get('disposition', {}).get('default')),
+    video = next((s for s in videos if disp(s).get('default')), videos[0])
+    audios = [s for s in streams if s.get('codec_type') == 'audio']
+    audio = next((s for s in audios if disp(s).get('default')),
                  audios[0] if audios else None)
     return video, audio
 
 
 def decoder_command(path, info, width, height, audio, photo=False):
+    video_index = _stream_index(info, 'video stream')
     cmd = ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error']
     if not photo:
         cmd += ['-re', '-readrate_initial_burst', '0']
-        codec = {'h264': 'h264_v4l2m2m', 'hevc': 'hevc_v4l2m2m'}.get(info['codec_name'])
+        codec = {'h264': 'h264_v4l2m2m', 'hevc': 'hevc_v4l2m2m'}.get(info.get('codec_name'))
         if not codec:
             raise ValueError('Hardware playback currently supports H.264 and H.265 only')
-        cmd += ['-c:%s' % info['index'], codec]
-    cmd += ['-i', str(path), '-map', '0:%s' % info['index'], '-vf', 'scale=%s:%s' % (width, height),
+        cmd += ['-c:%s' % video_index, codec]
+    cmd += ['-i', str(path), '-map', '0:%s' % video_index, '-vf', 'scale=%s:%s' % (width, height),
             '-pix_fmt', 'rgba']
     if photo:
         cmd += ['-frames:v', '1']
@@ -134,15 +155,18 @@ def decoder_command(path, info, width, height, audio, photo=False):
         cmd += ['-r', '30']
     cmd += ['-f', 'rawvideo', 'pipe:1']
     if audio is not None and not photo:
-        cmd += ['-map', '0:%s' % audio['index'], '-f', 'pulse', 'Frame Control Media']
+        audio_index = _stream_index(audio, 'audio stream')
+        cmd += ['-map', '0:%s' % audio_index, '-f', 'pulse', 'Frame Control Media']
     return cmd
 
 
 def media_rotation(info):
     """Read ffprobe orientation in the same priority as FFmpeg autorotation."""
-    matrices = [s for s in info.get('side_data_list', [])
-                if s.get('side_data_type') == 'Display Matrix']
-    value = matrices[0].get('rotation') if matrices else info.get('tags', {}).get('rotate', 0)
+    side_data = info.get('side_data_list') if isinstance(info, dict) else None
+    matrices = [s for s in (side_data if isinstance(side_data, list) else [])
+                if isinstance(s, dict) and s.get('side_data_type') == 'Display Matrix']
+    tags = info.get('tags') if isinstance(info, dict) else None
+    value = matrices[0].get('rotation') if matrices else (tags.get('rotate', 0) if isinstance(tags, dict) else 0)
     try:
         angle = float(value) if not isinstance(value, bool) else float('nan')
     except (TypeError, ValueError):
@@ -158,8 +182,9 @@ def ignore_signals():
 
 
 def write_status(path, **values):
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix('.tmp')
-    tmp.write_text(json.dumps(values))
+    tmp.write_text(json.dumps(values), encoding='utf-8')
     tmp.replace(path)
 
 
@@ -287,8 +312,12 @@ def play(args):
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-                    proc.wait()
-            proc.stdout.close()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+            if proc.stdout:
+                proc.stdout.close()
         if vr:
             vr.close()
 

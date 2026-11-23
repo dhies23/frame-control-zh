@@ -559,6 +559,86 @@ class Media(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     splat.read(path)
 
+    def test_probe_handles_ffprobe_errors_utf8_and_malformed_json(self):
+        ok = unittest.mock.Mock(returncode=0, stdout=json.dumps({
+            'streams': [None, {'index': 0, 'codec_type': 'video', 'codec_name': 'h264', 'disposition': None}]}))
+        with patch.object(player.subprocess, 'run', return_value=ok) as run:
+            video, audio = player.probe(Path('a.mp4'))
+        self.assertEqual(video['index'], 0)
+        self.assertIsNone(audio)
+        self.assertEqual(run.call_args.kwargs.get('encoding'), 'utf-8')
+        self.assertEqual(run.call_args.kwargs.get('errors'), 'replace')
+        for exc in (FileNotFoundError('no ffprobe'), player.subprocess.TimeoutExpired('ffprobe', 30)):
+            with self.subTest(exc=type(exc).__name__), patch.object(player.subprocess, 'run', side_effect=exc):
+                with self.assertRaisesRegex(ValueError, 'Cannot read media'):
+                    player.probe(Path('a.mp4'))
+        for raw in ('not-json', '{}', '{"streams": "bad"}', '[]'):
+            with self.subTest(raw=raw), patch.object(player.subprocess, 'run',
+                                                     return_value=unittest.mock.Mock(returncode=0, stdout=raw)):
+                with self.assertRaisesRegex(ValueError, 'Cannot read media'):
+                    player.probe(Path('a.mp4'))
+
+    def test_media_rotation_and_decoder_command_guard_null_and_missing_fields(self):
+        self.assertEqual(player.media_rotation({'side_data_list': None, 'tags': None}), 0)
+        self.assertEqual(player.media_rotation({
+            'side_data_list': [None, {'side_data_type': 'Display Matrix', 'rotation': 90}]}), 90)
+        for bad_info in ({'codec_name': 'h264'}, {'index': True, 'codec_name': 'h264'}, {'index': 0}):
+            with self.subTest(bad_info=bad_info), self.assertRaises(ValueError):
+                player.decoder_command(Path('a.mp4'), bad_info, 4, 2, None)
+        with self.assertRaises(ValueError):
+            player.decoder_command(Path('a.mp4'), {'index': 0, 'codec_name': 'h264'}, 4, 2, {'index': True})
+
+    def test_remote_run_guards_non_dict_body_stop_errors_and_reset_failed_errors(self):
+        for bad in (['bad'], None, 'list'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                remote.run(bad)
+        for exc in (OSError('no systemctl'), remote.subprocess.TimeoutExpired('systemctl', 15)):
+            with self.subTest(exc=type(exc).__name__), patch.object(remote.subprocess, 'run', side_effect=exc):
+                with self.assertRaisesRegex(RuntimeError, 'Could not stop'):
+                    remote.run({'action': 'stop'})
+        with patch.object(remote.subprocess, 'run', return_value=unittest.mock.Mock(returncode=0, stderr='')) as run, \
+                patch.object(remote, 'status', return_value={'state': 'idle'}):
+            remote.run({'action': 'stop'})
+        self.assertEqual(run.call_args.kwargs.get('encoding'), 'utf-8')
+        self.assertEqual(run.call_args.kwargs.get('errors'), 'replace')
+        with tempfile.TemporaryDirectory() as d, patch.object(remote, 'ROOT', Path(d)), \
+                patch.object(remote, 'STATUS', Path(d)/'status.json'), \
+                patch.object(remote, 'active', return_value=False), \
+                patch.object(remote, 'probe', return_value=({}, False)):
+            identity = 'c'*32+'/still_SBS.png'
+            (Path(d)/identity).parent.mkdir()
+            (Path(d)/identity).write_bytes(b'x')
+            calls = []
+            def fake_run(cmd, **kw):
+                calls.append((cmd, kw))
+                if cmd[0] == 'systemctl':
+                    raise remote.subprocess.TimeoutExpired(cmd, 10)
+                return unittest.mock.Mock(returncode=0, stderr='')
+            with patch.object(remote.subprocess, 'run', side_effect=fake_run):
+                res = remote.run({'action': 'play', 'id': identity})
+            self.assertEqual(res['message'], 'Starting Frame Control media')
+            self.assertEqual(calls[-1][0][0], 'systemd-run')
+            self.assertEqual(calls[-1][1].get('encoding'), 'utf-8')
+            self.assertEqual(calls[-1][1].get('errors'), 'replace')
+
+    def test_remote_list_skips_vanished_files(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(remote, 'ROOT', Path(d)), \
+                patch.object(remote, 'status', return_value={'state': 'idle'}):
+            folder = Path(d)/('d'*32)
+            folder.mkdir()
+            good = folder/'ok.png'
+            gone = folder/'gone.png'
+            good.write_bytes(b'1234')
+            gone.write_bytes(b'5678')
+            real_stat = Path.stat
+            def flaky_stat(self, *args, **kwargs):
+                if self.name == 'gone.png':
+                    raise FileNotFoundError('vanished')
+                return real_stat(self, *args, **kwargs)
+            with patch.object(Path, 'stat', flaky_stat):
+                files = remote.run({'action': 'list'})['files']
+            self.assertEqual([f['name'] for f in files], ['ok.png'])
+
 
 if __name__ == '__main__':
     unittest.main()
