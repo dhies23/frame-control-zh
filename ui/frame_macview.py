@@ -271,7 +271,10 @@ class MacView:
 
     def _drop_tunnel(self):
         if self.tunnel and self.tunnel.poll() is None:
-            self.tunnel.terminate()
+            try:
+                self.tunnel.terminate()
+            except OSError:
+                pass
         self.tunnel = None
 
     def tunnel_up(self):
@@ -314,7 +317,10 @@ class MacView:
                 # reopens a tunnel to the new one if anything is being shown.
                 self.tunnel, self.remote_port = None, None
         if moved and tunnel is not None and tunnel.poll() is None:
-            tunnel.terminate()
+            try:
+                tunnel.terminate()
+            except OSError:
+                pass
 
     def _open_tunnel(self, via, ports):
         """Tries the ports on one route; True once the tunnel answers. With self.lock held."""
@@ -539,12 +545,21 @@ class MacView:
         with self.lock:
             if not (self.agent and self.agent.poll() is None):
                 return
-            self.agent.terminate()
+            try:
+                self.agent.terminate()
+            except OSError:
+                return
             try:
                 self.agent.wait(5)
             except subprocess.TimeoutExpired:
-                self.agent.kill()
-                self.agent.wait()
+                try:
+                    self.agent.kill()
+                except OSError:
+                    pass
+                try:
+                    self.agent.wait(5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
 
     def request_permissions(self):
         return self.call("/permissions", method="POST")
@@ -557,13 +572,23 @@ class MacView:
             pass
         for proc in (self.tunnel, self.agent):
             if proc and proc.poll() is None:
-                proc.terminate()
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
         # The helper puts separated windows back before it exits (about 1 s).
         if self.agent:
             try:
                 self.agent.wait(3)
             except subprocess.TimeoutExpired:
-                self.agent.kill()
+                try:
+                    self.agent.kill()
+                except OSError:
+                    pass
+                try:
+                    self.agent.wait(5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
 
 
 def _quote(s):

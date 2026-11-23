@@ -336,6 +336,28 @@ class ComputerState(unittest.TestCase):
         self.assertTrue(spec['annotations']['readOnlyHint'])
 
 
+class AgentHardening(unittest.TestCase):
+    def test_send_file_unreadable_after_approval_raises_value_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / 'note.txt'
+            sample.write_bytes(b'hello')
+            fake = mock.Mock()
+            fake.working.return_value = mock.MagicMock(__enter__=lambda s: None, __exit__=lambda s, *a: False)
+            fake.agent_target.return_value = {'alias': 'frame'}
+            req = agent.call(fake, {'name': 'send_file', 'arguments': {'path': str(sample)}})
+            token = req['confirmation']
+            agent.approvals.decide(token, True)
+            orig_consume = agent.approvals.consume
+
+            def vanish_after_consume(tok, act):
+                orig_consume(tok, act)
+                sample.unlink()
+
+            with mock.patch.object(agent.approvals, 'consume', side_effect=vanish_after_consume):
+                with self.assertRaisesRegex(ValueError, 'could not be read'):
+                    agent.call(fake, {'name': 'send_file', 'arguments': {'path': str(sample)}, 'confirmation': token})
+
+
 if __name__ == '__main__':
     unittest.main()
 
