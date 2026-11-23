@@ -31,10 +31,16 @@ def remove_class(data, descriptor=CLASS):
             zlib.adler32(data[12:]) != struct.unpack_from('<I', data, 8)[0]):
         raise ValueError('invalid DEX header/checksum')
     def word(offset):
+        if offset < 0 or offset + 4 > len(data):
+            raise ValueError('DEX offset out of bounds')
         return struct.unpack_from('<I', data, offset)[0]
     strings_count, strings_offset = word(56), word(60)
     types_count, types_offset = word(64), word(68)
     count, offset = word(96), word(100)
+    if (strings_offset + strings_count * 4 > len(data) or
+            types_offset + types_count * 4 > len(data) or
+            offset + count * 32 > len(data)):
+        raise ValueError('DEX section exceeds file size')
     matches = []
     for i in range(count):
         type_id = word(offset + i * 32)
@@ -46,6 +52,8 @@ def remove_class(data, descriptor=CLASS):
         start = word(strings_offset + string_id * 4)
         # Skip the UTF-16 length ULEB128. Class descriptors are ASCII.
         for _ in range(5):
+            if start >= len(data):
+                raise ValueError('DEX string offset out of bounds')
             byte = data[start]
             start += 1
             if byte < 128:
@@ -64,7 +72,10 @@ def remove_class(data, descriptor=CLASS):
     struct.pack_into('<I', out, 96, count - 1)
     mapped = 0
     map_offset = word(52)
-    for i in range(word(map_offset)):
+    map_count = word(map_offset)
+    if map_offset + 4 + map_count * 12 > len(data):
+        raise ValueError('DEX map section exceeds file size')
+    for i in range(map_count):
         entry = map_offset + 4 + i * 12
         kind, _, size, position = struct.unpack_from('<HHII', data, entry)
         if kind == 6:
@@ -99,9 +110,9 @@ def compile_runtime(runtime, android_jar, d8, javac='javac'):
         # Compile-only signatures, never shipped; references resolve to the
         # unmodified SDL/SDLActivity classes already in the original DEX.
         (work / 'SDL.java').write_text('package org.libsdl.app; class SDL { '
-            'public static android.content.Context getContext() { return null; } }')
+            'public static android.content.Context getContext() { return null; } }', encoding='utf-8')
         (work / 'SDLActivity.java').write_text('package org.libsdl.app; class SDLActivity { '
-            'public static native void onNativeClipboardChanged(); }')
+            'public static native void onNativeClipboardChanged(); }', encoding='utf-8')
         subprocess.run([str(javac), '--release', '8', '-g:none', '-classpath', str(android_jar),
                         '-d', str(classes), str(source), str(work / 'SDL.java'),
                         str(work / 'SDLActivity.java')], check=True)
@@ -122,8 +133,10 @@ def compile_runtime(runtime, android_jar, d8, javac='javac'):
                'java_source_sha256': digest(source), 'android_jar_sha256': digest(android_jar),
                'patcher_sha256': digest(__file__), 'min_api': 26, 'java_release': 8,
                'd8_jar_sha256': digest(d8.parent / 'lib/d8.jar'),
-               'javac_version': subprocess.check_output([str(javac), '-version'], text=True).strip(),
-               'd8_version': subprocess.check_output([str(d8), '--version'], text=True).strip(),
+               'javac_version': subprocess.check_output([str(javac), '-version'], text=True,
+                                                        encoding='utf-8', errors='replace').strip(),
+               'd8_version': subprocess.check_output([str(d8), '--version'], text=True,
+                                                     encoding='utf-8', errors='replace').strip(),
                'original_dex_sha256': hashlib.sha256(original).hexdigest(),
                'patched_dex_sha256': hashlib.sha256(dex).hexdigest()}
     return dex, receipt

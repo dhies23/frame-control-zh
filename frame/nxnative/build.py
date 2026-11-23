@@ -33,10 +33,16 @@ def profile_inputs(source, title, extracted, env):
     profile = json.loads(subprocess.check_output([
         sys.executable, '-c', query, str(source / 'dm/games/game.py'), title,
     ], env=env, text=True))
-    modules = profile['modules']
-    if (not modules or len(set(modules)) != len(modules) or
-            any(not re.fullmatch(r'main|sdk|subsdk\d+', m) for m in modules)):
+    if not isinstance(profile, dict):
+        raise ValueError('invalid game profile')
+    modules = profile.get('modules')
+    if (not isinstance(modules, list) or not modules or
+            any(not isinstance(m, str) or not re.fullmatch(r'main|sdk|subsdk[0-9]+', m) for m in modules) or
+            len(set(modules)) != len(modules)):
         raise ValueError('invalid module list in game profile')
+    builds = profile.get('builds')
+    if not isinstance(builds, dict):
+        raise ValueError('invalid builds table in game profile')
     actual = {}
     for name in modules:
         path = extracted / 'ExeFS' / name
@@ -45,16 +51,17 @@ def profile_inputs(source, title, extracted, env):
         if len(header) != 0x60 or header[:4] != b'NSO0':
             raise ValueError('invalid NSO module: ' + str(path))
         actual[name] = header[0x40:0x50].hex()
-    if not any(all(build.get(name, '').lower() == actual[name] for name in modules)
-               for build in profile['builds'].values()):
+    if not any(isinstance(build, dict) and
+               all(isinstance(build.get(name), str) and build[name].lower() == actual[name] for name in modules)
+               for build in builds.values()):
         raise ValueError('No verified profile build matches these modules: ' + json.dumps(actual))
     return modules
 
 
 def build(a):
-    if a.jobs < 1:
+    if isinstance(a.jobs, bool) or not isinstance(a.jobs, int) or a.jobs < 1:
         raise ValueError('jobs must be positive')
-    if not re.fullmatch('[0-9A-Fa-f]{16}', a.title):
+    if not isinstance(a.title, str) or not re.fullmatch('[0-9A-Fa-f]{16}', a.title):
         raise ValueError('title must be a 16-digit title ID')
     source, out = a.source.resolve(), a.build.resolve()
     if not source.exists():
@@ -82,22 +89,26 @@ def build(a):
         st = image.stat()
         identity['image'] = [st.st_size, st.st_mtime_ns]
     receipt = out / 'frame-inputs.json'
-    if receipt.exists() and json.loads(receipt.read_text()) != identity:
+    if receipt.exists() and json.loads(receipt.read_text(encoding='utf-8')) != identity:
         raise ValueError('build folder belongs to different inputs; use a new build folder')
-    receipt.write_text(json.dumps(identity, indent=2) + '\n')
+    receipt.write_text(json.dumps(identity, indent=2) + '\n', encoding='utf-8')
     inputs = out / 'extract' / extracted.name
     inputs.mkdir(parents=True, exist_ok=True)
     for name in ('ExeFS', 'icon.jpg', 'control.nacp'):
         target = inputs / name
-        if target.exists() and target.resolve() != (extracted / name).resolve():
-            raise ValueError('existing build input differs: ' + str(target))
-        if not target.exists():
-            target.symlink_to(extracted / name)
-    if not (inputs / 'RomFS').exists():
-        if (extracted / 'RomFS').is_dir():
-            (inputs / 'RomFS').symlink_to(extracted / 'RomFS')
+        if target.is_symlink() or target.exists():
+            if not target.exists() or target.resolve() != (extracted / name).resolve():
+                raise ValueError('existing build input differs: ' + str(target))
         else:
-            extract(extracted / 'RomFS.img', inputs / 'RomFS')
+            target.symlink_to(extracted / name)
+    romfs_target = inputs / 'RomFS'
+    if romfs_target.is_symlink() and not romfs_target.exists():
+        raise ValueError('existing build input is a dangling symlink: ' + str(romfs_target))
+    if not romfs_target.exists():
+        if (extracted / 'RomFS').is_dir():
+            romfs_target.symlink_to(extracted / 'RomFS')
+        else:
+            extract(extracted / 'RomFS.img', romfs_target)
     font = out / 'font'
     font.mkdir(exist_ok=True)
     shutil.copyfile(a.font, font / 'standard.ttf')

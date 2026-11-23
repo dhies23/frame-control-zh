@@ -87,6 +87,45 @@ class LoveIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'checksum'):
             clipboard['remove_class'](bytes(data))
 
+    def test_dex_remove_class_rejects_out_of_bounds_tables_as_value_error(self):
+        def finish(buf):
+            struct.pack_into('<I', buf, 32, len(buf))
+            buf[12:32] = hashlib.sha1(buf[32:]).digest()
+            struct.pack_into('<I', buf, 8, zlib.adler32(buf[12:]))
+            return bytes(buf)
+
+        # 1. Huge class_defs count overflowing DEX length
+        buf = bytearray(128)
+        buf[:8] = b'dex\n035\0'
+        struct.pack_into('<II', buf, 96, 1000, 112)
+        with self.assertRaisesRegex(ValueError, 'DEX'):
+            clipboard['remove_class'](finish(buf))
+
+        # 2. Out-of-bounds string data offset (would raise IndexError on data[start])
+        buf = bytearray(112 + 4 + 4 + 32)
+        buf[:8] = b'dex\n035\0'
+        struct.pack_into('<IIII', buf, 56, 1, 112, 1, 116)
+        struct.pack_into('<II', buf, 96, 1, 120)
+        struct.pack_into('<I', buf, 112, len(buf) + 10)  # string_data_off past EOF
+        struct.pack_into('<I', buf, 116, 0)
+        struct.pack_into('<I', buf, 120, 0)
+        with self.assertRaisesRegex(ValueError, 'DEX'):
+            clipboard['remove_class'](finish(buf))
+
+        # 3. Out-of-bounds map_off after matching class
+        desc = clipboard['CLASS']
+        buf = bytearray(112 + 4 + 4 + 32)
+        buf[:8] = b'dex\n035\0'
+        struct.pack_into('<IIII', buf, 56, 1, 112, 1, 116)
+        struct.pack_into('<II', buf, 96, 1, 120)
+        struct.pack_into('<I', buf, 116, 0)
+        struct.pack_into('<I', buf, 120, 0)
+        struct.pack_into('<I', buf, 112, len(buf))
+        buf += bytes([len(desc)]) + desc.encode() + b'\0'
+        struct.pack_into('<I', buf, 52, len(buf) + 8)  # map_off past EOF
+        with self.assertRaisesRegex(ValueError, 'DEX'):
+            clipboard['remove_class'](finish(buf))
+
     @unittest.skipUnless(shutil.which('javac') and shutil.which('java'), 'JDK executes actual SDL Java source')
     def test_clipboard_service_missing_and_available(self):
         sources = {
