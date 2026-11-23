@@ -23,7 +23,7 @@ UNAVAILABLE = 'unavailable: not reported, unreadable or invalid'
 
 def read(path):
     try:
-        return Path(path).read_text().strip()
+        return Path(path).read_text(encoding='utf-8', errors='replace').strip()
     except (OSError, UnicodeError):
         return None
 
@@ -111,11 +111,11 @@ def summarize(samples):
         values = [r['value'] for r in rows if r['value'] is not None]
         item = {'unit': rows[0]['unit'], 'sources': sorted({r['source'] for r in rows if r['source']}),
                 'available': len(values), 'unavailable': len(samples) - len(values)}
-        if values and all(isinstance(v, (int, float)) for v in values):
+        if values and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in values):
             item.update(min=min(values), max=max(values), mean=round(sum(values) / len(values), 6),
                         first=values[0], last=values[-1])
         else:
-            item['states'] = sorted(set(values))
+            item['states'] = sorted({str(v) for v in values})
         result[key] = item
     return result
 
@@ -179,13 +179,13 @@ def parser():
 
 def remote_payload():
     root = Path(__file__).resolve().parents[1]
-    source = (root / 'ui/frame_status.py').read_text()
+    source = (root / 'ui/frame_status.py').read_text(encoding='utf-8')
     # Executing as a module prevents frame_status.main() from probing unrelated
     # status. Nothing is installed, cached or logged on the headset.
     return ('import types, sys\n'
             'status = types.ModuleType("frame_status")\n'
             f'exec(compile({source!r}, "frame_status.py", "exec"), status.__dict__)\n'
-            'sys.modules["frame_status"] = status\n' + Path(__file__).read_text())
+            'sys.modules["frame_status"] = status\n' + Path(__file__).read_text(encoding='utf-8'))
 
 
 def stream_report(command, payload, count, interval, stop_event=None, on_sample=None, discard_errors=False):
@@ -202,9 +202,12 @@ def stream_report(command, payload, count, interval, stop_event=None, on_sample=
     events = queue.Queue(maxsize=count + 2)
     reader_stop = threading.Event()
     deadline = time.monotonic() + count * interval + 30
-    with tempfile.TemporaryFile(mode='w+') as errors:
+    with tempfile.TemporaryFile(mode='w+', encoding='utf-8', errors='replace') as errors:
         proc = subprocess.Popen(command + ['--stream'], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL if discard_errors else errors, text=True)
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL if discard_errors else errors,
+                                text=True, encoding='utf-8', errors='replace')
+        reader = writer = None
+
         def receive():
             try:
                 for _ in range(count + 2):
@@ -228,17 +231,19 @@ def stream_report(command, payload, count, interval, stop_event=None, on_sample=
                         break
                     except queue.Full:
                         continue
-        reader = threading.Thread(target=receive, daemon=True)
-        reader.start()
+
         def feed():
             try:
                 proc.stdin.write(payload)
                 proc.stdin.close()
             except OSError:
                 pass  # transport exit/EOF below marks the observation incomplete
-        writer = threading.Thread(target=feed, daemon=True)
-        writer.start()
+
         try:
+            reader = threading.Thread(target=receive, daemon=True)
+            reader.start()
+            writer = threading.Thread(target=feed, daemon=True)
+            writer.start()
             while True:
                 if stop_event is not None and stop_event.is_set() and events.empty():
                     stopped = 'Stopped; received samples retained'
@@ -254,7 +259,11 @@ def stream_report(command, payload, count, interval, stop_event=None, on_sample=
                 if line is None:
                     break
                 event = json.loads(line)
+                if not isinstance(event, dict):
+                    raise ValueError('Unexpected non-object event from headset')
                 if 'sample' in event:
+                    if not isinstance(event['sample'], dict):
+                        raise ValueError('Unexpected sample payload from headset')
                     if len(samples) >= count:
                         raise ValueError('Too many samples received')
                     samples.append(event['sample'])
@@ -262,6 +271,8 @@ def stream_report(command, payload, count, interval, stop_event=None, on_sample=
                         on_sample(event['sample'])
                     print(f'Received {len(samples)}/{count} samples; Ctrl+C to stop and save.', file=sys.stderr)
                 elif 'finished' in event:
+                    if not isinstance(event['finished'], dict):
+                        raise ValueError('Unexpected finished payload from headset')
                     final = event['finished']
             if not stopped:
                 proc.wait(timeout=max(0.1, deadline - time.monotonic()))
@@ -272,20 +283,35 @@ def stream_report(command, payload, count, interval, stop_event=None, on_sample=
         finally:
             reader_stop.set()
             if proc.poll() is None:
-                proc.terminate()
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
                 try:
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=3)
-            writer.join(timeout=3)
-            if not proc.stdin.closed:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    try:
+                        proc.wait(timeout=3)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+            if writer is not None and writer.is_alive():
+                writer.join(timeout=3)
+            if proc.stdin is not None and not proc.stdin.closed:
                 try:
                     proc.stdin.close()
                 except OSError:
                     pass
-            reader.join(timeout=3)
-            proc.stdout.close()
+            if reader is not None and reader.is_alive():
+                reader.join(timeout=3)
+            if proc.stdout is not None:
+                try:
+                    proc.stdout.close()
+                except OSError:
+                    pass
         if not stopped:
             errors.seek(0)
             if final and final.get('stopped') and proc.returncode in (0, 75):
@@ -328,12 +354,15 @@ def main(argv=None):
                 report = stream_report(command, remote_payload(), args.count, args.interval)
             else:
                 run = subprocess.run(command, input=remote_payload(), text=True, capture_output=True,
+                                     encoding='utf-8', errors='replace',
                                      timeout=args.count * args.interval + 30)
                 if run.returncode:
                     print('Read-only sample failed: ' + (run.stderr.strip() or f'SSH exit {run.returncode}'),
                           file=sys.stderr)
                     return run.returncode
                 report = json.loads(run.stdout)
+                if not isinstance(report, dict) or not isinstance(report.get('samples'), list) or 'stopped' not in report:
+                    raise ValueError('Remote probe returned malformed report payload.')
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
             print(f'Read-only sample unavailable: {exc}', file=sys.stderr)
             return 1

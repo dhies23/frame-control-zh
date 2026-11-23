@@ -261,6 +261,35 @@ class FrameDoctor(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('Never pairs', r.stdout)
 
+    def test_doctor_hardening_utf8_ascii_digits_bool_version_and_unhashable_guard(self):
+        import contextlib, io, json, tempfile
+        seen = {}
+
+        def fake_run(args, **kwargs):
+            seen.update(kwargs)
+            return subprocess.CompletedProcess(args, 0, '0\n', '')
+
+        with patch.object(doctor.subprocess, 'run', side_effect=fake_run):
+            doctor.run(['echo'])
+        self.assertEqual(seen.get('encoding'), 'utf-8')
+        self.assertEqual(seen.get('errors'), 'replace')
+
+        with patch.object(doctor, 'command', return_value='١\n'):
+            self.assertIsNone(doctor.snapshot())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / 'bad.json'
+            p.write_text(json.dumps({
+                'version': True,
+                'target': 'a' * 64,
+                'diagnostics': {'guard': 'unknown', 'checks': []},
+            }), encoding='utf-8')
+            with self.assertRaises(ValueError):
+                doctor.load_baseline(str(p))
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(doctor.report({'guard': ['loop']}), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
