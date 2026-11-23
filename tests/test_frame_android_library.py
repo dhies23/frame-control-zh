@@ -776,6 +776,64 @@ class AndroidGuardsTests(unittest.TestCase):
             android.main()
         rem.assert_called_once_with('org.test.app', keep_data=True)
 
+    def test_pkg_re_and_split_regexes_reject_unicode_and_trailing_newline(self):
+        for bad_pkg in ('com.ex\u00e4mple.app', 'com.example.app\u00b2'):
+            with self.subTest(bad_pkg=bad_pkg):
+                self.assertFalse(android._valid_pkg(bad_pkg))
+        from test_quest import apk_bytes
+        with tempfile.TemporaryDirectory() as tmp:
+            base = os.path.join(tmp, 'base.apk')
+            split = os.path.join(tmp, 'split.apk')
+            with open(base, 'wb') as f:
+                f.write(apk_bytes('org.test.app', split_required=True))
+            with open(split, 'wb') as f:
+                f.write(apk_bytes('org.test.app', split='config.arm64_v8a',
+                                  files={'lib/arm64-v8a/libx.so\n': b'elf'}))
+            with self.assertRaisesRegex(android.FrameError, 'contains'):
+                android.split_entries(base, [split])
+            self.assertEqual(android.split_size([split]), 0)
+
+    def test_copy_and_ssh_use_utf8_and_wrap_oserror(self):
+        seen = {}
+        with tempfile.NamedTemporaryFile(suffix='.apk') as f, \
+                patch.object(android.frame_host, 'run_ssh', side_effect=lambda argv, **kw: seen.update(kw)):
+            android._copy(f.name, 'x/app.apk.part')
+        self.assertEqual(seen.get('encoding'), 'utf-8')
+        self.assertEqual(seen.get('errors'), 'replace')
+        with tempfile.NamedTemporaryFile(suffix='.apk') as f, \
+                patch.object(android.frame_host, 'run_ssh', side_effect=FileNotFoundError('no scp')):
+            with self.assertRaisesRegex(android.FrameError, 'copying'):
+                android._copy(f.name, 'x/app.apk.part')
+        with patch.object(android.frame_host, 'run_ssh', side_effect=FileNotFoundError('no ssh')):
+            with self.assertRaisesRegex(android.FrameError, 'ssh'):
+                android.ssh('true')
+
+    def test_shortcut_ids_rejects_non_list_and_bool_appid(self):
+        for bad in ('{}', '[{"appid": true}]', '[{"appid": 0}]', '["not-a-dict"]'):
+            with self.subTest(bad=bad), patch.object(android, 'shortcut_tool', return_value=bad):
+                with self.assertRaisesRegex(android.FrameError, 'shortcut list'):
+                    android._shortcut_ids()
+
+    def test_xr_compat_files_read_member_and_split_size_wrap_zip_errors(self):
+        with self.assertRaises(android.FrameError):
+            android.xr_compat_files('/nonexistent/missing.apk')
+        with self.assertRaises(android.FrameError):
+            android.split_size(['/nonexistent/missing-split.apk'])
+        with tempfile.NamedTemporaryFile(suffix='.apk') as f:
+            with android.zipfile.ZipFile(f.name, 'w') as z:
+                z.writestr('assets/a', b'1')
+            with self.assertRaises(android.FrameError):
+                android.read_member(f.name, 'assets/missing')
+
+    def test_remove_guards_non_list_shortcut_warnings(self):
+        meta = {'package': 'org.test.app', 'label': 'App', 'instance': 2800000001, 'shortcut': 42, 'game_id': 1}
+        with patch.object(android, '_meta_or_fail', return_value=dict(meta)), \
+                patch.object(android, 'stop'), \
+                patch.object(android, 'shortcut_tool', return_value='{"warnings": "unexpected"}'), \
+                patch.object(android, 'ssh'):
+            res = android._remove('org.test.app', keep_data=True)
+        self.assertEqual(res['library_warnings'], [])
+
 
 class CopyAndSshTests(unittest.TestCase):
     """The commands behind an install fail as FrameErrors with readable words, and a large APK

@@ -217,6 +217,28 @@ class BackupTests(unittest.TestCase):
                 backup.install(plan)
         ssh.assert_not_called()
 
+    def test_inspect_wraps_nul_byte_and_unpack_wraps_non_path(self):
+        with self.assertRaisesRegex(backup.android.FrameError, 'Could not read'):
+            backup.inspect(['bad\x00path.apk'])
+        with self.assertRaisesRegex(backup.android.FrameError, 'Could not read Android bundle'):
+            backup.unpack_bundle(None, self.root)
+
+    def test_obb_only_fallback_label_and_ctrl_c_closes_launched_game(self):
+        with patch.object(backup.android, 'read_meta',
+                          return_value={'package': PKG, 'version_code': 210, 'instance': 2800000001}):
+            plan = backup.inspect(list(map(str, self.obb)))
+        self.assertEqual(plan['checked']['label'], PKG)
+        full = backup.inspect([str(self.apk), *map(str, self.obb)])
+        with patch.object(backup.quest, '_running', side_effect=[False, False, True]), \
+                patch.object(backup.android, 'read_meta', return_value=None), \
+                patch.object(backup.android, 'install', return_value=META), \
+                patch.object(backup.android, 'launch'), \
+                patch.object(backup.quest, '_wait_ready', side_effect=KeyboardInterrupt), \
+                patch.object(backup.quest, '_close', return_value=(True, None)) as close:
+            with self.assertRaises(KeyboardInterrupt):
+                backup.install(full)
+        close.assert_called_once_with(PKG)
+
 
 class StagingTests(unittest.TestCase):
     setUp = BackupTests.setUp
