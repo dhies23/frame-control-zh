@@ -90,6 +90,36 @@ class Approvals(unittest.TestCase):
                            ('power', {'action': 'factory-reset'}), ('send_text', {'text': ''})]:
             with self.assertRaises(ValueError): agent.call(server, {'name': name, 'arguments': args})
 
+    def test_unhashable_tokens_names_non_dict_body_missing_file_and_script_timeout(self):
+        gate = agent.Approvals()
+        for bad_token in (['x'], {'k': 1}, 123):
+            with self.assertRaises(ValueError):
+                gate.inspect(bad_token)
+            with self.assertRaises(ValueError):
+                gate.decide(bad_token, True)
+            with self.assertRaises(ValueError):
+                gate.consume(bad_token, {})
+        with self.assertRaises(ValueError):
+            agent.validate(['launch'], {'appid': '1'})
+        with self.assertRaises(ValueError):
+            agent.call(server, 'not-a-dict')
+        for bad_path in ('bad\x00path', str(Path(tempfile.gettempdir()) / 'frame-agent-nonexistent-999999')):
+            with self.assertRaises(ValueError):
+                agent.validate('send_file', {'path': bad_path})
+
+        fake = mock.Mock(FRAME='frame-2', LOCAL=False, HERE=Path(__file__).resolve().parent.parent / 'ui',
+                         SSH=['ssh', '-o', 'BatchMode=yes'])
+        with mock.patch.object(agent.shutil, 'which', return_value='/usr/bin/zsh'):
+            with mock.patch.object(agent.subprocess, 'run',
+                                   return_value=mock.Mock(returncode=0, stdout='ok', stderr='')) as run:
+                agent.run_script(fake, 'keep-awake.sh', ['status'])
+            self.assertEqual(run.call_args.kwargs.get('encoding'), 'utf-8')
+            self.assertEqual(run.call_args.kwargs.get('errors'), 'replace')
+            for err in (subprocess.TimeoutExpired(['zsh'], 60), OSError('spawn failed')):
+                with mock.patch.object(agent.subprocess, 'run', side_effect=err):
+                    with self.assertRaises(ValueError):
+                        agent.run_script(fake, 'keep-awake.sh', ['status'])
+
 
 class Assistant(unittest.TestCase):
     def setUp(self):
@@ -148,6 +178,20 @@ class Assistant(unittest.TestCase):
         for url in ('file:///etc/passwd', 'http://example.com/chat', 'https://user:pass@example.com', 'https://example.com?key=secret'):
             capture = mock.Mock()
             with self.assertRaises(ValueError): assistant.chat({**self.body, 'endpoint': url, 'screenshot': True}, capture)
+            capture.assert_not_called()
+
+    def test_non_dict_body_bad_port_and_control_chars_fail_before_capture(self):
+        capture = mock.Mock()
+        for bad_body in (
+            None,
+            ['not-a-dict'],
+            {**self.body, 'endpoint': 'https://example.com:bad/chat', 'screenshot': True},
+            {**self.body, 'endpoint': 'https://example.com/chat\r\nX-Inject: 1', 'screenshot': True},
+            {**self.body, 'endpoint': 'https://example.com/\x00', 'screenshot': True},
+            {**self.body, 'key': 'abc\x00def', 'screenshot': True},
+        ):
+            with self.assertRaises(ValueError, msg=repr(bad_body)):
+                assistant.chat(bad_body, capture)
             capture.assert_not_called()
 
 

@@ -11,20 +11,23 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def chat(body, screenshot):
-    if body.get('consent') is not True:
+    if not isinstance(body, dict) or body.get('consent') is not True:
         raise ValueError('Opt in before sending a message')
     endpoint, model, prompt = (body.get(k) for k in ('endpoint', 'model', 'prompt'))
     if any(not isinstance(v, str) or not v.strip() for v in (endpoint, model, prompt)):
         raise ValueError('Endpoint, model and message are required')
     if len(prompt) > 32000 or len(model) > 200 or len(endpoint) > 2048:
         raise ValueError('Message, model or endpoint is too long')
+    if any(ord(c) < 32 or ord(c) == 127 for c in endpoint):
+        raise ValueError('Use an endpoint URL without credentials, query or fragment')
     url = urlsplit(endpoint)
+    _ = url.port  # validate port before capturing a screenshot
     if not url.hostname or url.username or url.password or url.fragment or url.query:
         raise ValueError('Use an endpoint URL without credentials, query or fragment')
     if url.scheme != 'https' and not (url.scheme == 'http' and url.hostname in ('localhost', '127.0.0.1', '::1')):
         raise ValueError('Use HTTPS, or HTTP on loopback for a local model')
     key = body.get('key', '')
-    if not isinstance(key, str) or len(key) > 4096 or '\n' in key or '\r' in key:
+    if not isinstance(key, str) or len(key) > 4096 or any(ord(c) < 32 or ord(c) == 127 for c in key):
         raise ValueError('Invalid API key')
     content = prompt
     if body.get('screenshot') is True:

@@ -29,6 +29,8 @@ class Approvals:
                 'message': 'Ask the user to review and approve this action in Frame Control, then retry with confirmation. Expires in five minutes.'}
 
     def entry(self, token):
+        if not isinstance(token, str):
+            raise ValueError('Approval expired or unknown; request a new one')
         entry = self.pending.get(token)
         if not entry or entry['expires'] <= time.monotonic():
             raise ValueError('Approval expired or unknown; request a new one')
@@ -65,7 +67,7 @@ def validate(name, args):
         'send_text': {'text'}, 'send_file': {'path'}, 'panel': {'id'}, 'focus_panel': {'key'},
         'power': {'action'}, 'keep_awake': {'action'},
     }
-    if name not in fields or not isinstance(args, dict) or set(args) != fields[name]:
+    if not isinstance(name, str) or name not in fields or not isinstance(args, dict) or set(args) != fields[name]:
         raise ValueError('Unknown action or arguments')
     if any(not isinstance(v, str) or not v or len(v) > 65536 for v in args.values()):
         raise ValueError('Arguments must be nonempty strings (maximum 65536 characters)')
@@ -77,12 +79,17 @@ def validate(name, args):
     if name == 'quit':
         action['warning'] = 'This may force the game to close. Unsaved progress may be lost.'
     if name == 'send_file':
-        path = Path(args['path']).expanduser().resolve(strict=True)
-        if not path.is_file() or path.stat().st_size > 16 * 1024**2:
+        if '\x00' in args['path']:
             raise ValueError('Choose a regular file of at most 16 MiB')
-        # Bind approval to bytes, not just a mutable filename.
-        with path.open('rb') as stream:
-            data = stream.read(16 * 1024**2 + 1)
+        try:
+            path = Path(args['path']).expanduser().resolve(strict=True)
+            if not path.is_file() or path.stat().st_size > 16 * 1024**2:
+                raise ValueError('Choose a regular file of at most 16 MiB')
+            # Bind approval to bytes, not just a mutable filename.
+            with path.open('rb') as stream:
+                data = stream.read(16 * 1024**2 + 1)
+        except (OSError, RuntimeError):
+            raise ValueError('Choose a regular file of at most 16 MiB')
         if len(data) > 16 * 1024**2:
             raise ValueError('File grew beyond 16 MiB')
         action['arguments']['path'] = str(path)
@@ -99,6 +106,8 @@ def call(server, body):
 
 
 def _call(server, body):
+    if not isinstance(body, dict):
+        raise ValueError('Unknown action or arguments')
     name, args = body.get('name'), body.get('arguments', {})
     action = validate(name, args)
     if name in ('install', 'uninstall', 'panel') and not server.FLATPAK_ID.fullmatch(args['id']):
@@ -152,7 +161,13 @@ def run_script(server, name, args):
     # The headset the server is routed to, not whatever `frame` means in ~/.ssh/config.
     env = {**os.environ, 'FRAME_ALIAS': server.FRAME,
            'FRAME_SSH_OPTS': shlex.join(server.SSH[1:])}
-    result = subprocess.run(['zsh', str(script), *args], capture_output=True, text=True, timeout=60, env=env)
+    try:
+        result = subprocess.run(['zsh', str(script), *args], capture_output=True, text=True,
+                                encoding='utf-8', errors='replace', timeout=60, env=env)
+    except subprocess.TimeoutExpired:
+        raise ValueError(name + ' timed out')
+    except OSError as error:
+        raise ValueError(name + ' could not run: ' + str(error))
     if result.returncode:
         raise ValueError(result.stderr.strip() or 'Script failed')
     return {'message': result.stdout.strip()}
