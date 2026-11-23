@@ -231,6 +231,73 @@ class PublisherSources(unittest.TestCase):
                 self.assertRaisesRegex(SourceLimited, '^GitHub is limiting requests; try again in 10 minutes .*TOKEN'):
             github._api('/y')
 
+    def test_web_wraps_http_exception_normalizes_digest_and_guards_url_and_headers(self):
+        import http.client
+        with self.assertRaises(SourceError):
+            _web.checked_url(123, github.HOSTS)
+        for headers in ({'Retry-After': '²'}, {'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': '²'}):
+            with self.subTest(headers=headers):
+                _web._limited.clear()
+                self.assertEqual(_web.throttle('https://h.test/x', headers), _web.BACKOFF)
+        with patch.object(_web, 'open_url', side_effect=http.client.IncompleteRead(b'part')):
+            with self.assertRaisesRegex(SourceError, 'Could not read source'):
+                _web.read('https://itch.io/broken', ('itch.io',))
+            with self.assertRaisesRegex(SourceError, 'Could not download APK'):
+                _web.apk('https://github.com/o/r/a.apk', github.HOSTS)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as z:
+            z.writestr('AndroidManifest.xml', b'fixture')
+        raw = buf.getvalue()
+        upper = hashlib.sha256(raw).hexdigest().upper()
+        with patch.object(_web, 'open_url', return_value=io.BytesIO(raw)):
+            result = _web.apk('https://github.com/owner/repo/upper.apk', github.HOSTS, upper)
+        self.assertTrue(result['verified'])
+
+    def test_github_curated_uses_utf8_and_guards_malformed_api_payloads(self):
+        import builtins
+        real_open = builtins.open
+        seen = []
+
+        def tracked_open(file, mode='r', *args, **kwargs):
+            if str(file).endswith('github_curated.json'):
+                seen.append(kwargs.get('encoding'))
+            return real_open(file, mode, *args, **kwargs)
+
+        with patch.object(builtins, 'open', side_effect=tracked_open):
+            github._curated()
+        self.assertEqual(seen, ['utf-8'])
+
+        src = github.sources()[0]
+        with self.assertRaisesRegex(SourceError, 'Invalid GitHub repository'):
+            github.details(src, 123)
+        for payload in ([], {'items': 'bad'}, {'items': ['bad', {}, {'full_name': 'a/b', 'name': 'b', 'owner': 'bad'}]}):
+            with self.subTest(topic_payload=payload), patch.object(github, '_api', return_value=payload):
+                got = github.search(src, 'topic:openxr')
+                if isinstance(payload, dict) and isinstance(payload.get('items'), list):
+                    self.assertEqual([e['id'] for e in got], ['a/b'])
+                else:
+                    self.assertEqual(got, [])
+
+        with patch.object(github, '_api', return_value={'message': 'not a list'}):
+            with self.assertRaisesRegex(SourceError, 'Invalid GitHub response'):
+                github.details(src, 'KhronosGroup/OpenXR-SDK-Source')
+
+        good_digest = 'sha256:' + ('A' * 64)
+        releases = [
+            'not-a-dict',
+            {'tag_name': 'v1', 'assets': 'bad'},
+            {'tag_name': 'v2', 'assets': [
+                'bad',
+                {'name': 'hello_xr-Vulkan-1.apk', 'id': 1, 'browser_download_url': 'https://github.com/KhronosGroup/OpenXR-SDK-Source/releases/download/v2/hello_xr-Vulkan-1.apk', 'digest': 123},
+                {'name': 'hello_xr-Vulkan-2.apk', 'id': 2, 'browser_download_url': 'https://github.com/KhronosGroup/OpenXR-SDK-Source/releases/download/v2/hello_xr-Vulkan-2.apk', 'digest': good_digest},
+            ]},
+        ]
+        with patch.object(github, '_api', return_value=releases):
+            info = github.details(src, 'KhronosGroup/OpenXR-SDK-Source')
+        self.assertEqual(len(info['versions']), 2)
+        self.assertIsNone(info['versions'][0]['sha256'])
+        self.assertEqual(info['versions'][1]['sha256'], 'a' * 64)
+
 
 if __name__ == '__main__':
     unittest.main()

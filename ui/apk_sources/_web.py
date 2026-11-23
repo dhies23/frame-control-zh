@@ -1,5 +1,5 @@
 """Small HTTPS cache and APK downloader for public publisher sources."""
-import hashlib, os, shutil, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, zipfile
+import hashlib, http.client, os, shutil, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, zipfile
 from email.utils import parsedate_to_datetime
 
 import frame_host
@@ -59,15 +59,15 @@ def throttle(url, headers=None, auth=None):
     headers = headers or {}
     now, delay = time.time(), None
     value = (headers.get('Retry-After') or '').strip()
-    if value.isdigit():
+    if value.isascii() and value.isdigit():
         delay = int(value)
     elif value:
         try:
             delay = parsedate_to_datetime(value).timestamp() - now
-        except (TypeError, ValueError, OverflowError):
+        except (TypeError, ValueError, OverflowError, OSError):
             pass
-    reset = headers.get('X-RateLimit-Reset') or ''
-    if delay is None and headers.get('X-RateLimit-Remaining') == '0' and reset.isdigit():
+    reset = (headers.get('X-RateLimit-Reset') or '').strip()
+    if delay is None and headers.get('X-RateLimit-Remaining') == '0' and reset.isascii() and reset.isdigit():
         delay = int(reset) - now  # GitHub
     delay = min(max(delay if delay is not None else BACKOFF, 1), 6 * 3600)
     key = _who(url, auth)
@@ -134,6 +134,8 @@ def prune():
 
 
 def checked_url(url, hosts):
+    if not isinstance(url, str):
+        raise SourceError('Source returned an invalid URL')
     try:
         p = urllib.parse.urlsplit(url)
         port = p.port
@@ -207,13 +209,14 @@ def read(url, hosts, headers=None, ttl=3600, name=None, hint='', auth=None):
                 raise limited_error(name, delay, hint) from e
             return data
         raise SourceError('Source HTTP error: ' + str(e.code)) from e
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, http.client.HTTPException) as e:
         raise SourceError('Could not read source: ' + str(e)) from e
 
 
 def apk(url, hosts, digest=None, name=None):
     tmp = None
     name = name or _host(url)
+    expected = digest.strip().lower() if isinstance(digest, str) and digest.strip() else None
     wait = wait_time(url)
     if wait:
         raise limited_error(name, wait)
@@ -232,20 +235,23 @@ def apk(url, hosts, digest=None, name=None):
                 h.update(chunk)
                 f.write(chunk)
         actual = h.hexdigest()
-        if digest and actual != digest:
+        if expected and actual != expected:
             raise SourceError('SHA-256 mismatch; download discarded')
         with zipfile.ZipFile(tmp) as z:
             if 'AndroidManifest.xml' not in z.namelist():
                 raise SourceError('Download is not an APK')
         path = os.path.join(cache(), actual + '.apk')
         os.replace(tmp, path)
-        return {'apk': path, 'obb': [], 'sha256': actual, 'verified': bool(digest)}
+        return {'apk': path, 'obb': [], 'sha256': actual, 'verified': bool(expected)}
     except urllib.error.HTTPError as e:
         if e.code in (403, 429):
             raise limited_error(name, throttle(url, e.headers)) from e
         raise SourceError('Could not download APK: HTTP error ' + str(e.code)) from e
-    except (OSError, ValueError, zipfile.BadZipFile) as e:
+    except (OSError, ValueError, zipfile.BadZipFile, http.client.HTTPException) as e:
         raise SourceError('Could not download APK: ' + str(e)) from e
     finally:
         if tmp and os.path.exists(tmp):
-            os.remove(tmp)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
