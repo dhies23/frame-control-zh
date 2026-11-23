@@ -381,6 +381,41 @@ class VersionsTest(unittest.TestCase):
             with self.assertRaisesRegex(frame_android.FrameError, 'SHA-256'):
                 versions.install('org.example.app', 'https://f-droid.org/repo/nohash.apk')
 
+    def test_catalog_app_fetch_install_and_recent_reports_guard_malformed_inputs(self):
+        # catalog() must tolerate non-dict rows and non-string dates in compat_db.load().
+        os.makedirs(os.path.join(self.tmp.name, 'site'), exist_ok=True)
+        apps_js = os.path.join(self.tmp.name, 'site', 'apps.js')
+        with open(apps_js, 'w', encoding='utf-8') as f:
+            f.write('const APPS = [];')
+        rows = ['bad', {'package': 'org.example.app', 'date': 12345}, {'package': 'org.example.app', 'date': '2026-02-01'}]
+        with patch.object(frame_catalog.compat_db, 'load', return_value=rows), \
+                patch.object(frame_catalog.catalog_build, 'load_catalog', return_value=[]), \
+                patch.dict(frame_catalog._cache, {'mtime': None, 'sig': None, 'apps': None, 'by_pkg': {}}):
+            self.assertEqual(frame_catalog.catalog(), [])
+            # Unhashable pkg must raise FrameError, not TypeError.
+            with self.assertRaises(frame_android.FrameError):
+                frame_catalog.app(['unhashable'])
+
+        # fetch_apk() must reject non-dict input and handle missing 'n' cleanly.
+        with self.assertRaises(frame_android.FrameError):
+            frame_catalog.fetch_apk('not-a-dict')
+        with self.assertRaisesRegex(frame_android.FrameError, 'SHA-256'):
+            frame_catalog.fetch_apk({'a': 'https://f-droid.org/repo/app.apk'})
+
+        # install() with empty 'why' must raise FrameError, not IndexError.
+        with patch.object(frame_catalog, 'app', return_value={'n': 'Demo', 'r': 'no', 't': False, 'why': []}):
+            with self.assertRaisesRegex(frame_android.FrameError, "can't run"):
+                frame_catalog.install('org.example.demo')
+
+        # recent_reports() with negative or zero limit returns empty list (not all-but-last).
+        with patch.object(frame_catalog, 'catalog'), \
+                patch.object(frame_catalog.compat_db, 'load', return_value=[
+                    {'package': 'org.example.a', 'date': '2026-01-01'},
+                    {'package': 'org.example.b', 'date': '2026-02-01'},
+                ]):
+            self.assertEqual(frame_catalog.recent_reports(limit=-1), [])
+            self.assertEqual(frame_catalog.recent_reports(limit=0), [])
+
 
 class UploadVersionsTest(unittest.TestCase):
     def test_endpoint_validation(self):
