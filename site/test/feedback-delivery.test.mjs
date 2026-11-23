@@ -67,3 +67,23 @@ test('success requires a receipt for an issue in the configured repository', asy
   assert.deepEqual(await response.json(), { ok: true, number: 7, url: 'https://github.com/fixture/feedback/issues/7' });
   assert.equal(calls, 1);
 });
+
+test('malformed origin, mismatched scheme, and array payloads are rejected cleanly', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; throw new Error('unexpected network'); });
+  for (const origin of ['null', 'not-a-url', 'http://fixture.invalid', 'https://evil.invalid']) {
+    const response = await onRequestPost({
+      env,
+      request: new Request('https://fixture.invalid/api/feedback', {
+        method: 'POST', headers: { origin, 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      }),
+    });
+    assert.equal(response.status, 403, `expected 403 for origin ${origin}`);
+    assert.equal((await response.json()).retrySafe, true);
+  }
+  const arrResponse = await submit(env, []);
+  assert.equal(arrResponse.status, 400);
+  assert.equal((await arrResponse.json()).error, 'Send the form as JSON.');
+  assert.equal(calls, 0);
+});
