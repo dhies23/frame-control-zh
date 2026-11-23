@@ -2,26 +2,33 @@ const https = require("https");
 
 function get(url, redirects = 5, transport = https) {
   return new Promise((resolve, reject) => {
+    let parsed;
+    try { parsed = new URL(url); } catch { return reject(new Error(`${url}: invalid URL`)); }
+    if (parsed.protocol !== "https:") return reject(new Error(`${url}: refusing non-HTTPS URL`));
     transport.get(url, { timeout: 60000 }, (res) => {
       res.on("error", reject);
       res.on("aborted", () => reject(new Error(`${url}: response aborted`)));
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        res.resume();
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        if (typeof res.resume === "function") res.resume();
         if (!redirects) return reject(new Error(`${url}: too many redirects`));
         let next;
-        try { next = new URL(res.headers.location, url).href; }
+        try { next = new URL(res.headers.location, url); }
         catch { return reject(new Error(`${url}: bad redirect ${res.headers.location}`)); }
-        return resolve(get(next, redirects - 1, transport));
+        if (next.protocol !== "https:") return reject(new Error(`${url}: refusing non-HTTPS redirect`));
+        return resolve(get(next.href, redirects - 1, transport));
       }
       if (res.statusCode !== 200) {
-        res.resume();
+        if (typeof res.resume === "function") res.resume();
         const error = new Error(`${url}: HTTP ${res.statusCode}`);
         error.statusCode = res.statusCode;
         return reject(error);
       }
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => resolve(Buffer.concat(chunks)));
+      res.on("end", () => {
+        if (res.complete === false) return reject(new Error(`${url}: response truncated`));
+        resolve(Buffer.concat(chunks));
+      });
     }).on("timeout", function () { this.destroy(new Error(`${url}: timed out`)); }).on("error", reject);
   });
 }
