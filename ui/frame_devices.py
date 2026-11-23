@@ -368,7 +368,7 @@ def effective_port(alias, config):
     """The port ssh uses for ALIAS with this config file (`ssh -F FILE -G ALIAS`), else 22."""
     try:
         out = frame_host.run_ssh(["ssh", "-F", str(config), "-G", alias], capture_output=True, text=True,
-                                 stdin=subprocess.DEVNULL, timeout=10).stdout
+                                 encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
         return 22
     m = re.search(r"^port (\d+)$", out, re.M)
@@ -381,7 +381,7 @@ def effective_port(alias, config):
 def _keygen(*args):
     try:
         return frame_host.run_ssh(["ssh-keygen", *args], capture_output=True, stdin=subprocess.DEVNULL, text=True,
-                                  timeout=10)
+                                  encoding="utf-8", errors="replace", timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return None
 
@@ -467,7 +467,9 @@ def fingerprint(blob):
 
 def key_entry(line, name):
     """(type, blob, fingerprint) from a known_hosts line for `name`, or None."""
-    f = (line or "").split()
+    if not isinstance(line, str) or not isinstance(name, str):
+        return None
+    f = line.split()
     if len(f) < 3 or line.startswith("#") or name not in f[0].split(",") or not KEY_TYPE_RE.fullmatch(f[1]):
         return None
     fp = fingerprint(f[2])
@@ -487,7 +489,8 @@ def pinned_keys(device_id):
 def pin_key(device_id, key_type, blob):
     """Save one key as the headset's whole identity, replacing whatever was saved: what the
     person confirmed after seeing its fingerprint (see frame_link.Link.trust_identity)."""
-    if not KEY_TYPE_RE.fullmatch(key_type or "") or not fingerprint(blob):
+    if (not isinstance(key_type, str) or not KEY_TYPE_RE.fullmatch(key_type)
+            or not isinstance(blob, str) or not fingerprint(blob)):
         raise DeviceError("That isn't an SSH host key")
     _write_pin(device_id, [f"{host_key_alias(device_id)} {key_type} {blob}"])
 
@@ -588,6 +591,9 @@ class Registry:
             if isinstance(data, dict) and isinstance(data.get("devices"), list):
                 if not isinstance(data.get("networks"), dict):
                     data["networks"] = {}
+                else:
+                    data["networks"] = {k: v for k, v in data["networks"].items()
+                                        if isinstance(k, str) and isinstance(v, dict)}
                 if "dismissed" in data and not isinstance(data.get("dismissed"), dict):
                     data["dismissed"] = {}
                 data.setdefault("active", None)
@@ -732,6 +738,10 @@ class Registry:
 
     # -- devices --
     def add_device(self, alias, name=None, user=DEFAULT_USER, port=22, hosts=(), identity_files=()):
+        if not isinstance(hosts, (list, tuple, set)):
+            raise DeviceError("The hosts list must be a list of addresses")
+        if not isinstance(identity_files, (list, tuple, set)):
+            raise DeviceError("The identity files must be a list of paths")
         with self._changing():
             check_alias(alias)
             if any(d["alias"] == alias for d in self.data["devices"]):
@@ -745,8 +755,12 @@ class Registry:
                  "identity_files": [str(f) for f in identity_files][:8], "addresses": [], "config_host": None,
                  "added": time.time()}
             for host in hosts:
-                if host and not any(a["host"] == host for a in d["addresses"]):
-                    d["addresses"].append(new_address(host))
+                if host:
+                    addr = new_address(host)
+                    if not any(a["host"] == addr["host"] for a in d["addresses"]):
+                        if len(d["addresses"]) >= 32:
+                            raise DeviceError("That's enough addresses for one headset")
+                        d["addresses"].append(addr)
             self.data["devices"].append(d)
             self.data.pop("emptied", None)
             if not self.data.get("active"):
@@ -806,11 +820,11 @@ class Registry:
             d = self._find(device_id)
             a = self._addr(d, host)
             # Check everything first: a rejected edit changes nothing.
-            moved = new_host is not None and new_host != host
-            if moved:
+            if new_host is not None:
                 new_host = check_host(new_host)
-                if any(x["host"] == new_host for x in d["addresses"]):
-                    raise DeviceError(f"{new_host} is already on the list")
+            moved = new_host is not None and new_host != a["host"]
+            if moved and any(x["host"] == new_host for x in d["addresses"]):
+                raise DeviceError(f"{new_host} is already on the list")
             kind = None if kind is None else check_kind(kind)
             label = None if label is None else check_text(label, "label")
             if moved:
@@ -847,24 +861,27 @@ class Registry:
 
     def record_success(self, device_id, host, network_id, rtt_ms, ip=None):
         """Learn: this address worked on this network."""
+        net_id = network_id if isinstance(network_id, str) and network_id else None
         with self._changing():
             try:
                 a = self._addr(self._find(device_id), host)
             except DeviceError:
                 return
-            if network_id and network_id not in a["networks"]:
-                a["networks"] = (a["networks"] + [network_id])[-16:]
+            if net_id and net_id not in a["networks"]:
+                a["networks"] = (a["networks"] + [net_id])[-16:]
             a["last_ok"] = time.time()
             a["last_rtt_ms"] = rtt_ms
-            if ip and frame_network.valid_ip(ip) and network_id:
+            if ip and frame_network.valid_ip(ip) and net_id:
                 a["last_ip"] = ip
-                a["last_ip_network"] = network_id
+                a["last_ip_network"] = net_id
             self._find(device_id)["identity_established"] = True  # survives editing the address away
             self.save()
 
     def record_identity(self, device_id, fingerprints):
         """Remember the fingerprints of the key saved for a headset, so that losing the pin
         file later can't turn into trusting whatever answers (identity_established)."""
+        if not isinstance(fingerprints, (list, tuple, set)):
+            return
         fingerprints = [f for f in fingerprints if isinstance(f, str) and f.startswith("SHA256:")][:8]
         if not fingerprints:
             return
@@ -880,6 +897,8 @@ class Registry:
 
     def undismiss(self, alias):
         """Set Up Connection is about to run for this alias: import its block again."""
+        if not isinstance(alias, str):
+            return
         with self._changing():
             if self.data.get("dismissed", {}).pop(alias, None) is not None:
                 self.save()
@@ -895,32 +914,43 @@ class Registry:
     # -- networks --
     def record_network(self, net):
         """Remember a network we've seen (for naming it), keeping its user-given name."""
-        if not net or not net.get("id"):
+        if not isinstance(net, dict):
+            return
+        net_id = net.get("id")
+        if not isinstance(net_id, str) or not net_id:
             return
         with self._changing():
-            known = self.data["networks"].get(net["id"]) or {"name": ""}
-            changed = (known.get("ssid") != (net.get("ssid") or known.get("ssid")) or
-                       time.time() - (known.get("last_seen") or 0) > 3600 or "gateway" not in known)
+            known = self.data["networks"].get(net_id)
+            if not isinstance(known, dict):
+                known = {"name": ""}
+            prev_seen = known.get("last_seen")
+            stale = (not isinstance(prev_seen, (int, float)) or isinstance(prev_seen, bool)
+                     or time.time() - prev_seen > 3600)
+            changed = (known.get("ssid") != (net.get("ssid") or known.get("ssid"))
+                       or stale or "gateway" not in known)
             known.update(ssid=net.get("ssid") or known.get("ssid"), gateway=net.get("gateway"), wifi=net.get("wifi"),
                          gateway_mac=net.get("gateway_mac"), last_seen=time.time())
-            self.data["networks"][net["id"]] = known
+            self.data["networks"][net_id] = known
             if changed:
                 self.save()
 
     def name_network(self, network_id, name):
         with self._changing():
-            if network_id not in self.data["networks"]:
+            if not isinstance(network_id, str) or not isinstance(self.data["networks"].get(network_id), dict):
                 raise DeviceError("That network hasn't been seen")
             self.data["networks"][network_id]["name"] = check_text(name, "network name")
             self.save()
 
     def network_name(self, net):
         """What to call a network: the name given to it, its Wi-Fi name, or its router."""
-        if not net:
+        if not isinstance(net, dict) or not net:
             return "No network"
         self._refresh()
+        net_id = net.get("id")
         with self.lock:
-            known = self.data["networks"].get(net.get("id") or "") or {}
+            known = self.data["networks"].get(net_id) if isinstance(net_id, str) else None
+            if not isinstance(known, dict):
+                known = {}
         if known.get("name"):
             return known["name"]
         ssid = net.get("ssid") or known.get("ssid")
