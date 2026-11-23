@@ -1586,6 +1586,75 @@ class Hardening(unittest.TestCase):
         self.assertEqual(outcome, "next")
         self.assertEqual(events, ["kill", "wait"])
 
+    def test_ssh_helpers_use_utf8_encoding_and_ascii_port_check(self):
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append(kwargs)
+            return subprocess.CompletedProcess(cmd, 0, stdout="hostname frame.local\nport ²\n", stderr="")
+
+        with mock.patch.object(fl.frame_host, "run_ssh", side_effect=fake_run), \
+                mock.patch.object(fl.frame_host, "which", return_value="/usr/bin/ssh-keyscan"):
+            host, port, _, _ = fl.ssh_g("frame")
+            self.assertEqual((host, port), ("frame.local", 22))
+            fl.proxy_route("frame")
+            fl.matches_pinned_key("192.168.1.41", 22, [("ssh-ed25519", "SHA256:abc")])
+        self.assertEqual(len(captured), 3)
+        for kwargs in captured:
+            self.assertEqual(kwargs.get("encoding"), "utf-8")
+            self.assertEqual(kwargs.get("errors"), "replace")
+
+    def test_close_master_reaps_killed_process(self):
+        events = []
+
+        class StubbornProc:
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                events.append("terminate")
+
+            def kill(self):
+                events.append("kill")
+                self.returncode = -9
+
+            def wait(self, timeout=None):
+                events.append(("wait", timeout))
+                if self.returncode is None:
+                    raise subprocess.TimeoutExpired("ssh", timeout)
+                return self.returncode
+
+        self.link.master = StubbornProc()
+        self.link.close_master()
+        self.assertEqual(events, ["terminate", ("wait", 5), "kill", ("wait", 2)])
+
+    def test_tailscale_find_learn_trust_and_devices_view_guard_malformed_inputs(self):
+        d = self.reg.add_device("frame", hosts=["192.0.2.1"])
+        # String ips must not be iterated character-by-character into ip=".".
+        ts = {"installed": True, "up": True, "tailnet": "tail.ts.net",
+              "peers": [{"name": "frame", "dns": "frame.tail.ts.net", "ips": "100.64.0.1", "os": "linux", "online": True}]}
+        with mock.patch.object(fl.frame_network, "tailscale_status", return_value=ts):
+            result = fl.tailscale_find(self.link)
+        self.assertIsNone(result["peers"][0]["ip"])
+
+        # Corrupt config_login in device dict must not raise IndexError/TypeError in learn().
+        corrupt = dict(d, config_login="bad")
+        with mock.patch.object(fl.frame_devices, "rewrite_block", return_value=False):
+            self.link.learn(corrupt, "192.0.2.1", dict(NET), 1.0)
+
+        # Unhashable device_id in trust_identity raises DeviceError instead of TypeError.
+        with self.assertRaises(fd.DeviceError):
+            self.link.trust_identity(["unhashable"], "SHA256:abc")
+
+        # Corrupt non-dict network entry in snapshot must not crash devices_view().
+        snap = self.reg.snapshot()
+        snap["networks"]["n-corrupt"] = "not-a-dict"
+        with mock.patch.object(self.reg, "snapshot", return_value=snap):
+            view = fl.devices_view(self.link)
+        self.assertEqual(view["networks"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
