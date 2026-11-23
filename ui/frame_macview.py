@@ -17,7 +17,9 @@ Runs on the Mac, inside Frame Control's server. The pieces:
 Stdlib only. MacView gets a plain ssh argv for the tunnel (its own
 connection) and the server's `run(remote, stdin=, timeout=)` for commands.
 """
+import http.client
 import json
+import math
 import os
 import re
 import secrets
@@ -166,7 +168,7 @@ class MacView:
                 return
             raise MacViewError("The Mac streaming helper is missing.")
         r = subprocess.run(["/bin/sh", str(SOURCES / "build.sh"), str(AGENT)], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, timeout=600)
+                           encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=600)
         if r.returncode != 0:
             raise MacViewError("Couldn't build the Mac streaming helper: " + (r.stderr or r.stdout).strip()[-400:])
 
@@ -222,7 +224,8 @@ class MacView:
             for port in dict.fromkeys([self.port or 0, 0]):
                 candidate = subprocess.Popen([*self.agent_command(), "serve", "--port", str(port), "--page", str(PAGE),
                                               "--exit-on-eof"], env=env, stdin=subprocess.PIPE,
-                                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                             encoding="utf-8", errors="replace")
                 try:
                     line = candidate.stdout.readline()
                 except Exception:
@@ -257,9 +260,12 @@ class MacView:
         req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
-                return json.load(r)
-        except (urllib.error.URLError, OSError, ValueError) as e:
+                parsed = json.load(r)
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
             raise MacViewError(f"The streaming helper didn't answer: {e}")
+        if not isinstance(parsed, dict):
+            raise MacViewError("The streaming helper returned an unexpected response.")
+        return parsed
 
     # ---- the tunnel from the Frame ----
 
@@ -323,7 +329,7 @@ class MacView:
                                      "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-N",
                                      "-R", f"127.0.0.1:{port}:127.0.0.1:{self.port}", target[0]],
                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.PIPE, text=True)
+                                    stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
             # A taken port makes ssh exit once it's connected; a working
             # tunnel answers the agent's status from the Frame's side.
             ok = False
@@ -345,8 +351,19 @@ class MacView:
                 return True
             if proc.poll() is None:
                 proc.terminate()
-                proc.wait()
-            last = (proc.stderr.read() or "").strip()
+                try:
+                    proc.wait(5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            try:
+                last = (proc.stderr.read() or "").strip() if proc.stderr is not None else ""
+            finally:
+                if proc.stderr is not None:
+                    try:
+                        proc.stderr.close()
+                    except OSError:
+                        pass
             if "forward" not in last.lower():
                 break  # not a port clash: the Frame is unreachable this way
         self._last_tunnel_error = last
@@ -378,7 +395,8 @@ class MacView:
             return ["-o", f"HostName={ip}"]  # checked against the headset's own pinned key
         alias = self.frame
         try:
-            cfg = subprocess.run(["ssh", "-G", self.frame], capture_output=True, text=True, timeout=5).stdout
+            cfg = subprocess.run(["ssh", "-G", self.frame], capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace", timeout=5).stdout
             opts = dict(line.split(None, 1) for line in cfg.splitlines() if " " in line)
             alias = opts.get("hostkeyalias") or opts.get("hostname") or alias  # a configured alias wins
         except (OSError, subprocess.SubprocessError):
@@ -425,10 +443,10 @@ class MacView:
                 self.launching -= 1
 
     def _show(self, src, quality, width, height):
-        if src != "test" and not src.startswith(("window:", "display:", "separate:")):
+        if not isinstance(src, str) or (src != "test" and not src.startswith(("window:", "display:", "separate:"))):
             raise MacViewError("Pick a window or display to show.")
         self.shows += 1
-        q = QUALITY.get(quality) or QUALITY["balanced"]
+        q = (QUALITY.get(quality) if isinstance(quality, str) else None) or QUALITY["balanced"]
         state = self.call("/status")
         if src != "test" and not state.get("screen"):
             raise MacViewError("Frame Control needs Screen Recording permission first (Allow… under Mac in the headset).")
@@ -449,12 +467,16 @@ class MacView:
         tag = "fc" + secrets.token_hex(4)
         # A single-use ticket for this source, not Frame Control's key: the URL
         # is visible in the Frame's process list.
-        ticket = self.call("/ticket", method="POST", src=src)["ticket"]
+        ticket = self.call("/ticket", method="POST", src=src).get("ticket")
+        if not isinstance(ticket, str) or not ticket:
+            raise MacViewError("The streaming helper didn't issue a viewer ticket.")
         params = {"src": src, "t": ticket, "tag": tag, "host": self.host,
                   "codec": q["codec"], "max": q["max"], "fps": q["fps"],
                   "bpp": q["bpp"]}
         url = f"http://127.0.0.1:{self.remote_port}/view?{urlencode(params)}"
-        w, h = fit(width or 1280, height or 720)
+        valid_w = width if isinstance(width, (int, float)) and not isinstance(width, bool) and math.isfinite(width) and width > 0 else 1280
+        valid_h = height if isinstance(height, (int, float)) and not isinstance(height, bool) and math.isfinite(height) and height > 0 else 720
+        w, h = fit(valid_w, valid_h)
         args = " ".join(_quote(str(a)) for a in (appid, url, w, h, tag, self.viewer_profile, *self.browser_flags))
         try:
             out = self.run("bash -s -- " + args, stdin=LAUNCH, timeout=60)
@@ -515,8 +537,14 @@ class MacView:
         if status.get("screen") and status.get("accessibility"):
             return
         with self.lock:
+            if not (self.agent and self.agent.poll() is None):
+                return
             self.agent.terminate()
-            self.agent.wait(5)
+            try:
+                self.agent.wait(5)
+            except subprocess.TimeoutExpired:
+                self.agent.kill()
+                self.agent.wait()
 
     def request_permissions(self):
         return self.call("/permissions", method="POST")
