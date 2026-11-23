@@ -219,7 +219,7 @@ class SteamCdp(unittest.TestCase):
         return conn
 
     def test_cdp_json_and_missing_ws_url_raise_fail_and_close_handshake_socket(self):
-        with mock.patch.object(steam.http.client, 'HTTPConnection', return_value=self._fake_http('{not json')):
+        with mock.patch.object(steam.http.client, 'HTTPConnection', return_value=self._fake_http('{}')):
             with self.assertRaises(steam.Fail):
                 steam.Page()
 

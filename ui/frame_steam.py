@@ -57,7 +57,7 @@ class Page:
             if response.status != 200:
                 raise OSError(f"HTTP {response.status} {response.reason}")
             pages = json.load(response)
-        except (OSError, http.client.HTTPException, ValueError) as e:
+        except (OSError, http.client.HTTPException) as e:
             raise Fail(f"Steam's UI isn't answering on {CDP} ({e}); is Steam running?")
         finally:
             connection.close()
