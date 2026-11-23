@@ -74,3 +74,47 @@ test('installer fetch retries a response aborted after headers and partial bytes
   assert.equal(bytes.toString(), 'complete');
   assert.equal(calls, 2);
 });
+
+test('installer fetch refuses non-HTTPS redirects and retries truncated responses (complete=false)', async () => {
+  const downgradeTransport = {
+    get(_url, _options, callback) {
+      const request = new EventEmitter();
+      queueMicrotask(() => {
+        const response = new EventEmitter();
+        response.statusCode = 302;
+        response.headers = { location: 'http://example.invalid/downgrade' };
+        response.resume = () => {};
+        callback(response);
+      });
+      return request;
+    },
+  };
+  await assert.rejects(
+    get('https://example.invalid/package', 5, downgradeTransport),
+    /non-HTTPS/i,
+  );
+
+  let calls = 0;
+  const truncatedTransport = {
+    get(_url, _options, callback) {
+      const request = new EventEmitter();
+      queueMicrotask(() => {
+        const response = new EventEmitter();
+        response.statusCode = 200;
+        response.headers = {};
+        response.complete = ++calls > 1;
+        callback(response);
+        response.emit('data', Buffer.from(calls === 1 ? 'cut' : 'full'));
+        response.emit('end');
+      });
+      return request;
+    },
+  };
+  const bytes = await fetchWithRetry(
+    (url) => get(url, 5, truncatedTransport),
+    'https://example.invalid/package',
+    async () => {},
+  );
+  assert.equal(bytes.toString(), 'full');
+  assert.equal(calls, 2);
+});
