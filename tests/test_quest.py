@@ -1199,6 +1199,83 @@ class Hardening(unittest.TestCase):
         self.assertEqual(apps[0]['apks'], ['/data/app/base.apk'])
         self.assertFalse(apps[0]['split'])
 
+    def test_adb_uses_utf8_encoding_and_rejects_non_string_serial(self):
+        ok = SimpleNamespace(returncode=0, stdout='ok\n', stderr='')
+        with patch.object(quest, '_adb_cmd', return_value=['adb']), \
+                patch.object(quest.subprocess, 'run', return_value=ok) as run:
+            self.assertEqual(quest.adb('devices'), 'ok\n')
+            self.assertEqual(run.call_args.kwargs.get('encoding'), 'utf-8')
+            self.assertEqual(run.call_args.kwargs.get('errors'), 'replace')
+            run.reset_mock()
+            for bad_serial in (123, ['SER'], True):
+                with self.subTest(bad_serial=bad_serial):
+                    with self.assertRaisesRegex(quest.QuestError, 'invalid adb serial'):
+                        quest.adb('devices', serial=bad_serial)
+            run.assert_not_called()
+
+    def test_unicode_digits_do_not_crash_parsing_or_version_check(self):
+        apps = quest._parse_packages('@@com.a.b\npackage:/base.apk\n\u00b2\t/sdcard/Android/obb/com.a.b\n', ['com.a.b'])
+        self.assertEqual(len(apps), 1)
+        self.assertIsNone(apps[0]['obb'])
+        with patch.object(quest, 'adb', return_value='\u00b2 1024\n'):
+            self.assertEqual(quest._remote_sizes('SER', ['/a']), 1024)
+        dump = f'Packages:\n  Package [{PKG}] (abc):\n    versionCode=\u00b2\n'
+        with patch.object(android, 'ssh', return_value=dump):
+            with self.assertRaisesRegex(quest.QuestError, 'does not have'):
+                quest._check_android_package({'package': PKG, 'instance': 1}, 2)
+        self.assertIsNone(quest.TUNNEL_RE.fullmatch('127.0.0.1:5555\n'))
+        self.assertIsNone(quest.TUNNEL_RE.fullmatch('127.0.0.1:\u00b2'))
+
+    def test_instance_id_validation_rejects_missing_bool_and_non_int(self):
+        with patch.object(android, 'ssh', return_value='1') as ssh, \
+                patch.object(quest, '_sleep'), \
+                patch.object(quest.os, 'pipe', side_effect=AssertionError('pipe should not run')) as pipe:
+            for bad in (None, {'package': PKG}, {'package': PKG, 'instance': True},
+                        {'package': PKG, 'instance': 'abc'}):
+                with self.subTest(bad=bad):
+                    with self.assertRaisesRegex(quest.QuestError, 'instance'):
+                        quest._wait_ready(bad)
+                    with self.assertRaisesRegex(quest.QuestError, 'invalid package|instance'):
+                        quest.push_data(bad, '.')
+                    with self.assertRaisesRegex(quest.QuestError, 'invalid package|instance'):
+                        quest._check_android_package(bad, 100)
+        ssh.assert_not_called()
+        pipe.assert_not_called()
+
+    def test_push_data_closes_pipe_fds_if_writer_thread_fails_to_start(self):
+        closed = []
+        with patch.object(quest.os, 'pipe', return_value=(101, 102)), \
+                patch.object(quest.os, 'close', side_effect=closed.append), \
+                patch.object(quest.threading.Thread, 'start', side_effect=RuntimeError("can't start new thread")):
+            with self.assertRaisesRegex(quest.QuestError, 'app data stream'):
+                quest.push_data({'package': PKG, 'instance': 2800000001}, '.')
+        self.assertEqual(sorted(closed), [101, 102])
+
+    def test_inspect_rejects_string_splits_and_sweep_cache_respects_zero_now(self):
+        with self.assertRaisesRegex(quest.QuestError, 'splits'):
+            quest.inspect(PKG, '/tmp/base.apk', splits='/tmp/split.apk')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            entry = root / 'org.example.app-0000'
+            entry.mkdir()
+            os.utime(str(entry), (100, 100))
+            with patch.object(quest, 'cache_root', return_value=root):
+                quest.sweep_cache(now=0)
+            self.assertTrue(entry.exists())
+
+    def test_cli_rejects_dangling_serial_and_handles_serial_matching_package(self):
+        with patch.object(quest, 'find_quest') as find_quest, \
+                patch.object(sys, 'argv', ['frame_quest.py', 'list', '--serial']):
+            with self.assertRaises(SystemExit) as e:
+                quest.main()
+        self.assertIn('--serial', str(e.exception))
+        find_quest.assert_not_called()
+        with patch.object(quest, 'import_game', return_value={}) as imp, \
+                patch.object(sys, 'argv', ['frame_quest.py', 'import', 'com.a.b', '--serial', 'com.a.b']), \
+                patch('builtins.print'):
+            quest.main()
+        self.assertEqual(imp.call_args.args[:2], ('com.a.b', 'com.a.b'))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -452,6 +452,8 @@ def public_address(ip):
     """True for an address on the public internet: never loopback, private, link-local,
     site-local, shared (CGNAT), reserved, unspecified or multicast, nor an IPv6 wrapper
     around IPv4. Python 3.9's is_global alone lets several of these through."""
+    if not isinstance(ip, str):
+        return False
     try:
         a = ipaddress.ip_address(ip.split('%', 1)[0])
     except ValueError:
@@ -564,6 +566,8 @@ def _send(url, data=None, headers=None, timeout=TIMEOUT):
 def check_url(url):
     """url if it is HTTPS on port 443 without credentials; else MetaError (never echoing the
     URL, which can hold the token). No lookup: addresses are checked when connecting."""
+    if not isinstance(url, str) or any(ord(c) < 32 or ord(c) == 127 for c in url):
+        raise MetaError("Meta's server gave an invalid address")
     try:
         p = urllib.parse.urlsplit(url)
         port = p.port
@@ -656,11 +660,25 @@ def whoami(token):
 # ---- The library --------------------------------------------------------------------
 
 def _int(value):
+    if isinstance(value, bool):
+        return None
     try:
         n = int(str(value).strip())
         return n if n >= 0 else None
     except (TypeError, ValueError):
         return None
+
+
+def _is_digits(value):
+    s = str(value or '')
+    return s.isascii() and s.isdigit()
+
+
+def _instance_id(meta):
+    inst = _int(meta.get('instance')) if isinstance(meta, dict) else None
+    if inst is None:
+        raise MetaError('invalid install record: missing instance id')
+    return inst
 
 
 def _nodes(connection):
@@ -681,7 +699,7 @@ def _nodes(connection):
 
 def _file(node, required=None):
     """An OBB or asset file: {'id', 'name', 'size', 'required', 'sha256'} or None."""
-    if not isinstance(node, dict) or not str(node.get('id') or '').isdigit():
+    if not isinstance(node, dict) or not _is_digits(node.get('id')):
         return None
     digest = str(node.get('sha256') or node.get('sha256_hash') or '').lower()
     return {'id': str(node['id']), 'name': str(node.get('file_name') or ''),
@@ -694,7 +712,7 @@ def parse_binary(binary):
     if not isinstance(binary, dict):
         return {}
     out = {}
-    if str(binary.get('id') or '').isdigit():
+    if _is_digits(binary.get('id')):
         out['binary_id'] = str(binary['id'])
     if isinstance(binary.get('package_name'), str) and android.PKG_RE.fullmatch(binary['package_name']):
         out['package'] = binary['package_name']
@@ -723,7 +741,7 @@ def parse_binary(binary):
 def parse_entitlements(data, now=None):
     """The Quest apps an entitlements answer says the account owns, newest facts first.
     Expired or inactive entitlements and other platforms (Rift, Go) are left out."""
-    now = now or time.time()
+    now = time.time() if now is None else now
     viewer = data.get('viewer') if isinstance(data, dict) else None
     user = viewer.get('user') if isinstance(viewer, dict) else None
     user = user if isinstance(user, dict) else {}
@@ -736,7 +754,7 @@ def parse_entitlements(data, now=None):
             continue
         app_id = str(item.get('id') or '')
         platform = str(item.get('platform') or '').upper()
-        if not app_id.isdigit() or app_id in seen or (platform and platform not in QUEST_PLATFORMS):
+        if not _is_digits(app_id) or app_id in seen or (platform and platform not in QUEST_PLATFORMS):
             continue
         seen.add(app_id)
         app = {'id': app_id, 'title': str(item.get('display_name') or item.get('name') or app_id)[:120],
@@ -881,7 +899,7 @@ def cache_root():
 
 def sweep_cache(now=None):
     """Remove downloads a crash left behind (older than CACHE_TTL)."""
-    root, now = cache_root(), now or time.time()
+    root, now = cache_root(), time.time() if now is None else now
     if root.is_dir():
         for d in root.iterdir():
             try:
@@ -936,7 +954,7 @@ def fetch(file_id, dest, limit, token, generation, expected=None, sha256=None, p
                 while True:
                     try:
                         chunk = body.read(1 << 20)
-                    except (OSError, ValueError) as e:
+                    except (http.client.HTTPException, OSError, ValueError) as e:
                         raise MetaError(f'Downloading {dest.name} failed: ' + redact(e, 200, token)) from None
                     if not chunk:
                         break
@@ -1067,8 +1085,9 @@ def _public(app):
     """An app as the page and the CLI see it (download ids are fine: they need the token)."""
     keys = ('id', 'title', 'package', 'version', 'version_code', 'size', 'min_sdk', 'problem', 'verdict')
     out = {k: app.get(k) for k in keys if k in app}
-    if _int(app.get('min_sdk')) is not None and app['min_sdk'] > android.LEPTON_API:
-        out['incompatible'] = android.newer_android_message(app['title'], app['min_sdk'])
+    min_sdk = _int(app.get('min_sdk'))
+    if min_sdk is not None and min_sdk > android.LEPTON_API:
+        out['incompatible'] = android.newer_android_message(app['title'], min_sdk)
     plan, skipped = data_plan(app) if app.get('package') else ([], [])
     out['data_size'] = sum(f.get('size') or 0 for f, _ in plan) or None
     out['data_files'] = len(plan)
@@ -1366,7 +1385,7 @@ def classify(log, alive, instance_up=True, seconds=None, started=True):
 
 def collect_log(meta):
     """The game's Lepton instance's Android log (main, system and crash buffers), bounded."""
-    ctr = f"lepton-steamlaunch-{int(meta['instance'])}"
+    ctr = f"lepton-steamlaunch-{_instance_id(meta)}"
     return android.ssh(f"podman exec {ctr} /system/bin/sh -c 'logcat -d -b main,system,crash -t 4000' "
                        "2>/dev/null | tail -c 400000 || true", timeout=60)
 
@@ -1391,7 +1410,7 @@ def run_test(pkg, wait=TEST_WAIT, app=None, report_result=True):
 
 def _run_test(pkg, wait, app, report_result):
     meta = android._meta_or_fail(pkg)
-    ctr = f"lepton-steamlaunch-{int(meta['instance'])}"
+    ctr = f"lepton-steamlaunch-{_instance_id(meta)}"
     label = meta.get('label') or (app or {}).get('title') or pkg
     if quest._running(pkg):
         closed, _ = quest._close(pkg)  # a fresh start gives a clean log
@@ -1424,7 +1443,8 @@ def _run_test(pkg, wait, app, report_result):
     message = f'Test: {label} {word}.' + (f" {verdict['cause']}" if verdict['cause'] else '')
     if verdict['detail']:
         message += f" ({verdict['detail']})"
-    if meta.get('vr_issues') and any('platform SDK' in i for i in meta['vr_issues']) and \
+    vr_issues = meta.get('vr_issues')
+    if isinstance(vr_issues, list) and any(isinstance(i, str) and 'platform SDK' in i for i in vr_issues) and \
             verdict['outcome'] not in ('runs', 'inconclusive'):
         message += ' ' + RAN_PLATFORM_SDK
     if verdict['outcome'] == 'hangs':
@@ -1448,7 +1468,9 @@ def report_notes(verdict):
         parts.append(CAUSES[verdict['cause_key']])
     if isinstance(verdict.get('version_code'), int) and not isinstance(verdict.get('version_code'), bool):
         parts.append(f"version code {verdict['version_code']}")
-    matched = [k for k in verdict.get('signals', {}).get('matched', []) if k in CAUSES]
+    signals = verdict.get('signals')
+    raw_matched = signals.get('matched') if isinstance(signals, dict) else None
+    matched = [k for k in raw_matched if k in CAUSES] if isinstance(raw_matched, list) else []
     if matched:
         parts.append('signals: ' + ', '.join(matched))
     return redact('. '.join(p.rstrip('.') for p in parts) + '.', 1000)
@@ -1501,13 +1523,23 @@ def main():
                 raise MetaError('usage: install APP_ID [--test] [--allow-downgrade]')
             r = install(names[0], test='--test' in args, allow_downgrade='--allow-downgrade' in args, progress=say)
         elif cmd == 'test':
-            names = [a for a in args if not a.startswith('--') and a != _arg(args, '--wait')]
+            wait_raw, rest, i = TEST_WAIT, [], 0
+            while i < len(args):
+                if args[i] == '--wait':
+                    if i + 1 >= len(args) or args[i + 1].startswith('--'):
+                        raise MetaError('--wait must be 1 to 600 seconds')
+                    wait_raw = args[i + 1]
+                    i += 2
+                else:
+                    rest.append(args[i])
+                    i += 1
+            names = [a for a in rest if not a.startswith('--')]
             if len(names) != 1:
                 raise MetaError('usage: test PACKAGE [--wait SECONDS] [--no-report]')
-            wait = _int(_arg(args, '--wait', TEST_WAIT))
+            wait = _int(wait_raw)
             if not wait or wait > 600:
                 raise MetaError('--wait must be 1 to 600 seconds')
-            r = run_test(names[0], wait=wait, report_result='--no-report' not in args)
+            r = run_test(names[0], wait=wait, report_result='--no-report' not in rest)
         else:
             sys.exit(__doc__)
     except (android.FrameError, OSError) as e:

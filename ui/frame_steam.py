@@ -61,26 +61,57 @@ class Page:
             raise Fail(f"Steam's UI isn't answering on {CDP} ({e}); is Steam running?")
         finally:
             connection.close()
-        url = next((p["webSocketDebuggerUrl"] for p in pages if p.get("title") == title), None)
+        if not isinstance(pages, list):
+            raise Fail(f"Steam's UI returned an unexpected page list on {CDP}")
+        url = next((p.get("webSocketDebuggerUrl") for p in pages
+                    if isinstance(p, dict) and p.get("title") == title
+                    and isinstance(p.get("webSocketDebuggerUrl"), str) and p.get("webSocketDebuggerUrl")), None)
         if not url:
             raise Fail(f"no {title} page; Steam may still be starting")
-        hostport, path = url.split("://", 1)[1].split("/", 1)
-        host, port = hostport.rsplit(":", 1)
-        self.sock = socket.create_connection((host, int(port)), timeout=30)
-        key = base64.b64encode(os.urandom(16)).decode()
-        self.sock.sendall((f"GET /{path} HTTP/1.1\r\nHost: {hostport}\r\nUpgrade: websocket\r\n"
-                           f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
-                           "Sec-WebSocket-Version: 13\r\n\r\n").encode())
-        head = b""
-        while b"\r\n\r\n" not in head:
-            chunk = self.sock.recv(4096)
-            if not chunk:
-                raise Fail("DevTools closed the connection during the handshake")
-            head += chunk
-        head, self.buf = head.split(b"\r\n\r\n", 1)
-        if b" 101 " not in head.split(b"\r\n")[0]:
-            raise Fail("DevTools refused the WebSocket upgrade")
+        ws = urlsplit(url)
+        host = ws.hostname
+        port = ws.port or (443 if ws.scheme == "wss" else 80)
+        ws_path = ws.path or "/"
+        if ws.query:
+            ws_path += "?" + ws.query
+        if not host or not ws.netloc:
+            raise Fail(f"invalid DevTools WebSocket URL for {title}")
+        self.sock = socket.create_connection((host, port), timeout=30)
+        try:
+            key = base64.b64encode(os.urandom(16)).decode()
+            self.sock.sendall((f"GET {ws_path} HTTP/1.1\r\nHost: {ws.netloc}\r\nUpgrade: websocket\r\n"
+                               f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                               "Sec-WebSocket-Version: 13\r\n\r\n").encode())
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    raise Fail("DevTools closed the connection during the handshake")
+                head += chunk
+                if len(head) > 65536:
+                    raise Fail("DevTools sent an oversized handshake header")
+            head, self.buf = head.split(b"\r\n\r\n", 1)
+            if b" 101 " not in head.split(b"\r\n")[0]:
+                raise Fail("DevTools refused the WebSocket upgrade")
+        except BaseException:
+            self.close()
+            raise
         self.next_id = 0
+
+    def close(self):
+        sock = getattr(self, "sock", None)
+        if sock is not None:
+            self.sock = None
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
 
     def _send(self, text):
         data, mask = text.encode(), os.urandom(4)
@@ -104,18 +135,30 @@ class Page:
 
     def _recv(self):
         message = b""
+        in_text = False
         while True:
             b0, b1 = self._take(2)
+            opcode = b0 & 0x0F
             n = b1 & 0x7F
             if n == 126:
                 n = struct.unpack(">H", self._take(2))[0]
             elif n == 127:
                 n = struct.unpack(">Q", self._take(8))[0]
+            mask = self._take(4) if b1 & 0x80 else None
             payload = self._take(n)
-            if b0 & 0x0F in (0x1, 0x0):  # text or continuation; skip ping/pong/close
+            if mask is not None:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            if opcode == 0x8:
+                raise Fail("DevTools closed the connection")
+            if opcode == 0x1:
+                message = payload
+                in_text = True
+                if b0 & 0x80:
+                    return message.decode("utf-8", errors="replace")
+            elif opcode == 0x0 and in_text:
                 message += payload
                 if b0 & 0x80:
-                    return message.decode()
+                    return message.decode("utf-8", errors="replace")
 
     def eval(self, expr):
         """Evaluate JS (awaiting promises) and return its JSON-serialisable value."""
@@ -123,16 +166,27 @@ class Page:
         self._send(json.dumps({"id": self.next_id, "method": "Runtime.evaluate", "params": {
             "expression": expr, "awaitPromise": True, "returnByValue": True}}))
         while True:
-            msg = json.loads(self._recv())
-            if msg.get("id") != self.next_id:
+            try:
+                msg = json.loads(self._recv())
+            except ValueError as e:
+                raise Fail(f"DevTools returned invalid JSON: {e}") from None
+            if not isinstance(msg, dict) or msg.get("id") != self.next_id:
                 continue  # events
             if "error" in msg:  # protocol error, e.g. the page is reloading
-                raise Fail(f"DevTools: {msg['error'].get('message', msg['error'])}")
-            res = msg.get("result", {})
+                err = msg["error"]
+                raise Fail(f"DevTools: {err.get('message', err) if isinstance(err, dict) else err}")
+            res = msg.get("result")
+            if not isinstance(res, dict):
+                return None
             if "exceptionDetails" in res:
                 d = res["exceptionDetails"]
-                raise Fail(d.get("exception", {}).get("description") or d.get("text") or "JS error")
-            return res.get("result", {}).get("value")
+                if isinstance(d, dict):
+                    exc = d.get("exception")
+                    desc = exc.get("description") if isinstance(exc, dict) else None
+                    raise Fail(desc or d.get("text") or "JS error")
+                raise Fail(str(d) if d else "JS error")
+            inner = res.get("result")
+            return inner.get("value") if isinstance(inner, dict) else None
 
 
 # steam_hw_compat_category_packed: 2 bits per device; the client reads the
@@ -183,61 +237,82 @@ def steam_url(url):
 
 
 def owned():
-    return Page().eval(OWNED_JS)
+    page = Page()
+    try:
+        return page.eval(OWNED_JS)
+    finally:
+        page.close()
+
+
+def _num(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
 
 def install(appid):
     page = Page()
-    if appid in UTILITY_IDS and appid not in FREE_UTILITIES:
-        rows = page.eval(UTILITIES_JS)
-        if not any(r['id'] == appid and r['owned'] for r in rows):
-            raise Fail("This paid utility is not owned by the Frame account. No install or store action was taken.")
-    app = page.eval(f"(a => a && {{name: a.display_name, installed: !!a.local_per_client_data?.installed}})"
-                    f"(appStore.GetAppOverviewByAppID({appid}))")
-    if app and app["installed"]:
-        return {"state": "installed", "message": f"{app['name']} is already installed"}
-    name = app["name"] if app else str(appid)
-    # The URL goes through Steam's own handler, which marks the install as
-    # expected and skips the options dialog when there is one library folder
-    # and enough space (verified 2026-09-25). A bare OpenInstallWizard doesn't.
-    steam_url(f"steam://install/{appid}")
-    w = None
-    deadline = time.time() + 12
-    while time.time() < deadline:
-        time.sleep(0.4)
-        w = page.eval(WIZARD_JS)
-        if w["app"] == appid and w["state"] not in BUSY:
-            break
-    if not w or w["app"] != appid:
-        # Steam didn't open a wizard for this app in time, or another app's is open.
+    try:
+        if appid in UTILITY_IDS and appid not in FREE_UTILITIES:
+            rows = page.eval(UTILITIES_JS)
+            if not isinstance(rows, list) or not any(
+                isinstance(r, dict) and r.get('id') == appid and r.get('owned') for r in rows
+            ):
+                raise Fail("This paid utility is not owned by the Frame account. No install or store action was taken.")
+        app = page.eval(f"(a => a && {{name: a.display_name, installed: !!a.local_per_client_data?.installed}})"
+                        f"(appStore.GetAppOverviewByAppID({appid}))")
+        if not isinstance(app, dict):
+            app = None
+        if app and app.get("installed"):
+            return {"state": "installed", "message": f"{app.get('name') or appid} is already installed"}
+        name = app.get("name") if app and app.get("name") else str(appid)
+        # The URL goes through Steam's own handler, which marks the install as
+        # expected and skips the options dialog when there is one library folder
+        # and enough space (verified 2026-09-25). A bare OpenInstallWizard doesn't.
+        steam_url(f"steam://install/{appid}")
+        w = None
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            time.sleep(0.4)
+            w = page.eval(WIZARD_JS)
+            if isinstance(w, dict) and w.get("app") == appid and w.get("state") not in BUSY:
+                break
+        if not isinstance(w, dict) or w.get("app") != appid:
+            # Steam didn't open a wizard for this app in time, or another app's is open.
+            if not app:
+                return {"state": "unknown", "message": f"Asked Steam to install {appid}. It isn't in this account's "
+                        "library, so Steam may be showing a store or license dialog in the headset"}
+            other_app = w.get("app") if isinstance(w, dict) else None
+            other = f" Another install dialog (app {other_app}) is open in the headset." if other_app else ""
+            return {"state": "unknown", "message": f"Asked Steam to install {name}, but it didn't start within 12 s.{other}"}
+        s = w.get("state", 0)
+        need, free = _num(w.get("need")), _num(w.get("free"))
+        # Steam stops at the options dialog when it wants to show a compatibility
+        # note or the disk settings. Accept its defaults (the default library
+        # folder) when the game fits, as the headset's own Install button does.
+        if s == 7 and 0 < need < free:
+            page.eval("SteamClient.Installs.ContinueInstall()")
+            time.sleep(1.5)
+            w2 = page.eval(WIZARD_JS)
+            if isinstance(w2, dict):
+                w = w2
+                need, free = _num(w.get("need")), _num(w.get("free"))
+            state_after = w.get("state", 0)
+            s = 14 if state_after in (0, 14) else state_after
+        label = STATE.get(s, str(s))
+        if s == 14:
+            return {"state": "downloading", "message": f"{name} is queued to download on the Frame"}
+        if s == 7:
+            return {"state": "headset", "message": f"Steam is showing install options for {name} in the headset "
+                    f"(needs {need / 1e9:.1f} GB, {free / 1e9:.0f} GB free)"}
+        if s in NEEDS_HEADSET:
+            return {"state": "headset", "message": f"Steam needs you to accept the {label} for {name} in the headset"}
+        if s == 15:
+            raise Fail(f"Steam couldn't install {name}: {w.get('detail') or 'error ' + str(w.get('error'))}")
         if not app:
             return {"state": "unknown", "message": f"Asked Steam to install {appid}. It isn't in this account's "
                     "library, so Steam may be showing a store or license dialog in the headset"}
-        other = f" Another install dialog (app {w['app']}) is open in the headset." if w and w["app"] else ""
-        return {"state": "unknown", "message": f"Asked Steam to install {name}, but it didn't start within 12 s.{other}"}
-    s = w["state"]
-    # Steam stops at the options dialog when it wants to show a compatibility
-    # note or the disk settings. Accept its defaults (the default library
-    # folder) when the game fits, as the headset's own Install button does.
-    if s == 7 and 0 < w["need"] < w["free"]:
-        page.eval("SteamClient.Installs.ContinueInstall()")
-        time.sleep(1.5)
-        w = page.eval(WIZARD_JS)
-        s = 14 if w["state"] in (0, 14) else w["state"]
-    label = STATE.get(s, str(s))
-    if s == 14:
-        return {"state": "downloading", "message": f"{name} is queued to download on the Frame"}
-    if s == 7:
-        return {"state": "headset", "message": f"Steam is showing install options for {name} in the headset "
-                f"(needs {w['need'] / 1e9:.1f} GB, {w['free'] / 1e9:.0f} GB free)"}
-    if s in NEEDS_HEADSET:
-        return {"state": "headset", "message": f"Steam needs you to accept the {label} for {name} in the headset"}
-    if s == 15:
-        raise Fail(f"Steam couldn't install {name}: {w.get('detail') or 'error ' + str(w.get('error'))}")
-    if not app:
-        return {"state": "unknown", "message": f"Asked Steam to install {appid}. It isn't in this account's "
-                "library, so Steam may be showing a store or license dialog in the headset"}
-    return {"state": label, "message": f"Asked Steam to install {name} (wizard: {label})"}
+        return {"state": label, "message": f"Asked Steam to install {name} (wizard: {label})"}
+    finally:
+        page.close()
 
 
 def store(appid):
@@ -251,8 +326,13 @@ def main():
         if cmd == "owned":
             out = owned()
         elif cmd == "utilities":
-            out = {"utilities": Page().eval(UTILITIES_JS)}
-        elif cmd in ("install", "store") and len(sys.argv) == 3 and sys.argv[2].isdigit():
+            page = Page()
+            try:
+                out = {"utilities": page.eval(UTILITIES_JS)}
+            finally:
+                page.close()
+        elif (cmd in ("install", "store") and len(sys.argv) == 3
+              and sys.argv[2].isascii() and sys.argv[2].isdigit() and int(sys.argv[2]) > 0):
             out = (install if cmd == "install" else store)(int(sys.argv[2]))
         else:
             raise Fail("usage: owned | install APPID | store APPID")

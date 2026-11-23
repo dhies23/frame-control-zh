@@ -37,7 +37,7 @@ DATA = '/sdcard/Android/data'
 OBB_NAME = r'(main|patch)\.[0-9]+\.{}\.obb'
 # Serials of adb connections that aren't a USB headset: Frame Control's own SSH tunnels
 # to the Frame's Lepton instances (127.0.0.1:<port>, server.AdbTunnel) and emulators.
-TUNNEL_RE = re.compile(r'^(127\.0\.0\.1|localhost|\[::1\]):\d+$')
+TUNNEL_RE = re.compile(r'^(127\.0\.0\.1|localhost|\[::1\]):\d+$', re.ASCII)
 QUEST_MAKERS = {'oculus', 'meta'}
 META_APPS = ('com.oculus.', 'com.meta.', 'com.facebook.')
 CACHE_TTL = 6 * 3600  # an import left behind by a crash is swept after this
@@ -83,6 +83,13 @@ def _int_code(code):
         return None
 
 
+def _instance_id(meta):
+    inst = _int_code(meta.get('instance')) if isinstance(meta, dict) else None
+    if inst is None or inst < 0:
+        raise QuestError('invalid install record: missing instance id')
+    return inst
+
+
 def _adb_cmd():
     try:
         return [frame_host.adb()]
@@ -105,10 +112,12 @@ def _friendly(out):
 
 def adb(*args, serial=None, timeout=ADB_TIMEOUT):
     """Run this computer's adb (the one Frame Control already finds) and return stdout."""
+    if serial is not None and not isinstance(serial, str):
+        raise QuestError('invalid adb serial')
     cmd = _adb_cmd() + (['-s', serial] if serial else []) + list(args)
     try:
-        r = subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, text=True, errors='replace',
-                           timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, text=True, encoding='utf-8',
+                           errors='replace', timeout=timeout)
     except subprocess.TimeoutExpired:
         verb = args[0] if args else 'command'
         raise QuestError(f'adb {verb} took more than {timeout} s; check the Quest is still connected')
@@ -143,7 +152,7 @@ def devices():
     instance, never touched here), emulator, or unknown (not authorised, offline...)."""
     found = _parse_devices(adb('devices', '-l', timeout=15))
     for d in found:
-        if TUNNEL_RE.match(d['serial']):
+        if TUNNEL_RE.fullmatch(d['serial']):
             d['kind'] = 'frame-tunnel'
         elif d['serial'].startswith('emulator-'):
             d['kind'] = 'emulator'
@@ -215,7 +224,7 @@ def _parse_packages(out, packages):
                 current['apks'].append(apk_path)
         else:
             size, _, where = line.partition('\t') if '\t' in line else line.partition(' ')
-            if size.isdigit():
+            if size.isascii() and size.isdigit():
                 key = 'obb' if where.strip().startswith(OBB + '/') else 'data' if where.strip().startswith(DATA + '/') else None
                 if key:
                     current[key] = int(size) * 1024
@@ -271,6 +280,8 @@ def inspect(package_name, base, splits=(), info=None):
     """Refuse what can't run on the Frame (32-bit only, Android newer than Lepton's, splits
     that can't be merged), before anything is copied to it; warn about what may not run.
     A caller that already read the base manifest may pass info to avoid reading it twice."""
+    if isinstance(splits, (str, bytes, os.PathLike)):
+        raise QuestError('splits must be a list of APK paths')
     names = set()
     for path in [base, *splits]:
         try:
@@ -312,7 +323,7 @@ def cache_root():
 
 def sweep_cache(now=None):
     """Remove imports a crash left behind (older than CACHE_TTL)."""
-    root, now = cache_root(), now or time.time()
+    root, now = cache_root(), time.time() if now is None else now
     if root.is_dir():
         for d in root.iterdir():
             try:
@@ -328,7 +339,7 @@ def _safe(name):
 
 def _remote_sizes(serial, paths):
     out = adb('shell', 'stat -c %s ' + ' '.join(shlex.quote(p) for p in paths), serial=serial)
-    return sum(int(x) for x in out.split() if x.isdigit())
+    return sum(int(x) for x in out.split() if x.isascii() and x.isdigit())
 
 
 def _pull(serial, remote, local):
@@ -337,7 +348,7 @@ def _pull(serial, remote, local):
 
 def _wait_ready(meta):
     """Until the app's Lepton instance has finished booting Android."""
-    container = f"lepton-steamlaunch-{int(meta['instance'])}"
+    container = f"lepton-steamlaunch-{_instance_id(meta)}"
     deadline = time.monotonic() + READY_TIMEOUT
     while time.monotonic() < deadline:
         out = android.ssh(f"podman exec {container} /system/bin/sh -c 'getprop sys.boot_completed' "
@@ -345,8 +356,16 @@ def _wait_ready(meta):
         if out.strip() == '1':
             return
         _sleep(3)
-    raise QuestError(f"{meta['label']} didn't start on the Frame within {READY_TIMEOUT // 60} minutes, so its "
+    label = meta.get('label') or meta.get('package') or 'The app'
+    raise QuestError(f"{label} didn't start on the Frame within {READY_TIMEOUT // 60} minutes, so its "
                      "game data couldn't be added. Check it opens from the Steam library, then import again.")
+
+
+def _close_fd(fd):
+    try:
+        os.close(fd)
+    except OSError:
+        pass
 
 
 def push_data(meta, folder):
@@ -354,15 +373,16 @@ def push_data(meta, folder):
     tar, written straight into the SSH transfer: nothing is staged on this computer."""
     import frame_android_data
     pkg = _check_package(meta.get('package') if isinstance(meta, dict) else None)
-    container = f"lepton-steamlaunch-{int(meta['instance'])}"
+    container = f"lepton-steamlaunch-{_instance_id(meta)}"
     script = f'set -eu; mkdir -p {DATA}/{pkg}; cd {DATA}/{pkg}; tar -x -o -f -'
     read_end, write_end = os.pipe()
     state = {'count': 0, 'error': None}
 
     def write():
+        out = None
         try:
-            with os.fdopen(write_end, 'wb') as out, \
-                    tarfile.open(fileobj=out, mode='w|', format=tarfile.GNU_FORMAT) as tar:
+            out = os.fdopen(write_end, 'wb')
+            with out, tarfile.open(fileobj=out, mode='w|', format=tarfile.GNU_FORMAT) as tar:
                 for path in sorted(Path(folder).rglob('*')):
                     if path.is_symlink() or not (path.is_file() or path.is_dir()):
                         continue  # regular files and folders only
@@ -377,14 +397,25 @@ def push_data(meta, folder):
                         tar.addfile(info)
         except (OSError, tarfile.TarError, ValueError) as e:  # ValueError: the reader closed first
             state['error'] = e
+            if out is None:
+                _close_fd(write_end)
 
     writer = threading.Thread(target=write, daemon=True)
-    writer.start()
     try:
-        with os.fdopen(read_end, 'rb') as src:
+        writer.start()
+    except (RuntimeError, OSError) as e:
+        _close_fd(read_end)
+        _close_fd(write_end)
+        raise QuestError(f'could not start app data stream: {e}') from e
+    src = None
+    try:
+        src = os.fdopen(read_end, 'rb')
+        with src:
             frame_android_data._stream(shlex.join(['podman', 'exec', '-i', container, '/system/bin/sh', '-c', script]),
                                        src=src)
     finally:
+        if src is None:
+            _close_fd(read_end)
         writer.join(60)
     if state['error']:
         raise QuestError(f'could not read the app files copied from the Quest: {state["error"]}')
@@ -494,12 +525,12 @@ def _check_android_package(meta, code):
     want = _int_code(code)
     if want is None:
         raise QuestError(f'invalid version code for {pkg}')
-    container = f"lepton-steamlaunch-{int(meta['instance'])}"
+    container = f"lepton-steamlaunch-{_instance_id(meta)}"
     out = android.ssh(f"podman exec {container} /system/bin/sh -c 'dumpsys package {pkg}' 2>/dev/null || true",
                       timeout=60)
     # Only this package's own block (dumpsys can list other packages too).
     block = re.search(r'^\s*Package \[' + re.escape(pkg) + r'\] \(.*?(?=^\s*Package \[|\Z)', out, re.M | re.S)
-    found = re.search(r'\bversionCode=(\d+)', block.group(0)) if block else None
+    found = re.search(r'\bversionCode=(\d+)', block.group(0), re.ASCII) if block else None
     if not found:
         raise QuestError(f'Android in {container} does not have {pkg} installed')
     if int(found.group(1)) != want:
@@ -649,17 +680,26 @@ def add_game_data(pkg, checked, obb_files, data_folder, report, warnings=(), sou
 
 def main():
     cmd, *args = sys.argv[1:] or ['help']
-    serial = args[args.index('--serial') + 1] if '--serial' in args and args.index('--serial') + 1 < len(args) else None
     try:
+        serial, rest, i = None, [], 0
+        while i < len(args):
+            if args[i] == '--serial':
+                if i + 1 >= len(args) or args[i + 1].startswith('--'):
+                    raise QuestError('usage: --serial requires a value')
+                serial = args[i + 1]
+                i += 2
+            else:
+                rest.append(args[i])
+                i += 1
         if cmd == 'devices':
             r = devices()
         elif cmd == 'list':
             r = packages(find_quest(serial)['serial'])
         elif cmd == 'import':
-            names = [a for a in args if not a.startswith('--') and a != serial]
+            names = [a for a in rest if not a.startswith('--')]
             if len(names) != 1:
                 raise QuestError('usage: import PACKAGE [--serial SERIAL] [--data] [--allow-downgrade]')
-            r = import_game(names[0], serial, data='--data' in args, allow_downgrade='--allow-downgrade' in args,
+            r = import_game(names[0], serial, data='--data' in rest, allow_downgrade='--allow-downgrade' in rest,
                             progress=lambda stage, percent=None: print(f'{percent:>3}% {stage}' if percent is not None
                                                                        else stage, file=sys.stderr))
         else:

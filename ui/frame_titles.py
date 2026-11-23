@@ -528,6 +528,8 @@ def _tree_size(root):
 
 def _choose(plan, rel, runtime=None):
     """Set plan's launch target (a path relative to root) and its runtime."""
+    if not isinstance(rel, str) or not rel or any(ord(c) < 32 or ord(c) == 127 for c in rel):
+        raise FrameError(f'{rel!r} is not a file in the title')
     rel = rel.replace('\\', '/')
     # A manifest may name the program as it is in the archive, above the folder
     # _unwrap stepped into. A path that works as it is always wins.
@@ -673,7 +675,7 @@ def _copy_tree(src, dest, timeout=3 * 3600, delete=False):
         cmd = ['scp', *opts, '-r', src, f'{frame_android.FRAME}:{dest}']
     try:
         frame_host.run_ssh(cmd, check=True, capture_output=True, stdin=subprocess.DEVNULL, text=True,
-                           errors='replace', timeout=timeout)
+                           encoding='utf-8', errors='replace', timeout=timeout)
     except subprocess.TimeoutExpired:
         raise FrameError(f'copying {name} to the Frame timed out')
     except subprocess.CalledProcessError as e:
@@ -708,8 +710,11 @@ def install(path, name=None, exe=None, runtime=None, progress=None, artwork=None
 
 def install_plan(plan, name=None, exe=None, runtime=None, progress=None, artwork=None):
     """Install an inspect() plan, optionally with another name, target or runtime."""
-    if name:
-        plan['name'], plan['id'] = name, title_id(name)
+    if name is not None:
+        if not isinstance(name, str):
+            raise FrameError('the title name must be text')
+        if name:
+            plan['name'], plan['id'] = name, title_id(name)
     if exe or runtime:
         _choose(plan, exe or plan['target'], runtime)
     step = progress or (lambda *a: None)
@@ -719,7 +724,7 @@ def install_plan(plan, name=None, exe=None, runtime=None, progress=None, artwork
 
 def _install(plan, step, artwork=None):
     gid = plan['id']
-    if not NEW_ID_RE.match(gid) or gid.lower() in RESERVED_IDS:
+    if not isinstance(gid, str) or not NEW_ID_RE.fullmatch(gid) or gid.lower() in RESERVED_IDS:
         raise FrameError(f'bad title id {gid!r}')
     direct_fex = plan.get('format') == 'elf' and plan.get('arch') == 'x86_64' and plan.get('static')
     if direct_fex:
@@ -731,9 +736,12 @@ def _install(plan, step, artwork=None):
     for filename in ('icon.png', 'logo.png'):
         path = os.path.join(plan['root'], filename)
         if os.path.isfile(path):
-            with open(path, 'rb') as f:
-                icon = f.read(frame_android.frame_artwork.MAX_IMAGE + 1)
-            break
+            try:
+                with open(path, 'rb') as f:
+                    icon = f.read(frame_android.frame_artwork.MAX_IMAGE + 1)
+                break
+            except OSError:
+                pass
     images, warnings = frame_android.frame_artwork.prepare(plan['name'], icon, artwork)
     step("Syncing Valve's devkit tools to the Frame", 0.02)
     ensure_utils()
@@ -742,7 +750,7 @@ def _install(plan, step, artwork=None):
     ready = _json_out(ssh(devkit_script('prepare-upload', f'--gameid {gid}'), timeout=60),
                       'steamos-prepare-upload', expect=dict)
     directory = str(ready.get('directory') or '')
-    if not DIR_RE.match(directory) or not directory.endswith(f'/{GAMES}/{gid}'):
+    if not DIR_RE.fullmatch(directory) or not directory.endswith(f'/{GAMES}/{gid}'):
         raise FrameError(f'steamos-prepare-upload returned an unexpected folder {directory!r}')
     registered = False
     library_ready, shortcut, steam_registered = False, None, False
@@ -933,7 +941,7 @@ for d in sorted(os.listdir(root)) if os.path.isdir(root) else []:
     t = {'id': d}
     for key, suffix in (('settings', '-settings.json'), ('argv', '-argv.json'), ('meta', '-framecontrol.json')):
         try:
-            with open(os.path.join(root, d + suffix)) as f:
+            with open(os.path.join(root, d + suffix), encoding='utf-8') as f:
                 t[key] = json.load(f)
         except (OSError, ValueError):
             t[key] = None
@@ -950,7 +958,7 @@ def list_titles():
         if not isinstance(t, dict):
             continue
         gid = t.get('id')
-        if not isinstance(gid, str) or not ID_RE.match(gid):
+        if not isinstance(gid, str) or not ID_RE.fullmatch(gid):
             continue
         settings = t.get('settings') if isinstance(t.get('settings'), dict) else {}
         meta = t.get('meta') if isinstance(t.get('meta'), dict) else {}
@@ -968,8 +976,7 @@ def list_titles():
 
 
 def _check_id(gid):
-    gid = str(gid or '')
-    if not ID_RE.match(gid) or gid.lower() in RESERVED_IDS:
+    if not isinstance(gid, str) or not ID_RE.fullmatch(gid) or gid.lower() in RESERVED_IDS:
         raise FrameError(f'bad title id {gid!r}')
     if ssh(f'test -d {GAMES}/{gid} && echo yes || true', timeout=30).strip() != 'yes':
         raise FrameError(f'{gid} is not installed')

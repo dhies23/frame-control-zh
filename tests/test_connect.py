@@ -258,5 +258,62 @@ class MdnsParsers(unittest.TestCase):
         self.assertEqual(fc.parse_avahi(out), ["frame.local", "192.168.1.50"])
 
 
+class Hardening(unittest.TestCase):
+    def test_http_exception_and_corrupt_pub_fall_back_cleanly(self):
+        import http.client
+        from unittest import mock
+
+        with mock.patch.object(fc._opener, "open", side_effect=http.client.BadStatusLine("bad")):
+            ok, msg = fc.register("127.0.0.1", "body", 32000)
+            self.assertFalse(ok)
+            self.assertIn("no answer", msg)
+            reason = fc.devkit_pair("127.0.0.1", PUB, "frame-control@test", 32000)
+            self.assertIn("not reachable", reason)
+
+        with mock.patch.object(fc, "fetch_login", return_value="steamos"), \
+             mock.patch.object(fc, "say"):
+            reason = fc.devkit_pair("127.0.0.1", "ssh-ed25519 AAAA bad", "frame-control@test", 32000)
+            self.assertIn("ssh-rsa", reason)
+
+    def test_ipv6_zone_escaped_in_devkit_url_and_ssh_config_round_trip(self):
+        import tempfile
+        self.assertEqual(fc.devkit_url("fe80::1%en0", 32000, "/register"),
+                         "http://[fe80::1%25en0]:32000/register")
+        block = fc.config_block("fe80::1%en0", 22, "steamos")
+        self.assertIn("  HostName fe80::1%%en0", block)
+        with tempfile.TemporaryDirectory() as d:
+            saved = fc.SSH_DIR, fc.CONFIG
+            fc.SSH_DIR, fc.CONFIG = Path(d), Path(d) / "config"
+            try:
+                fc.write_config("fe80::1%en0", 22, "steamos")
+                self.assertEqual(fc.configured_host(), "fe80::1%en0")
+            finally:
+                fc.SSH_DIR, fc.CONFIG = saved
+
+    def test_split_port_guards_non_ascii_digits_and_empty_host(self):
+        self.assertEqual(fc.split_port("frame:²"), ("frame:²", 22))
+        self.assertEqual(fc.split_port(":22"), (":22", 22))
+        self.assertEqual(fc.split_port("10.0.0.5:2222"), ("10.0.0.5", 2222))
+
+    def test_key_login_works_bounds_timeout_and_handles_ssh_errors(self):
+        import subprocess
+        from unittest import mock
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured.update(kwargs)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with mock.patch.object(fc.frame_host, "run_ssh", side_effect=fake_run):
+            self.assertTrue(fc.key_login_works())
+        self.assertIsNotNone(captured.get("timeout"))
+
+        with mock.patch.object(fc.frame_host, "run_ssh", side_effect=subprocess.TimeoutExpired("ssh", 15)):
+            self.assertFalse(fc.key_login_works())
+        with mock.patch.object(fc.frame_host, "run_ssh", side_effect=FileNotFoundError("ssh")):
+            self.assertFalse(fc.key_login_works())
+
+
 if __name__ == "__main__":
     unittest.main()

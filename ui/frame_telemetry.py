@@ -29,6 +29,7 @@ Events wait in an outbox file and are sent in batches from a background thread,
 so going offline loses nothing. The last SENT_KEEP sent events are kept on this
 computer so the page can show exactly what left it.
 """
+import http.client
 import ipaddress
 import json
 import os
@@ -413,7 +414,7 @@ def page_event(body):
     if not isinstance(body, dict):
         raise ValueError('expected a JSON object')
     name = body.get('event')
-    allowed = PAGE_EVENTS.get(name)
+    allowed = PAGE_EVENTS.get(name) if isinstance(name, str) else None
     if allowed is None:
         raise ValueError('unknown event')
     raw_props = body.get('properties')
@@ -475,7 +476,7 @@ def frame_seen(build, version, headset=None, saved=None):
     p = {'steamos_build': str(build)[:40], 'steamos_version': str(version or '')[:40]}
     if headset:
         p['headset_id'] = headset
-    if isinstance(saved, int) and saved >= 0:
+    if isinstance(saved, int) and not isinstance(saved, bool) and saved >= 0:
         p['headsets_saved'] = saved
     capture('frame_connected', p)
 
@@ -555,7 +556,7 @@ COMPAT_FIELDS = ('package', 'version', 'result', 'rating', 'notes', 'via', 'date
 def compat_report(report):
     """A compatibility report for the shared database (compat level only). Free text is
     scrubbed; the source is kept only as F-Droid or a public download host."""
-    if not report.get('id') or not enabled('compat'):
+    if not isinstance(report, dict) or not report.get('id') or not enabled('compat'):
         return False
     p = {k: report.get(k) for k in COMPAT_FIELDS if report.get(k) not in (None, '')}
     for k, n in (('notes', 1000), ('label', 120), ('version', 80)):
@@ -648,7 +649,7 @@ def post(batch, timeout=20):
     except urllib.error.HTTPError as e:
         e.close()
         raise SendError(f'PostHog said HTTP {e.code}')
-    except (urllib.error.URLError, OSError, ValueError) as e:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
         raise SendError(f"couldn't reach PostHog: {e}")
 
 
@@ -681,9 +682,10 @@ def flush(timeout=20):
             post(batch, timeout)
         except SendError:
             return 0
-        sent_ids = {e.get('uuid') for e in batch if e.get('uuid') is not None}
+        sent_ids = {e.get('uuid') for e in batch if isinstance(e.get('uuid'), str)}
         with _lock:
-            _write_lines(OUTBOX, [e for e in _read_lines(OUTBOX) if e.get('uuid') not in sent_ids])
+            _write_lines(OUTBOX, [e for e in _read_lines(OUTBOX)
+                                  if not (isinstance(e.get('uuid'), str) and e.get('uuid') in sent_ids)])
             _write_lines(SENT, (_read_lines(SENT) + batch)[-SENT_KEEP:])
             compat = [e['properties'].get('id') for e in batch
                       if e.get('event') == 'compat_report' and isinstance(e.get('properties'), dict)
@@ -716,8 +718,9 @@ def start():
                 _wake.wait(FLUSH_EVERY)
                 _wake.clear()
 
-        _flusher = threading.Thread(target=loop, name='telemetry', daemon=True)
-        _flusher.start()
+        thread = threading.Thread(target=loop, name='telemetry', daemon=True)
+        thread.start()
+        _flusher = thread
 
 
 def wake():

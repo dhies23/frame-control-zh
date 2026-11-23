@@ -533,6 +533,77 @@ class Hardening(Base):
             self.assertTrue(fd.repair_permissions(cfg))
         self.assertGreaterEqual(calls[0], 3)
 
+    def test_effective_port_and_keygen_use_utf8_replace(self):
+        from unittest import mock
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append((cmd[0], kwargs))
+            return subprocess.CompletedProcess(cmd, 0, stdout="port 2222\n", stderr="")
+
+        with mock.patch.object(fd.frame_host, "run_ssh", side_effect=fake_run):
+            self.assertEqual(fd.effective_port("frame", self.ssh / "config"), 2222)
+            r = fd._keygen("-F", "frame-control-d1", "-f", str(self.ssh / "known_hosts"))
+            self.assertIsNotNone(r)
+        self.assertEqual(len(captured), 2)
+        for prog, kwargs in captured:
+            self.assertEqual(kwargs.get("encoding"), "utf-8", msg=prog)
+            self.assertEqual(kwargs.get("errors"), "replace", msg=prog)
+
+    def test_key_entry_and_pin_key_guard_non_string_and_bytes_inputs(self):
+        self.assertIsNone(fd.key_entry(123, "frame-control-d1"))
+        self.assertIsNone(fd.key_entry(["line"], "frame-control-d1"))
+        self.assertIsNone(fd.key_entry(f"frame-control-d1 {KEY}", 123))
+        blob = KEY.split()[1]
+        for bad_type, bad_blob in ((123, blob), (["ssh-ed25519"], blob), ("ssh-ed25519", blob.encode("ascii")),
+                                   ("ssh-ed25519", 123)):
+            with self.assertRaises(fd.DeviceError, msg=repr((bad_type, bad_blob))):
+                fd.pin_key("d1", bad_type, bad_blob)
+
+    def test_add_device_and_update_address_guard_iterables_and_padded_hosts(self):
+        with self.assertRaises(fd.DeviceError):
+            self.reg.add_device("frame-str-host", hosts="192.168.1.40")
+        with self.assertRaises(fd.DeviceError):
+            self.reg.add_device("frame-int-host", hosts=123)
+        with self.assertRaises(fd.DeviceError):
+            self.reg.add_device("frame-str-id", identity_files="/tmp/id_ed25519")
+        d = self.reg.add_device("frame-dedup", hosts=["192.168.1.40", " 192.168.1.40 "])
+        self.assertEqual([a["host"] for a in d["addresses"]], ["192.168.1.40"])
+        # Updating label with a whitespace-padded version of the same host keeps learned state.
+        self.reg.record_success(d["id"], "192.168.1.40", "n-home", 1.5)
+        updated = self.reg.update_address(d["id"], "192.168.1.40", new_host=" 192.168.1.40 ", label="Home")
+        self.assertEqual((updated["host"], updated["label"], updated["networks"]), ("192.168.1.40", "Home", ["n-home"]))
+
+    def test_network_helpers_and_corrupt_network_entries_are_guarded(self):
+        (self.dir / "devices.json").write_text(json.dumps({
+            "version": 1,
+            "active": None,
+            "devices": [],
+            "networks": {
+                "n-bad": "not-a-dict",
+                "n-stale": {"name": "Office", "ssid": "Corp", "last_seen": "not-a-number"},
+            },
+        }), encoding="utf-8")
+        reg = fd.Registry(self.dir / "devices.json")
+        self.assertNotIn("n-bad", reg.snapshot()["networks"])
+        # Non-dict or unhashable network inputs must not raise TypeError/AttributeError.
+        reg.record_network("not-a-dict")
+        reg.record_network({"id": ["unhashable"]})
+        reg.record_network({"id": "n-stale", "ssid": "Corp", "gateway": "10.0.0.1", "wifi": True})
+        self.assertEqual(reg.network_name("not-a-dict"), "No network")
+        self.assertEqual(reg.network_name({"id": ["unhashable"], "ssid": "Guest"}), "Guest")
+        self.assertEqual(reg.network_name({"id": "n-stale"}), "Office")
+        for bad_id in (["unhashable"], {"k": "v"}, 123, None):
+            with self.assertRaises(fd.DeviceError, msg=repr(bad_id)):
+                reg.name_network(bad_id, "Home")
+        # Non-iterable fingerprints and unhashable undismiss alias must not crash.
+        d = reg.add_device("frame-net", hosts=["192.168.1.55"])
+        reg.record_identity(d["id"], None)
+        reg.record_identity(d["id"], "SHA256:abc")
+        reg.undismiss(["unhashable"])
+        reg.record_success(d["id"], "192.168.1.55", ["unhashable"], 1.0, ip="192.168.1.55")
+        self.assertEqual(reg.get(d["id"])["addresses"][0]["networks"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

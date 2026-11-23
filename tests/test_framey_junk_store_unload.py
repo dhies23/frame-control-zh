@@ -99,5 +99,66 @@ class JunkStoreUnload(unittest.TestCase):
         self.assertNotIn('Update or reinstall', fixed['reason'])
 
 
+class JunkStoreUnloadProbe(unittest.TestCase):
+    def _run_stop(self, console_tail, elapsed):
+        import sys
+        import tempfile
+        decky_dir = str(ROOT / 'tests' / 'decky-runtime')
+        if decky_dir not in sys.path:
+            sys.path.insert(0, decky_dir)
+        import junk_store_private
+
+        class FakeBackend:
+            pid = 4242
+            returncode = 0
+
+            def send_signal(self, sig):
+                pass
+
+            def wait(self, timeout=None):
+                log.write(console_tail)
+                log.flush()
+                return 0
+
+        times = iter([100.0, 100.0 + elapsed, 100.0 + elapsed])
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / 'backend.log'
+            log_path.write_text('before\n', encoding='utf-8')
+            with log_path.open('a', encoding='utf-8') as log, \
+                    patch.object(junk_store_private, 'descendants', return_value={5000: {'start': 1}}), \
+                    patch.object(junk_store_private, 'identity', return_value=None), \
+                    patch.object(junk_store_private.time, 'monotonic', side_effect=lambda: next(times)):
+                return junk_store_private.stop(FakeBackend(), log, False, expect_unload_crash=True)
+
+    def test_expect_unload_crash_accepts_recursion_error_or_forced_sigkill_stall(self):
+        rec = self._run_stop(
+            'Starting plugin unload...\nRecursionError: maximum recursion depth exceeded\n',
+            elapsed=0.4,
+        )
+        self.assertTrue(rec['recursionError'])
+        self.assertFalse(rec['unloadCompleted'])
+
+        stall = self._run_stop(
+            'Starting plugin unload...\nStopping WebSocket server\nStopping site\nSite stopped\n'
+            '[plugin][WARNING]: Plugin Junk-Store (v1.1.13) still alive 5 seconds after stop request! Sending SIGKILL!\n'
+            '[plugin][INFO]: Plugin Junk-Store (v1.1.13) has been stopped in 5.1s\n',
+            elapsed=5.1,
+        )
+        self.assertEqual(stall['forcedPluginKills'], 1)
+        self.assertFalse(stall['unloadCompleted'])
+
+    def test_expect_unload_crash_rejects_clean_unload_and_short_stop_without_error(self):
+        with self.assertRaises(AssertionError):
+            self._run_stop(
+                'Starting plugin unload...\nJunk-Store out!\nUnloaded Junk-Store (v1.1.13)\n',
+                elapsed=0.3,
+            )
+        with self.assertRaises(AssertionError):
+            self._run_stop(
+                'Starting plugin unload...\nSite stopped\n',
+                elapsed=0.3,
+            )
+
+
 if __name__ == '__main__':
     unittest.main()

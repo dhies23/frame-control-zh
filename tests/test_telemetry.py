@@ -1074,6 +1074,49 @@ class ReportProblem(Base):
         self.assertEqual(fr.cut("hello", 0), "")
         self.assertEqual(fr.cut("hello", -5), "")
 
+    def test_ssh_version_thread_start_inbox_bool_and_connection_lines_guards(self):
+        # ssh_version passes encoding="utf-8" and parse_ssh_version handles non-str input.
+        self.assertEqual(fr.parse_ssh_version(123), "unknown")
+        with mock.patch.object(fr.frame_host, "run_ssh",
+                               return_value=subprocess.CompletedProcess([], 0, "", "OpenSSH_9.9p1\n")) as run:
+            self.assertEqual(fr.ssh_version("/usr/bin/ssh"), "OpenSSH 9.9p1")
+        self.assertEqual(run.call_args.kwargs.get("encoding"), "utf-8")
+        self.assertEqual(run.call_args.kwargs.get("errors"), "replace")
+
+        # start_ssh_check() must not poison _ssh["thread"] if Thread.start() fails.
+        saved_ssh = dict(fr._ssh)
+        fr._ssh.update(thread=None, line=None)
+        try:
+            with mock.patch.object(fr.threading.Thread, "start", side_effect=RuntimeError("no threads")):
+                with self.assertRaises(RuntimeError):
+                    fr.start_ssh_check()
+            self.assertIsNone(fr._ssh["thread"])
+        finally:
+            fr._ssh.update(saved_ssh)
+
+        # inbox() rejects boolean days; mark_withdrawn() skips malformed rows and bool rev.
+        for bad_days in (True, False):
+            with self.assertRaises(ValueError):
+                fr.inbox(days=bad_days)
+        fr.mark_withdrawn(["not-a-row"], [["c1", "a@b.com", False, True]])
+
+        # connection_lines() tolerates non-numeric rtt_ms and null last_failure.at.
+        fake_link = mock.MagicMock()
+        fake_link.snapshot.return_value = {
+            "phase": "connected",
+            "via": {"host": "192.168.1.5", "ip": "192.168.1.5", "rtt_ms": "fast"},
+            "attempt": 1,
+            "probes": [],
+        }
+        fake_link.active_device.return_value = {"alias": "frame", "addresses": []}
+        fake_link.reg.devices.return_value = []
+        fake_link.last_failure = {"stage": "find", "category": "timeout", "at": None}
+        with mock.patch.object(fr, "link", fake_link), \
+             mock.patch.object(fr, "ssh_line", return_value="SSH: ok"), \
+             mock.patch.object(fr, "config_line", return_value="~/.ssh/config: ok"):
+            lines = fr.connection_lines()
+        self.assertTrue(any(line.startswith("Connection: connected") for line in lines))
+
 
 class Hardening(Base):
     def test_corrupt_settings_telemetry_and_package_json_fall_back_safely(self):
@@ -1140,6 +1183,48 @@ class Hardening(Base):
         tm.diagnostic("fresh", RuntimeError("boom"))
         self.assertIn("expected|frame_unreachable", tm._seen_errors)
         self.assertLess(len(tm._seen_errors), 10)
+
+    def test_post_wraps_http_exception_and_flush_handles_unhashable_uuid(self):
+        import http.client
+        for exc in (http.client.BadStatusLine("bad"), http.client.HTTPException("protocol error")):
+            with mock.patch.object(tm.urllib.request, "urlopen", side_effect=exc):
+                with self.assertRaises(tm.SendError):
+                    tm.post([{"event": "app_opened", "properties": {}}])
+
+        tm.update_settings({"noticeShown": True, "usage": True})
+        rows = [
+            {"event": "app_opened", "uuid": ["unhashable"], "properties": {"level": "usage"}},
+            {"event": "app_opened", "uuid": "u-ok", "properties": {"level": "usage"}},
+        ]
+        tm._write_lines(tm.OUTBOX, rows)
+        with mock.patch.object(tm, "post") as post_mock:
+            sent = tm.flush()
+        self.assertEqual(sent, 2)
+        post_mock.assert_called_once()
+        self.assertNotIn("u-ok", [e.get("uuid") for e in self.queued()])
+
+    def test_page_event_frame_seen_compat_report_and_start_guard_inputs_and_thread_failure(self):
+        with self.assertRaises(ValueError):
+            tm.page_event({"event": ["tab_viewed"]})
+
+        tm.frame_seen("20260925.1", "0.4.1", saved=True)
+        connected = [e for e in self.queued() if e["event"] == "frame_connected"]
+        self.assertEqual(len(connected), 1)
+        self.assertNotIn("headsets_saved", connected[0]["properties"])
+
+        tm.update_settings({"compat": True})
+        self.assertFalse(tm.compat_report("not-a-dict"))
+        self.assertFalse(tm.compat_report(None))
+
+        saved_flusher = tm._flusher
+        tm._flusher = None
+        try:
+            with mock.patch.object(tm.threading.Thread, "start", side_effect=RuntimeError("no threads")):
+                with self.assertRaises(RuntimeError):
+                    tm.start()
+            self.assertIsNone(tm._flusher)
+        finally:
+            tm._flusher = saved_flusher
 
 
 if __name__ == "__main__":

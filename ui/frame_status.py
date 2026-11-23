@@ -23,7 +23,7 @@ TOOL_NAME = re.compile(r"^(Steam Linux Runtime|Proton|Steamworks Common|FEX$|Lep
 
 def read(path):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             return f.read().strip()
     except OSError:
         return None
@@ -31,7 +31,8 @@ def read(path):
 
 def run(*cmd):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=2).stdout.strip()
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=2).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
 
@@ -134,7 +135,7 @@ def wifi():
         parts = re.split(r"(?<!\\):", line)
         if len(parts) >= 3 and parts[0] == "yes":
             return {"ssid": parts[1].replace("\\:", ":"),
-                    "signal": int(parts[2]) if parts[2].isdigit() else None}
+                    "signal": int(parts[2]) if parts[2].isascii() and parts[2].isdigit() else None}
     return None
 
 
@@ -187,9 +188,11 @@ def games():
     for f in glob.glob(os.path.join(STEAM, "steamapps/appmanifest_*.acf")):
         text = read(f) or ""
         fields = dict(re.findall(r'^\s*"(appid|name|SizeOnDisk)"\s+"([^"]*)"', text, re.M))
-        if fields.get("appid", "").isdigit() and not TOOL_NAME.match(fields.get("name", "")):
-            out.append({"appid": fields["appid"], "name": fields.get("name", fields["appid"]),
-                        "size": int(fields.get("SizeOnDisk", "0")) if fields.get("SizeOnDisk", "").isdigit() else 0})
+        appid = fields.get("appid", "")
+        size_s = fields.get("SizeOnDisk", "")
+        if appid.isascii() and appid.isdigit() and not TOOL_NAME.match(fields.get("name", "")):
+            out.append({"appid": appid, "name": fields.get("name", appid),
+                        "size": int(size_s) if size_s.isascii() and size_s.isdigit() else 0})
     return sorted(out, key=lambda g: g["name"].lower())
 
 

@@ -83,7 +83,7 @@ def ssh_g(alias):
     ssh alias. proxied: it goes through ProxyJump or ProxyCommand, so only ssh can reach it."""
     try:
         out = frame_host.run_ssh(["ssh", "-G", alias], capture_output=True, stdin=subprocess.DEVNULL, text=True,
-                                 errors="replace", timeout=10).stdout
+                                 encoding="utf-8", errors="replace", timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
         out = ""
     got = {}
@@ -92,7 +92,7 @@ def ssh_g(alias):
         if k in ("hostname", "port", "user", "proxyjump", "proxycommand") and k not in got:
             got[k] = v.strip()
     raw_port = got.get("port", "")
-    port = int(raw_port) if raw_port.isdigit() and 1 <= int(raw_port) <= 65535 else 22
+    port = int(raw_port) if raw_port.isascii() and raw_port.isdigit() and 1 <= int(raw_port) <= 65535 else 22
     proxied = any(got.get(k) not in (None, "", "none") for k in ("proxyjump", "proxycommand"))
     return got.get("hostname") or alias, port, got.get("user"), proxied
 
@@ -102,7 +102,7 @@ def proxy_route(alias):
     ProxyJump, or ("command", text) through a ProxyCommand."""
     try:
         out = frame_host.run_ssh(["ssh", "-G", alias], capture_output=True, stdin=subprocess.DEVNULL, text=True,
-                                 errors="replace", timeout=10).stdout
+                                 encoding="utf-8", errors="replace", timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
         out = ""
     got = {}
@@ -1166,7 +1166,8 @@ class Link:
             return
         # Terminal's `ssh ALIAS` and the helper scripts use ~/.ssh/config: point it here too,
         # unless the block changed since this attempt began (checked under the file lock).
-        login = device.get("config_login") or [None, None]
+        raw_login = device.get("config_login")
+        login = raw_login if isinstance(raw_login, list) and len(raw_login) >= 2 else [None, None]
         expect = {"hostname": device.get("config_host"), "user": login[0], "port": login[1]}
         try:
             if frame_devices.rewrite_block(device["alias"], hostname=host, user=device["user"],
@@ -1210,6 +1211,10 @@ class Link:
                 proc.wait(5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                try:
+                    proc.wait(2)
+                except subprocess.TimeoutExpired:
+                    pass
 
     def handshake(self, device, a, found, user):
         """SSH to one address, following ssh -v through stages 3-5.
@@ -1495,7 +1500,7 @@ class Link:
                     *self.host_opts(device, ssh_target(a["host"], res.get("ip"))), device["alias"], "true"]
             try:
                 r = frame_host.run_ssh(argv, capture_output=True, stdin=subprocess.DEVNULL, text=True,
-                                       errors="replace", timeout=20)
+                                       encoding="utf-8", errors="replace", timeout=20)
                 err = r.stderr.strip()
                 if r.returncode == 0:
                     rows[i].update(ssh="ok", detail=f"{lead} · SSH works")
@@ -1653,6 +1658,8 @@ class Link:
         the person saw and confirmed), replacing whatever was saved; and only while the headset
         is still reached as it was then (same port and user, the address still one of its own).
         -> the scan."""
+        if not isinstance(device_id, str):
+            raise frame_devices.DeviceError("No such headset (it may have been removed)")
         with self.cond:
             scan = self.scans.get(device_id)
             if not scan or now() - scan["at"] > SCAN_TTL:
@@ -1677,7 +1684,8 @@ def devices_view(link):
     """Every headset with its addresses, the networks they worked on, and the current network."""
     snap = link.reg.snapshot()
     active = link.active_device()
-    names = {nid: link.reg.network_name(dict(n, id=nid)) for nid, n in snap["networks"].items()}
+    networks = {nid: n for nid, n in (snap.get("networks") or {}).items() if isinstance(nid, str) and isinstance(n, dict)}
+    names = {nid: link.reg.network_name(dict(n, id=nid)) for nid, n in networks.items()}
     devices = []
     bare = link.bare(link.session_alias) if link.session_alias and not link.reg.by_alias(link.session_alias) else None
     for extra in ([active] if active.get("transient") and not active.get("none") else []) + \
@@ -1695,7 +1703,7 @@ def devices_view(link):
                              for a in d["addresses"]]
         devices.append(view)
     return {"devices": devices, "active": active["id"], "network": link.state["network"],
-            "networks": [dict(n, id=nid, display=names[nid]) for nid, n in snap["networks"].items()],
+            "networks": [dict(n, id=nid, display=names[nid]) for nid, n in networks.items()],
             "kinds": frame_devices.KIND_LABEL}
 
 
@@ -1880,10 +1888,12 @@ def tailscale_find(link, device_id=None):
     if not ts.get("up"):
         return {"up": False, "peers": [], "message": "Tailscale isn't running on this computer. Start it, then look again."}
     peers = []
-    for p in ts.get("peers") or ():
+    raw_peers = ts.get("peers")
+    for p in raw_peers if isinstance(raw_peers, (list, tuple)) else ():
         if not isinstance(p, dict):
             continue
-        ips = [i for i in (p.get("ips") or ()) if isinstance(i, str) and i]
+        raw_ips = p.get("ips")
+        ips = [i for i in (raw_ips if isinstance(raw_ips, (list, tuple)) else ()) if isinstance(i, str) and i]
         ip = next((i for i in ips if "." in i), ips[0] if ips else None)
         name = str(p.get("name") or "")
         dns = str(p.get("dns") or "")
@@ -1906,7 +1916,8 @@ def matches_pinned_key(host, port, saved):
         return False
     try:
         reply = frame_host.run_ssh([keyscan, "-T", "2", "-p", str(port), host],
-                                   capture_output=True, text=True, errors="replace", stdin=subprocess.DEVNULL, timeout=4)
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                   stdin=subprocess.DEVNULL, timeout=4)
     except (OSError, subprocess.TimeoutExpired):
         return False
     pins = set(saved)

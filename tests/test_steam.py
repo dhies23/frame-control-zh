@@ -429,6 +429,31 @@ class StoreSearch(unittest.TestCase):
                     frame_store.details(appid, "AU")
             self.assertLessEqual(len(frame_store._details), 2)
 
+    def test_unhashable_args_and_unicode_digits_in_html_are_guarded(self):
+        with mock.patch.object(frame_store, "_get") as get:
+            self.assertEqual(frame_store.frame_rating(["bad"]), 0)
+            self.assertEqual(frame_store.frame_rating(True), 0)
+            for kwargs in ({"item_type": ["game"]}, {"sort": {"k": 1}}, {"vr": ["all"]}, {"price": ["free"]}):
+                with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                    frame_store.search("portal", "AU", **kwargs)
+            with self.assertRaises(ValueError):
+                frame_store.search("portal", ["AU"])
+            for bad_id, bad_cc in ((["bad"], "AU"), (True, "AU"), (620, ["AU"])):
+                with self.subTest(bad=(bad_id, bad_cc)), self.assertRaises(ValueError):
+                    frame_store.details(bad_id, bad_cc)
+            get.assert_not_called()
+
+        parser = frame_store.SearchResults()
+        parser.feed(
+            '<a class="search_result_row" href="https://store.steampowered.com/app/²/">'
+            '<span class="title">Bad App</span></a>'
+            '<a class="search_result_row" href="https://store.steampowered.com/app/620/">'
+            '<span class="title">Portal 2</span><div class="discount_pct">-²%</div></a>'
+        )
+        self.assertEqual(len(parser.items), 1)
+        self.assertEqual(parser.items[0]["id"], 620)
+        self.assertNotIn("discount_percent", parser.items[0])
+
 
 class StoreHttp(unittest.TestCase):
     def test_http_helpers_cap_response_size(self):

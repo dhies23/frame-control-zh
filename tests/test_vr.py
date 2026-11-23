@@ -206,3 +206,79 @@ class HUD(unittest.TestCase):
                 vr.panel('hud-start')
             popen.return_value.terminate.assert_called_once()
             popen.return_value.kill.assert_called_once()
+
+
+class SteamCdp(unittest.TestCase):
+    def _fake_http(self, body, status=200):
+        resp = mock.MagicMock()
+        resp.status = status
+        resp.reason = 'OK' if status == 200 else 'Error'
+        resp.read.return_value = body.encode('utf-8') if isinstance(body, str) else body
+        conn = mock.MagicMock()
+        conn.getresponse.return_value = resp
+        return conn
+
+    def test_cdp_json_and_missing_ws_url_raise_fail_and_close_handshake_socket(self):
+        with mock.patch.object(steam.http.client, 'HTTPConnection', return_value=self._fake_http('{}')):
+            with self.assertRaises(steam.Fail):
+                steam.Page()
+
+        pages = json.dumps([{'title': 'SharedJSContext'}])  # missing webSocketDebuggerUrl
+        with mock.patch.object(steam.http.client, 'HTTPConnection', return_value=self._fake_http(pages)):
+            with self.assertRaises(steam.Fail):
+                steam.Page()
+
+        # Non-101 handshake must close the opened socket instead of leaking it, and IPv6 host strips brackets.
+        pages = json.dumps([{'title': 'SharedJSContext', 'webSocketDebuggerUrl': 'ws://[::1]:8080/devtools/page/1'}])
+        sock = mock.MagicMock()
+        sock.recv.return_value = b'HTTP/1.1 403 Forbidden\r\n\r\n'
+        with mock.patch.object(steam.http.client, 'HTTPConnection', return_value=self._fake_http(pages)), \
+             mock.patch.object(steam.socket, 'create_connection', return_value=sock) as create_conn:
+            with self.assertRaisesRegex(steam.Fail, 'refused'):
+                steam.Page()
+        create_conn.assert_called_once_with(('::1', 8080), timeout=30)
+        sock.close.assert_called_once()
+
+    def test_recv_handles_close_frame_and_masked_text_frame(self):
+        page = object.__new__(steam.Page)
+        # Close frame (opcode 0x8, fin 1, len 0) must raise Fail immediately without reading more.
+        page.buf = bytes([0x88, 0x00])
+        page.sock = mock.MagicMock()
+        page.sock.recv.side_effect = AssertionError('should not read past close frame')
+        with self.assertRaisesRegex(steam.Fail, 'closed'):
+            page._recv()
+
+        # Masked text frame from peer must unmask cleanly.
+        mask = b'\x12\x34\x56\x78'
+        raw = b'{"id":1}'
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(raw))
+        page.buf = bytes([0x81, 0x80 | len(raw)]) + mask + masked
+        self.assertEqual(page._recv(), '{"id":1}')
+
+    def test_eval_handles_null_exception_and_string_error_payloads(self):
+        page = object.__new__(steam.Page)
+        page.next_id = 0
+        page._send = mock.MagicMock()
+        for payload, pattern in (
+            (json.dumps({'id': 1, 'error': 'reloading'}), 'reloading'),
+            (json.dumps({'id': 2, 'result': {'exceptionDetails': {'exception': None, 'text': 'boom'}}}), 'boom'),
+            ('not-json', 'DevTools'),
+        ):
+            page._recv = mock.MagicMock(return_value=payload)
+            with self.assertRaisesRegex(steam.Fail, pattern):
+                page.eval('1+1')
+
+        page._recv = mock.MagicMock(return_value=json.dumps({'id': 4, 'result': {'result': None}}))
+        self.assertIsNone(page.eval('1+1'))
+
+    def test_main_rejects_non_ascii_or_zero_appid(self):
+        for bad_arg in ('0', '²'):
+            out = []
+            with mock.patch.object(steam.sys, 'argv', ['frame_steam.py', 'store', bad_arg]), \
+                 mock.patch('builtins.print', side_effect=out.append), \
+                 mock.patch.object(steam, 'store') as store_fn:
+                with self.assertRaises(SystemExit) as cm:
+                    steam.main()
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn('usage:', json.loads(out[0])['error'])
+            store_fn.assert_not_called()
