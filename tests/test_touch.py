@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -657,6 +658,87 @@ class Hardening(unittest.TestCase):
             else:
                 t.os.getuid = saved_getuid
         self.assertEqual(unreffed, [0x1234])
+
+
+class TouchHardening(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import frame_touch
+        cls.t = frame_touch
+
+    def test_ascii_only_digits_in_props_displays_pid_and_proc(self):
+        t = self.t
+        with mock.patch.object(t.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, "GAMESCOPE_FOCUSED_WINDOW(CARDINAL) = ١٢٣, 45\n", "")):
+            self.assertEqual(t.read_props(":0"), {"GAMESCOPE_FOCUSED_WINDOW": [45]})
+        with mock.patch.object(t.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, "_NET_WM_PID(CARDINAL) = ١٢٣\n", "")):
+            self.assertIsNone(t.window_pid(":0", 1))
+        with mock.patch.object(t.os, "listdir", return_value=["X١", "X0"]), \
+                mock.patch("builtins.open", mock.mock_open(read_data="0: 0 0 0 0 0 0 @/tmp/.X11-unix/X٢\n0: 0 0 0 0 0 0 @/tmp/.X11-unix/X1\n")):
+            self.assertEqual(t.displays(), [":0", ":1"])
+        opened = []
+        with mock.patch.object(t.os, "listdir", return_value=["١٢٣"]), \
+                mock.patch("builtins.open", side_effect=lambda p, *a, **kw: opened.append(p) or io.StringIO("plasmashell")):
+            self.assertFalse(t.desktop_running())
+        self.assertEqual(opened, [])
+
+    def test_to_root_rejects_non_finite_and_bool_inputs(self):
+        t = self.t
+        good = {"root": [1280, 720], "width": 1280, "height": 720}
+        for fx, fy in ((float("nan"), 0.5), (0.5, float("inf")), (True, 0.5)):
+            with self.subTest(fx=fx, fy=fy), self.assertRaises(ValueError):
+                t.to_root(good, fx, fy)
+        with self.assertRaises(ValueError):
+            t.to_root({"root": [1280, 720], "width": True, "height": 720}, 0.5, 0.5)
+
+    def test_main_unrefs_ei_on_wait_ready_failure_and_handles_oserror_in_loop(self):
+        t = self.t
+        unreffed = []
+        real_close = t.Gamescope.close
+
+        class FakeGS:
+            def __init__(self, fail_ready=False):
+                self.ei = 0x5555
+                self.fd = 99
+                self.device = None if fail_ready else 0x7777
+                self.alive = True
+                self.released = False
+                self.L = mock.Mock(ei_unref=lambda ptr: unreffed.append(ptr))
+                self._fail = fail_ready
+
+            def wait_ready(self, timeout=5):
+                if self._fail:
+                    raise RuntimeError("no device")
+
+            def release_all(self):
+                self.released = True
+
+            def close(self):
+                real_close(self)
+
+        messages = []
+        with mock.patch.object(t.sys, "argv", ["frame_touch.py"]), \
+                mock.patch.object(t, "Gamescope", return_value=FakeGS(fail_ready=True)), \
+                mock.patch.object(t, "say", side_effect=lambda s, **kw: messages.append((s, kw))):
+            rc = t.main()
+        self.assertEqual(rc, 1)
+        self.assertEqual(unreffed, [0x5555])
+
+        unreffed.clear()
+        messages.clear()
+        gs = FakeGS(fail_ready=False)
+        with mock.patch.object(t.sys, "argv", ["frame_touch.py"]), \
+                mock.patch.object(t, "Gamescope", return_value=gs), \
+                mock.patch.object(t, "focus", return_value={"window": 1}), \
+                mock.patch.object(t.sys, "stdin", mock.Mock(fileno=lambda: 0)), \
+                mock.patch.object(t.select, "select", side_effect=OSError("bad fd")), \
+                mock.patch.object(t, "say", side_effect=lambda s, **kw: messages.append((s, kw))):
+            rc = t.main()
+        self.assertEqual(rc, 1)
+        self.assertTrue(any(s == "error" for s, _ in messages))
+        self.assertTrue(gs.released)
+        self.assertEqual(unreffed, [0x5555])
 
 
 if __name__ == "__main__":

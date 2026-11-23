@@ -76,6 +76,10 @@ def budget(limit=TOOL_TIMEOUT):
     return min(limit, left)
 
 
+def _ascii_digits(value):
+    return isinstance(value, str) and value.isascii() and value.isdigit()
+
+
 def read_props(display, limit=TOOL_TIMEOUT):
     """gamescope's root properties on one display, in one xprop call: {name: [values]} for
     those the display has, {} if none (or xprop didn't answer)."""
@@ -90,7 +94,7 @@ def read_props(display, limit=TOOL_TIMEOUT):
         name, sep, values = line.partition("=")
         name = name.split("(", 1)[0].strip()
         if sep and name in PROPS:
-            props[name] = [int(v) for v in values.replace(",", " ").split() if v.isdigit()]
+            props[name] = [int(v) for v in values.replace(",", " ").split() if _ascii_digits(v)]
     return props
 
 
@@ -126,12 +130,12 @@ def displays():
     build stops sharing /tmp/.X11-unix with SSH sessions."""
     found = set()
     try:
-        found.update(int(n[1:]) for n in os.listdir("/tmp/.X11-unix") if n[:1] == "X" and n[1:].isdigit())
+        found.update(int(n[1:]) for n in os.listdir("/tmp/.X11-unix") if n[:1] == "X" and _ascii_digits(n[1:]))
     except OSError:
         pass
     try:
         with open("/proc/net/unix", encoding="utf-8", errors="replace") as f:
-            found.update(int(n) for n in re.findall(r"@/tmp/\.X11-unix/X(\d+)", f.read()))
+            found.update(int(n) for n in re.findall(r"@/tmp/\.X11-unix/X(\d+)", f.read(), re.ASCII))
     except OSError:
         pass
     return [f":{n}" for n in sorted(found)]
@@ -177,7 +181,7 @@ def window_pid(display, window):
     except (OSError, subprocess.SubprocessError):
         return None
     value = out.rsplit("=", 1)[-1].strip() if "=" in out else ""
-    return int(value) if value.isdigit() else None
+    return int(value) if _ascii_digits(value) else None
 
 
 def locate(window, pid):
@@ -290,7 +294,7 @@ DESKTOP = ("plasmashell", "kwin_wayland", "kwin_wayland_wrapper", "holo-nested-d
 def desktop_running():
     """Whether the headset's Linux desktop (the nested Plasma session) is running."""
     try:
-        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+        pids = [p for p in os.listdir("/proc") if _ascii_digits(p)]
     except OSError:
         return False
     for pid in pids:
@@ -336,11 +340,14 @@ def to_root(panel, fx, fy):
     """
     rw, rh = panel["root"]
     w, h = panel["width"], panel["height"]
+    for val in (rw, rh, w, h, fx, fy):
+        if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val):
+            raise ValueError("invalid panel geometry or coordinates")
     if w <= 0 or h <= 0 or rw <= 0 or rh <= 0:
         raise ValueError("invalid panel geometry")
     s = min(rw / w, rh / h)
     ox, oy = (rw - w * s) / 2, (rh - h * s) / 2
-    fx, fy = min(max(fx, 0.0), 1.0), min(max(fy, 0.0), 1.0)
+    fx, fy = min(max(float(fx), 0.0), 1.0), min(max(float(fy), 0.0), 1.0)
     return ox + fx * (w * s - 1), oy + fy * (h * s - 1)
 
 
@@ -419,8 +426,8 @@ class Gamescope:
             self.L.ei_event_unref(ev)
 
     def wait_ready(self, timeout=5):
-        end = time.time() + timeout
-        while self.device is None and time.time() < end:
+        end = time.monotonic() + timeout
+        while self.device is None and time.monotonic() < end:
             if not self.pump(0.1):
                 break
         if self.device is None:
@@ -472,11 +479,23 @@ class Gamescope:
 
     def release_all(self):
         """Let go of every button and key still down, so nothing stays held in the headset."""
+        if self.device is None:
+            return
         for code in list(self.held):
             name = next(n for n, c in BUTTONS.items() if c == code)
             self.button(name, False)
         for code in list(self.keys):
             self.key(code, False)
+
+    def close(self):
+        try:
+            if self.device is not None:
+                self.release_all()
+        finally:
+            if self.ei:
+                self.L.ei_unref(self.ei)
+                self.ei = None
+            self.device = None
 
 
 # ---- events from the server --------------------------------------------------------
@@ -553,10 +572,13 @@ def main():
     if sys.argv[1:] == ["panels"]:
         print(json.dumps(panels()))
         return 0
+    gs = None
     try:
         gs = Gamescope()
         gs.wait_ready()
     except (OSError, RuntimeError) as e:
+        if gs is not None:
+            gs.close()
         say("error", message=str(e))
         return 1
     say("ready", focus=focus().get("window"))
@@ -592,12 +614,11 @@ def main():
                         panel = apply(gs, event, panel)
                     except (ValueError, KeyError, TypeError, OSError):
                         continue  # the server checks events; skip anything odd
-    except RuntimeError as e:
+    except (OSError, RuntimeError) as e:
         say("error", message=str(e))
         return 1
     finally:
-        if gs.device is not None:
-            gs.release_all()  # never leave a button held down in the headset
+        gs.close()  # release held buttons/keys and unref libei sender
 
 
 if __name__ == "__main__":
