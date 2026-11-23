@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'ui'))
@@ -641,6 +642,175 @@ class Local(unittest.TestCase):
         folder = Path(result['path'])
         self.assertFalse((folder / 'android' / 'org.example.broken.tar.gz').exists())
         self.assertEqual([s['id'] for s in result['skipped']], ['android:org.example.broken'])
+
+    def test_text_io_uses_utf8_encoding(self):
+        orig_read = Path.read_text
+        orig_write = Path.write_text
+        seen = []
+
+        def tracked_read(path_self, *args, **kwargs):
+            if path_self == backup.REMOTE or path_self.name == 'manifest.json':
+                seen.append(('read', path_self.name, kwargs.get('encoding')))
+            return orig_read(path_self, *args, **kwargs)
+
+        def tracked_write(path_self, *args, **kwargs):
+            if path_self.name == 'manifest.json':
+                seen.append(('write', path_self.name, kwargs.get('encoding')))
+            return orig_write(path_self, *args, **kwargs)
+
+        with patch.object(Path, 'read_text', tracked_read), patch.object(Path, 'write_text', tracked_write):
+            backup.remote_command('plan')
+            self.make()
+            backup.read_manifest('2026-10-23-120000')
+        self.assertTrue(any(op == 'read' and name == 'frame_backup_remote.py' for op, name, _ in seen))
+        self.assertTrue(any(op == 'write' and name == 'manifest.json' for op, name, _ in seen))
+        self.assertTrue(any(op == 'read' and name == 'manifest.json' for op, name, _ in seen))
+        for op, name, enc in seen:
+            self.assertEqual(enc, 'utf-8', (op, name, enc))
+
+    def test_remote_json_rejects_non_dict_payloads(self):
+        for payload in (b'[]', b'"ok"', b'123', b'null', b'true'):
+            with patch.object(backup, '_ssh', return_value=payload):
+                with self.assertRaisesRegex(backup.BackupError, 'unexpected answer'):
+                    backup.remote_json('plan')
+
+    def test_inspect_archive_guards_control_chars_none_stream_and_zlib_error(self):
+        for bad_name in ('dir/bad\x01name.dat', 'dir/bad\nname.dat', 'dir/bad\x7fname.dat'):
+            archive = self.store / 'ctrl.tar.gz'
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(str(archive), 'w:gz') as tar:
+                info = tarfile.TarInfo(bad_name)
+                info.size = 2
+                tar.addfile(info, io.BytesIO(b'hi'))
+            with self.assertRaisesRegex(backup.BackupError, 'unsafe entry'):
+                backup.inspect_archive(archive)
+
+        good = self.store / 'good.tar.gz'
+        with tarfile.open(str(good), 'w:gz') as tar:
+            info = tarfile.TarInfo('a/b.dat')
+            info.size = 4
+            tar.addfile(info, io.BytesIO(b'data'))
+
+        with patch.object(tarfile.TarFile, 'extractfile', return_value=None):
+            with self.assertRaisesRegex(backup.BackupError, 'could not read'):
+                backup.inspect_archive(good)
+
+        class ExplodingStream(io.BytesIO):
+            def read(self, *args, **kwargs):
+                raise zlib.error('corrupt deflate stream')
+
+        with patch.object(tarfile.TarFile, 'extractfile', return_value=ExplodingStream(b'data')):
+            with self.assertRaisesRegex(backup.BackupError, 'could not read'):
+                backup.inspect_archive(good)
+
+        closed = []
+        orig_extract = tarfile.TarFile.extractfile
+
+        class TrackedStream:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def read(self, n=-1):
+                return self._inner.read(n)
+
+            def close(self):
+                closed.append(True)
+                self._inner.close()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+
+        with patch.object(tarfile.TarFile, 'extractfile',
+                          side_effect=lambda tf, m: TrackedStream(orig_extract(tf, m)),
+                          autospec=True):
+            files = backup.inspect_archive(good)
+        self.assertEqual(len(files), 1)
+        self.assertEqual(closed, [True])
+
+    def test_read_manifest_rejects_bool_format_and_missing_or_mismatched_kind(self):
+        self.make()
+        path = self.store / '2026-10-23-120000' / 'manifest.json'
+        original = json.loads(path.read_text(encoding='utf-8'))
+
+        bool_fmt = dict(original, format=True)
+        path.write_text(json.dumps(bool_fmt), encoding='utf-8')
+        with self.assertRaises(backup.BackupError):
+            backup.read_manifest('2026-10-23-120000')
+
+        missing_kind = json.loads(json.dumps(original))
+        del missing_kind['parts'][0]['kind']
+        path.write_text(json.dumps(missing_kind), encoding='utf-8')
+        with self.assertRaises(backup.BackupError):
+            backup.read_manifest('2026-10-23-120000')
+
+        wrong_kind = json.loads(json.dumps(original))
+        wrong_kind['parts'][0]['kind'] = 'android'
+        path.write_text(json.dumps(wrong_kind), encoding='utf-8')
+        with self.assertRaises(backup.BackupError):
+            backup.read_manifest('2026-10-23-120000')
+
+    def test_list_backups_restore_plan_and_restore_tolerate_malformed_optional_fields(self):
+        self.make()
+        path = self.store / '2026-10-23-120000' / 'manifest.json'
+        m = json.loads(path.read_text(encoding='utf-8'))
+        m['headset'] = 'not-a-dict'
+        m['parts'] = [m['parts'][0], m['parts'][1]]
+        m['parts'][0]['archive_bytes'] = 'bad'
+        m['parts'][0]['label'] = None
+        m['parts'][0]['files'] = ['not-a-dict', {'no_path': 1}, {'path': 'a/b.dat'}]
+        m['parts'][1]['archive_bytes'] = True
+        path.write_text(json.dumps(m), encoding='utf-8')
+
+        listed = backup.list_backups()['backups']
+        self.assertEqual(len(listed), 1)
+        self.assertIsNone(listed[0]['build'])
+        self.assertIsNone(listed[0]['headset'])
+        self.assertEqual(listed[0]['bytes'], 0)
+
+        seen_check = {}
+
+        def fake_remote_json(cmd, *args, src=None, timeout=120):
+            if cmd == 'check':
+                seen_check['payload'] = json.loads(src.decode('utf-8'))
+                return {'parts': ['bogus', {'id': 'saves:1234', 'status': 'ok', 'replace': 1, 'new': 0, 'held': {}}]}
+            return {'restored': 1}
+
+        stages = []
+        with patch.object(backup, 'remote_json', side_effect=fake_remote_json):
+            plan = backup.restore_plan('2026-10-23-120000')
+            self.assertEqual(seen_check['payload']['parts'][0]['files'], ['a/b.dat'])
+            self.assertEqual(plan['parts'][0]['status'], 'ok')
+            result = backup.restore('2026-10-23-120000', ['saves:1234'], confirmed=True,
+                                    report=lambda stage, pct=None: stages.append(stage))
+        self.assertEqual(stages, ['Restoring saves:1234'])
+        self.assertEqual(result['restored'][0]['label'], 'saves:1234')
+
+        with patch.object(backup, 'restore_plan',
+                          return_value={'parts': [{'id': 'saves:1234', 'kind': 'saves', 'label': None, 'status': 'ok'}]}), \
+                patch('builtins.open', side_effect=OSError('vanished')):
+            result = backup.restore('2026-10-23-120000', ['saves:1234'], confirmed=True)
+        self.assertEqual(result['restored'], [])
+        self.assertEqual(result['skipped'][0]['id'], 'saves:1234')
+        self.assertIn('vanished', result['skipped'][0]['reason'])
+
+    def test_backup_guards_invalid_kinds_and_existing_staging_dir(self):
+        for bad_kinds in (None, 123, 'saves', True):
+            with self.assertRaisesRegex(backup.BackupError, 'choose something'):
+                backup.backup(kinds=bad_kinds)
+
+        self.store.mkdir(parents=True, exist_ok=True)
+        existing_staging = self.store / '.2026-10-23-120000.partial'
+        existing_staging.mkdir()
+        sentinel = existing_staging / 'keep.txt'
+        sentinel.write_text('keep', encoding='utf-8')
+        with patch.object(backup.time, 'strftime', return_value='2026-10-23-120000'), \
+                patch.object(android, 'list_apps', return_value=[]):
+            with self.assertRaisesRegex(backup.BackupError, 'try again'):
+                backup.backup(kinds=['saves'])
+        self.assertTrue(sentinel.exists())
 
 
 class Ssh(unittest.TestCase):

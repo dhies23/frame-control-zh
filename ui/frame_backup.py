@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import zlib
 
 import frame_android as android
 import frame_host
@@ -71,7 +72,7 @@ def archive_name(part):
 
 
 def remote_command(cmd, *args):
-    return shlex.join(['python3', '-c', REMOTE.read_text(), cmd, *args])
+    return shlex.join(['python3', '-c', REMOTE.read_text(encoding='utf-8'), cmd, *args])
 
 
 def _ssh(command, src=None, dst=None, timeout=1800):
@@ -95,9 +96,12 @@ def _ssh(command, src=None, dst=None, timeout=1800):
 def remote_json(cmd, *args, src=None, timeout=120):
     out = _ssh(remote_command(cmd, *args), src=src, timeout=timeout)
     try:
-        return json.loads(out)
+        parsed = json.loads(out)
     except (ValueError, TypeError):
         raise BackupError('unexpected answer from the headset')
+    if not isinstance(parsed, dict):
+        raise BackupError('unexpected answer from the headset')
+    return parsed
 
 
 def _sha256(path):
@@ -117,15 +121,19 @@ def inspect_archive(path):
                 name = member.name
                 parts = name.split('/')
                 if (not member.isfile() or name.startswith('/') or '\\' in name or name in names
+                        or any(ord(c) < 32 or ord(c) == 127 for c in name)
                         or any(p in ('', '.', '..') for p in parts)):
                     raise BackupError('backup archive has an unsafe entry: %r' % name[:200])
                 names.add(name)
                 digest = hashlib.sha256()
                 src = archive.extractfile(member)
-                for chunk in iter(lambda: src.read(1024 * 1024), b''):
-                    digest.update(chunk)
+                if src is None:
+                    raise BackupError('could not read the backup archive: missing file stream')
+                with src:
+                    for chunk in iter(lambda: src.read(1024 * 1024), b''):
+                        digest.update(chunk)
                 files.append({'path': name, 'bytes': member.size, 'sha256': digest.hexdigest()})
-    except (OSError, EOFError, tarfile.TarError) as error:
+    except (OSError, EOFError, tarfile.TarError, zlib.error) as error:
         raise BackupError('could not read the backup archive: ' + str(error))
     return files
 
@@ -148,12 +156,14 @@ def _android_apps():
 
 
 def backup(report=lambda stage, percent=None: None, kinds=KINDS, headset=None):
-    kinds = [k for k in KINDS if k in kinds]
+    kinds = [k for k in KINDS if k in kinds] if isinstance(kinds, (list, tuple, set)) else []
     if not kinds:
         raise BackupError('choose something to back up')
     report('Reading what is on the headset', 1)
     plan = remote_json('plan')
-    parts = [p for p in plan.get('parts', []) if p.get('kind') in kinds and PART.fullmatch(str(p.get('id')))]
+    raw_parts = plan.get('parts')
+    parts = [p for p in (raw_parts if isinstance(raw_parts, list) else [])
+             if isinstance(p, dict) and p.get('kind') in kinds and PART.fullmatch(str(p.get('id')))]
     apps, error = _android_apps() if 'android' in kinds else ([], None)
     root = backup_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -163,25 +173,30 @@ def backup(report=lambda stage, percent=None: None, kinds=KINDS, headset=None):
         raise BackupError('a backup was started this second already; try again')
     # Built under a hidden name and renamed when complete, so a cut-off backup is never listed.
     staging = root / ('.' + name + '.partial')
-    staging.mkdir()
+    try:
+        staging.mkdir()
+    except FileExistsError:
+        raise BackupError('a backup was started this second already; try again')
     entries = []
     skipped = [{'id': 'android', 'label': 'Android apps', 'reason': error}] if error else []
     total = len(parts) + len(apps) or 1
     try:
         for i, part in enumerate(parts):
-            report('Copying ' + part['label'], 2 + 90 * i / total)
+            label = str(part.get('label') or part['id'])
+            report('Copying ' + label, 2 + 90 * i / total)
             rel = archive_name(part['id'])
             dest = staging / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             with open(str(dest), 'wb') as dst:
                 _ssh(remote_command('pack', part['id']), dst=dst)
             files = inspect_archive(dest)
-            entries.append({'id': part['id'], 'kind': part['kind'], 'label': part['label'],
+            entries.append({'id': part['id'], 'kind': part['kind'], 'label': label,
                             'appid': part.get('appid'), 'archive': rel, 'sha256': _sha256(dest),
                             'archive_bytes': dest.stat().st_size, 'files': files,
                             'bytes': sum(f['bytes'] for f in files)})
-            skipped += [{'id': part['id'], 'label': part['label'], 'path': s['path'], 'reason': s['reason']}
-                        for s in part.get('skipped', [])]
+            skipped += [{'id': part['id'], 'label': label, 'path': s['path'], 'reason': s['reason']}
+                        for s in part.get('skipped', [])
+                        if isinstance(s, dict) and 'path' in s and 'reason' in s]
         for j, app in enumerate(apps):
             report('Copying ' + app['label'] + ' (Android app data)', 2 + 90 * (len(parts) + j) / total)
             part_id = 'android:' + app['package']
@@ -210,7 +225,7 @@ def backup(report=lambda stage, percent=None: None, kinds=KINDS, headset=None):
                     'headset': {'name': headset or android.FRAME, 'build': plan.get('build'),
                                 'version': plan.get('version')},
                     'parts': entries, 'skipped': skipped, 'excluded': plan.get('excluded', [])}
-        (staging / 'manifest.json').write_text(json.dumps(manifest, indent=1))
+        (staging / 'manifest.json').write_text(json.dumps(manifest, indent=1), encoding='utf-8')
         os.rename(str(staging), str(final))
     except BaseException:
         shutil.rmtree(str(staging), ignore_errors=True)
@@ -234,14 +249,16 @@ def human(n):
 def read_manifest(name):
     path = backup_path(name)
     try:
-        manifest = json.loads((path / 'manifest.json').read_text())
+        manifest = json.loads((path / 'manifest.json').read_text(encoding='utf-8'))
     except (OSError, ValueError):
         raise BackupError('that backup has no readable manifest')
-    if not isinstance(manifest, dict) or manifest.get('format') != FORMAT or \
+    fmt = manifest.get('format') if isinstance(manifest, dict) else None
+    if not isinstance(manifest, dict) or isinstance(fmt, bool) or fmt != FORMAT or \
             not isinstance(manifest.get('parts'), list):
         raise BackupError('that backup was made by a newer or unknown version')
     for part in manifest['parts']:
         if (not isinstance(part, dict) or not PART.fullmatch(str(part.get('id'))) or
+                part.get('kind') != part['id'].partition(':')[0] or
                 not ARCHIVE.fullmatch(str(part.get('archive'))) or part['archive'] != archive_name(part['id'])):
             raise BackupError('that backup manifest lists something unexpected')
     return path, manifest
@@ -260,9 +277,14 @@ def list_backups():
         except BackupError as error:
             out.append({'name': name, 'error': str(error)})
             continue
-        out.append({'name': name, 'created': m.get('created'), 'build': (m.get('headset') or {}).get('build'),
-                    'headset': (m.get('headset') or {}).get('name'), 'parts': len(m['parts']),
-                    'bytes': sum(p.get('archive_bytes') or 0 for p in m['parts'])})
+        headset = m.get('headset') if isinstance(m.get('headset'), dict) else {}
+        total_bytes = sum(
+            v for p in m['parts'] for v in (p.get('archive_bytes'),)
+            if isinstance(v, int) and not isinstance(v, bool) and v > 0
+        )
+        out.append({'name': name, 'created': m.get('created'), 'build': headset.get('build'),
+                    'headset': headset.get('name'), 'parts': len(m['parts']),
+                    'bytes': total_bytes})
     return {'backups': out, 'folder': str(root)}
 
 
@@ -286,10 +308,16 @@ def restore_plan(name):
         plans[part['id']] = {'id': part['id'], 'kind': part.get('kind'), 'label': part.get('label'),
                              'bytes': part.get('bytes'), 'status': state}
         if state is None and part['kind'] != 'android':
-            check.append({'id': part['id'], 'files': [f['path'] for f in part.get('files') or []]})
+            raw_files = part.get('files')
+            file_paths = [f['path'] for f in raw_files if isinstance(f, dict) and isinstance(f.get('path'), str)] \
+                if isinstance(raw_files, list) else []
+            check.append({'id': part['id'], 'files': file_paths})
     if check:
         answer = remote_json('check', src=json.dumps({'parts': check}).encode())
-        for result in answer.get('parts', []):
+        raw_results = answer.get('parts')
+        for result in (raw_results if isinstance(raw_results, list) else []):
+            if not isinstance(result, dict):
+                continue
             plan = plans.get(result.get('id'))
             if plan:
                 plan.update(status=result.get('status'), replace=result.get('replace', 0),
@@ -332,10 +360,11 @@ def restore(name, ids, confirmed=False, report=lambda stage, percent=None: None)
         if not part or not state:
             skipped.append({'id': part_id, 'reason': 'Not in this backup'})
             continue
+        label = state['label'] if isinstance(state.get('label'), str) and state['label'] else part_id
         if state['status'] != 'ok':
-            skipped.append({'id': part_id, 'label': state['label'], 'reason': state.get('reason') or state['status']})
+            skipped.append({'id': part_id, 'label': label, 'reason': state.get('reason') or state['status']})
             continue
-        report('Restoring ' + state['label'], 5 + 90 * i / len(ids))
+        report('Restoring ' + label, 5 + 90 * i / len(ids))
         archive = path / part['archive']
         try:
             if part['kind'] == 'android':
@@ -343,10 +372,10 @@ def restore(name, ids, confirmed=False, report=lambda stage, percent=None: None)
             else:
                 with open(str(archive), 'rb') as src:
                     result = remote_json('restore', part_id, stamp, src=src, timeout=1800)
-        except android.FrameError as error:
-            skipped.append({'id': part_id, 'label': state['label'], 'reason': str(error)})
+        except (android.FrameError, OSError) as error:
+            skipped.append({'id': part_id, 'label': label, 'reason': str(error)})
             continue
-        done.append(dict(result, id=part_id, label=state['label']))
+        done.append(dict(result, id=part_id, label=label))
     message = 'Restored %d part%s' % (len(done), '' if len(done) == 1 else 's')
     if skipped:
         message += ', skipped %d' % len(skipped)
