@@ -29,8 +29,16 @@ export async function onRequestPost({ request, env }) {
   }
 
   const origin = request.headers.get("origin");
-  if (origin && new URL(origin).host !== new URL(request.url).host) {
-    return json(403, { error: "Send feedback from the website's form.", retrySafe: true });
+  if (origin) {
+    let sameOrigin = false;
+    try {
+      sameOrigin = new URL(origin).origin === new URL(request.url).origin;
+    } catch {
+      sameOrigin = false;
+    }
+    if (!sameOrigin) {
+      return json(403, { error: "Send feedback from the website's form.", retrySafe: true });
+    }
   }
 
   let input;

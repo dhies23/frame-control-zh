@@ -37,7 +37,7 @@ export function defang(text) {
 
 // Returns { error } or { value } with every field trimmed and bounded.
 export function validate(input) {
-  if (!input || typeof input !== "object") return { error: "Send the form as JSON." };
+  if (!input || typeof input !== "object" || Array.isArray(input)) return { error: "Send the form as JSON." };
   if (oneLine(input.website, 200)) return { spam: true };
   // Measured in the browser with a monotonic clock, so clock skew doesn't matter.
   const elapsed = Number(input.elapsed);
