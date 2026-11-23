@@ -199,6 +199,91 @@ class AssetAudit(unittest.TestCase):
                     audit.audit("v9.8.7", report)
             self.assertFalse(report.exists())
 
+    def test_release_scripts_hardening_bools_unicode_tags_unhashable_and_malformed_json(self):
+        # 1. audit-release-assets: reject bool id/size, unhashable asset name, non-ASCII tag, non-dict Info.plist
+        assets, _ = release_assets()
+        for bad_asset in (
+            dict(assets[0], id=True),
+            dict(assets[0], size=True),
+            dict(assets[0], name=["unhashable"]),
+        ):
+            with self.subTest(bad_asset=bad_asset), self.assertRaises(audit.AuditError):
+                audit.validate_assets({"assets": [bad_asset, *assets[1:]]})
+
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "report.json"
+            with self.assertRaisesRegex(audit.AuditError, "version tag"):
+                audit.audit("v⁰.⁴.⁶", report)
+            mac_zip = Path(directory) / "mac.zip"
+            with zipfile.ZipFile(mac_zip, "w") as archive:
+                archive.writestr("Frame Control.app/Contents/Info.plist", plistlib.dumps(["not-a-dict"]))
+            with self.assertRaisesRegex(audit.AuditError, "Info.plist"):
+                audit.inspect_package(mac_zip, "Frame-Control-mac-arm64.zip", "9.8.7")
+
+        # 2. verify-release-gates: non-dict API response, bool run_attempt, unhashable job name / run id
+        gates_spec = importlib.util.spec_from_file_location(
+            "verify_release_gates_test", SCRIPT.with_name("verify-release-gates.py")
+        )
+        gates = importlib.util.module_from_spec(gates_spec)
+        gates_spec.loader.exec_module(gates)
+
+        with mock.patch.object(gates, "api", return_value=["not-a-dict"]):
+            with self.assertRaises(gates.GateError):
+                gates.tag_commit("v9.8.7")
+        with self.assertRaises(gates.GateError):
+            gates.successful_jobs({"id": 1, "run_attempt": True}, {"checks"})
+        with mock.patch.object(gates, "api", return_value={"total_count": 1, "jobs": [{"name": ["bad"], "status": "completed", "conclusion": "success"}]}):
+            with self.assertRaises(gates.GateError):
+                gates.successful_jobs({"id": 1, "run_attempt": 1}, {"checks"})
+        with mock.patch.object(gates, "api", return_value={"total_count": 1, "workflow_runs": [{"id": ["bad"], "head_sha": "a" * 40, "head_branch": "main", "event": "push"}]}):
+            with self.assertRaises(gates.GateError):
+                gates.exact_runs("checks.yml", "main", "a" * 40, "push")
+
+        # 3. verify-frame-smoke-result: reject integer clean=1 and boolean skipped/failed/passed counts
+        smoke_spec = importlib.util.spec_from_file_location(
+            "verify_frame_smoke_test", SCRIPT.with_name("verify-frame-smoke-result.py")
+        )
+        smoke = importlib.util.module_from_spec(smoke_spec)
+        smoke_spec.loader.exec_module(smoke)
+
+        commit = "a" * 40
+        valid_steps = [{"step": name, "ok": True, "skipped": False} for name in sorted(smoke.REQUIRED_STEPS)]
+        base_smoke = {
+            "source": {"commit": commit, "clean": True},
+            "simulated": False,
+            "lock_released": True,
+            "steps": valid_steps,
+            "passed": len(valid_steps),
+            "skipped": 0,
+            "failed": 0,
+            "preflight": {"activity": 3, "proximity": [1.0], "battery": [80]},
+        }
+        smoke.verify(base_smoke, commit)
+        for bad_smoke in (
+            {**base_smoke, "source": {"commit": commit, "clean": 1}},
+            {**base_smoke, "skipped": False},
+            {**base_smoke, "failed": False},
+        ):
+            with self.subTest(bad_smoke=bad_smoke["source"] if bad_smoke["source"] != base_smoke["source"] else bad_smoke["skipped"]):
+                with self.assertRaises(ValueError):
+                    smoke.verify(bad_smoke, commit)
+
+        # 4. release-checksums: reject non-dict release lines, non-str name/digest, non-list assets
+        checksums_spec = importlib.util.spec_from_file_location(
+            "release_checksums_test", SCRIPT.with_name("release-checksums.py")
+        )
+        rc = importlib.util.module_from_spec(checksums_spec)
+        checksums_spec.loader.exec_module(rc)
+
+        with self.assertRaises(ValueError):
+            rc.find_release(['["not-a-dict"]'], "v9.8.7")
+        with self.assertRaises(ValueError):
+            rc.find_release([json.dumps({"draft": True, "tag_name": "untagged-1", "name": 123})], "v9.8.7")
+        with self.assertRaises(ValueError):
+            rc.checksums({"assets": "not-a-list"})
+        with self.assertRaises(ValueError):
+            rc.checksums({"assets": [{"name": rc.INSTALLERS[0], "digest": 12345}]})
+
 
 if __name__ == "__main__":
     unittest.main()

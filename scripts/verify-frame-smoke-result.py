@@ -23,7 +23,9 @@ def verify(result, commit):
         raise ValueError('smoke result is not an object')
     if not re.fullmatch(r'[0-9a-f]{40}', commit):
         raise ValueError('expected a full lowercase commit SHA-1')
-    if result.get('source') != {'commit': commit, 'clean': True}:
+    source = result.get('source')
+    if (not isinstance(source, dict) or source != {'commit': commit, 'clean': True}
+            or source.get('clean') is not True):
         raise ValueError('smoke source is not the exact clean release commit')
     if result.get('simulated') is not False:
         raise ValueError('smoke ran on a fake Frame or simulator, or did not record which')
@@ -37,8 +39,10 @@ def verify(result, commit):
             len(names) != len(set(names)) or not REQUIRED_STEPS.issubset(names)):
         raise ValueError('smoke steps are missing or duplicated')
     passed = sum(step.get('ok') is True and not step.get('skipped') for step in steps)
-    if (passed != len(steps) or result.get('passed') != passed or
-            result.get('skipped') != 0 or result.get('failed') != 0):
+    if (passed != len(steps)
+            or type(result.get('passed')) is not int or result['passed'] != passed
+            or type(result.get('skipped')) is not int or result['skipped'] != 0
+            or type(result.get('failed')) is not int or result['failed'] != 0):
         raise ValueError('smoke contains a failed, skipped, or inconsistent step')
     state = result.get('preflight') or {}
     if (not isinstance(state, dict) or state.get('activity') != 3 or
