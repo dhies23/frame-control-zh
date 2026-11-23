@@ -23,6 +23,7 @@ from python.org, each checked against a pinned hash. Files live in
 records what to remove.
 """
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -182,7 +183,7 @@ def libraries():
     """Steam library folders: the default one plus any in libraryfolders.vdf."""
     libs = [STEAM]
     try:
-        text = (STEAM / "steamapps/libraryfolders.vdf").read_text(errors="replace")
+        text = (STEAM / "steamapps/libraryfolders.vdf").read_text(encoding="utf-8", errors="replace")
         libs += [Path(p.replace("\\\\", "\\")) for p in re.findall(r'"path"\s+"([^"]+)"', text)]
     except OSError:
         pass
@@ -200,7 +201,7 @@ def game(appid):
     for lib in libraries():
         manifest = lib / f"steamapps/appmanifest_{appid}.acf"
         try:
-            text = manifest.read_text(errors="replace")
+            text = manifest.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         m = re.search(r'"installdir"\s+"([^"]+)"', text)
@@ -225,8 +226,12 @@ def shipping_exe(game_dir):
 def game_pid(exe_name):
     """The running Wine process for this .exe (its cmdline is the Windows path)."""
     want = "\\" + exe_name.lower()
-    for d in Path("/proc").iterdir():
-        if not d.name.isdigit():
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return None
+    for d in entries:
+        if not (d.name.isascii() and d.name.isdigit()):
             continue
         try:
             cmd = (d / "cmdline").read_bytes().split(b"\0")[0].decode(errors="replace").lower()
@@ -293,7 +298,7 @@ def fetch(url, digest, algo):
                     if f.tell() + len(block) > MAX_DOWNLOAD:
                         raise Fail(f"{url} is bigger than expected; stopped the download")
                     f.write(block)
-        except (OSError, Fail) as e:
+        except (OSError, http.client.HTTPException, Fail) as e:
             part.unlink(missing_ok=True)
             raise Fail(f"download failed: {url}: {e}")
         part.rename(path)
@@ -351,7 +356,7 @@ def install(appid):
                 raise Fail(f"the download has no {need.name}")
         if game_pid(exe.name):  # it may have started during the download
             raise Fail(f"{g['name']} started; quit it first")
-        (stage / PYTHON["dir"] / "frame_inject.py").write_text(INJECT_PY)
+        (stage / PYTHON["dir"] / "frame_inject.py").write_text(INJECT_PY, encoding="utf-8")
         for sub in (UEVR["dir"], PYTHON["dir"]):
             shutil.rmtree(base / sub, ignore_errors=True)
             (stage / sub).rename(base / sub)
@@ -385,7 +390,7 @@ def x11_windows(display):
     """(id, name, width) for each named top-level window, via xwininfo."""
     try:
         out = subprocess.run(["xwininfo", "-root", "-tree"], env={**os.environ, "DISPLAY": display},
-                             capture_output=True, text=True, timeout=10).stdout
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
         return []
     return [(int(m[1], 16), m[2], int(m[3])) for m in re.finditer(r'(0x[0-9a-f]+) "([^"]*)":.*?\)\s+(\d+)x\d+', out)]
@@ -394,7 +399,8 @@ def x11_windows(display):
 def frame_submits(appid):
     """SteamVR's count of frames the app has submitted, or None if it isn't a scene app."""
     try:
-        stats = json.loads(subprocess.run([VRCMD, "--stats"], capture_output=True, text=True, timeout=15).stdout)
+        stats = json.loads(subprocess.run([VRCMD, "--stats"], capture_output=True, text=True,
+                                          encoding="utf-8", errors="replace", timeout=15).stdout)
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
     if not isinstance(stats, list):
@@ -426,7 +432,7 @@ def start(appid):
                          env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":0")}, start_new_session=True)
         pid = wait(f"{g['name']} to start", 120, lambda: game_pid(exe))
     try:
-        environ = Path(f"/proc/{pid}/environ").read_text(errors="replace")
+        environ = Path(f"/proc/{pid}/environ").read_text(encoding="utf-8", errors="replace")
     except OSError:
         raise Fail(f"{exe} exited") from None
     game_env = dict(line.split("=", 1) for line in environ.split("\0") if GAME_ENV.match(line))
@@ -444,10 +450,12 @@ def start(appid):
     try:
         out = subprocess.run(["wine", f"{base}\\{PYTHON['dir']}\\python.exe", f"{base}\\{PYTHON['dir']}\\frame_inject.py",
                               exe, f"{base}\\{UEVR['dir']}", profile], env=env, capture_output=True, text=True,
-                             timeout=120, stdin=subprocess.DEVNULL,
+                             encoding="utf-8", errors="replace", timeout=120, stdin=subprocess.DEVNULL,
                              cwd=str(Path(r["prefix"]) / "drive_c" / MANAGED))
     except subprocess.TimeoutExpired:
         raise Fail("the injection step didn't finish in 2 minutes") from None
+    except OSError as e:
+        raise Fail(f"couldn't run wine: {e}") from None
     reply = None
     for line in reversed(out.stdout.splitlines()):
         try:
@@ -458,7 +466,9 @@ def start(appid):
             reply = parsed
             break
     if not reply or "error" in reply:
-        raise Fail("UEVR injection failed: " + (reply or {}).get("error", (out.stderr.strip().splitlines() or ["no output"])[-1]))
+        err_msg = (reply or {}).get("error")
+        fallback = (out.stderr.strip().splitlines() or ["no output"])[-1]
+        raise Fail("UEVR injection failed: " + (str(err_msg) if err_msg else fallback))
     try:
         wait("UEVRBackend.dll to load in the game", 20, lambda: loaded(pid, "UEVRBackend.dll"))
     except Fail:
@@ -518,7 +528,8 @@ def uninstall(appid):
 
 
 def main(argv):
-    if len(argv) != 2 or argv[0] not in ("status", "install", "start", "uninstall") or not argv[1].isdigit():
+    if (len(argv) != 2 or argv[0] not in ("status", "install", "start", "uninstall")
+            or not (argv[1].isascii() and argv[1].isdigit() and int(argv[1]) > 0)):
         raise Fail("usage: status|install|start|uninstall APPID")
     action = {"status": status, "install": install, "start": start, "uninstall": uninstall}[argv[0]]
     if action is status:
