@@ -652,3 +652,84 @@ class Intake(unittest.TestCase):
         with self.assertRaises(m.Rejected) as error:
             self.send(self.body('over active capacity'))
         self.assertEqual(error.exception.status, 429)
+
+    def test_hardening_content_length_bool_time_ascii_version_import_and_dispatcher(self):
+        import http.client
+        import threading
+        from unittest import mock
+
+        # 1. history_time rejects booleans, NaN, and non-strings
+        for bad_ts in (True, False, float('nan'), float('inf'), ['2026-01-01T00:00:00Z']):
+            with self.subTest(bad_ts=bad_ts), self.assertRaises(ValueError):
+                m.history_time(bad_ts)
+
+        # 2. _admit_authenticated rejects non-ASCII Unicode digits in app_version
+        bad_ver = self.body('unicode version')
+        bad_ver['event']['properties']['app_version'] = '⁰.⁴.⁷'
+        with self.assertRaises(m.Rejected) as err:
+            self.send(bad_ver)
+        self.assertEqual(err.exception.status, 422)
+
+        # 3. import_history raises ValueError (not AttributeError) for non-dict body/event/properties
+        for bad_import in (
+            ['not-a-dict'],
+            {'repository': m.REPO, 'project_id': 343535, 'events': ['not-a-dict']},
+            {'repository': m.REPO, 'project_id': 343535, 'events': [{'event': '$exception', 'properties': 'bad', 'uuid': str(uuid.uuid4()), 'timestamp': self.now}]},
+        ):
+            with self.subTest(bad_import=bad_import), self.assertRaises(ValueError):
+                self.q.import_history(bad_import)
+
+        # 4. record_history and history_key raise ValueError (not TypeError) on non-string values
+        with self.assertRaises(ValueError):
+            self.q.record_history(123, 'status', 'investigating')
+        with self.assertRaises(ValueError):
+            self.q.record_history('a' * 64, 'status', 123)
+
+        # 5. HTTP handler returns 400 (not 503) for non-ASCII / invalid Content-Length
+        server = m.HTTPServer(('127.0.0.1', 0), m.handler(self.q, self.key, standard=True))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        for bad_cl in ('not-a-number', '1_0', '+10'):
+            conn = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=3)
+            try:
+                conn.putrequest('POST', '/intake')
+                conn.putheader('Content-Length', bad_cl)
+                conn.endheaders(b'')
+                resp = conn.getresponse()
+                resp.read()
+                self.assertEqual(resp.status, 400, f'expected 400 for Content-Length={bad_cl!r}')
+            finally:
+                conn.close()
+
+        # 6. bug_dispatch.load_config rejects JSON list with matching field names, non-str paths, and control-char URLs
+        cfg_file = Path(self.tmp.name) / 'dispatch.json'
+        with mock.patch.object(dispatcher, 'private_file', side_effect=lambda p: Path(p)):
+            cfg_file.write_text(json.dumps(['repository', 'checkout', 'database', 'lock', 'webhook_url', 'key_file']), encoding='utf-8')
+            with self.assertRaises(ValueError):
+                dispatcher.load_config(cfg_file)
+            base_cfg = {
+                'repository': m.REPO,
+                'checkout': str(Path(self.tmp.name).resolve()),
+                'database': str(Path(self.tmp.name).resolve() / 'db'),
+                'lock': str(Path(self.tmp.name).resolve() / 'lock'),
+                'webhook_url': 'https://example.invalid/hook',
+                'key_file': str(Path(self.tmp.name).resolve() / 'key'),
+            }
+            for override in (
+                {'checkout': 123},
+                {'webhook_url': 456},
+                {'webhook_url': 'https://example.invalid/hook\r\nX-Injected: 1'},
+            ):
+                cfg_file.write_text(json.dumps({**base_cfg, **override}), encoding='utf-8')
+                with self.subTest(override=override), self.assertRaises(ValueError):
+                    dispatcher.load_config(cfg_file)
+
+        # 7. bug_dispatch.send defaults empty path to '/'
+        fake_conn = mock.Mock()
+        fake_conn.getresponse.return_value = mock.Mock(status=202)
+        with mock.patch.object(dispatcher.http.client, 'HTTPSConnection', return_value=fake_conn):
+            status = dispatcher.send('https://example.invalid', b'{}', self.key)
+        self.assertEqual(status, 202)
+        self.assertEqual(fake_conn.request.call_args[0][1], '/')

@@ -8,6 +8,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -52,12 +53,19 @@ SCHEMA = '''CREATE TABLE IF NOT EXISTS reports (
 
 
 def history_time(value):
-    if isinstance(value, (int, float)):
-        date = datetime.fromtimestamp(value, timezone.utc)
-    else:
-        date = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    if type(value) in (int, float):
+        if not math.isfinite(value):
+            raise ValueError('history timestamp must be finite')
+        try:
+            date = datetime.fromtimestamp(value, timezone.utc)
+        except (OverflowError, OSError, ValueError) as exc:
+            raise ValueError('invalid history timestamp') from exc
+    elif isinstance(value, str):
+        date = datetime.fromisoformat(value.replace('Z', '+00:00'))
         if date.tzinfo is None:
             raise ValueError('history timestamp requires timezone')
+    else:
+        raise ValueError('invalid history timestamp type')
     return date.astimezone(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
 
 
@@ -149,8 +157,10 @@ class Queue:
         now = int(time.time()) if now is None else now
         if len(raw) > MAX_BODY:
             raise Rejected(413)
-        if (not re.fullmatch(r'[A-Za-z0-9_-]{1,200}', message_id or '')
-                or not re.fullmatch(r'[0-9]{10}', timestamp or '')
+        if (not isinstance(message_id, str) or not isinstance(timestamp, str)
+                or not isinstance(signatures, str)
+                or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}', message_id)
+                or not re.fullmatch(r'[0-9]{10}', timestamp)
                 or abs(now - int(timestamp)) > 300
                 or not signatures or len(signatures) > 4096):
             raise Rejected(401)
@@ -174,24 +184,29 @@ class Queue:
         now = int(time.time()) if now is None else now
         if len(raw) > MAX_BODY:
             raise Rejected(413)
-        if not re.fullmatch(r'[0-9]{10}', timestamp or '') or abs(now - int(timestamp)) > 300:
+        if (not isinstance(timestamp, str) or not isinstance(signature, str)
+                or not re.fullmatch(r'[0-9]{10}', timestamp) or abs(now - int(timestamp)) > 300):
             raise Rejected(401)
         expected = hmac.new(key, timestamp.encode() + b'.' + raw, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected, signature or ''):
+        if not hmac.compare_digest(expected, signature):
             raise Rejected(401)
         return self._admit_authenticated(raw, now)
 
     def _admit_authenticated(self, raw, now):
         try:
             body = json.loads(raw)
-            if body['repository'] != REPO or type(body['project_id']) is not int or body['project_id'] != PROJECT:
+            if not isinstance(body, dict) or body['repository'] != REPO or type(body['project_id']) is not int or body['project_id'] != PROJECT:
                 raise ValueError()
             event = body['event']
+            if not isinstance(event, dict):
+                raise ValueError()
             name, props = event['event'], event['properties']
+            if not isinstance(props, dict):
+                raise ValueError()
             event_id = str(uuid.UUID(event['uuid']))
             if name not in ('$exception', 'problem_report') or props['$lib'] != 'frame-control':
                 raise ValueError()
-            if not re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?', props['app_version']):
+            if not isinstance(props.get('app_version'), str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?', props['app_version']):
                 raise ValueError()
             if props['os'] not in ('Linux', 'macOS', 'Windows'):
                 raise ValueError()
@@ -370,9 +385,11 @@ class Queue:
                 'ORDER BY event_count DESC,fingerprint')]
 
     def history_key(self, db, identifier):
+        if not isinstance(identifier, str) or not identifier:
+            raise ValueError('unknown event or fingerprint')
         row = db.execute('SELECT fingerprint FROM history_events WHERE event_id=?', (identifier,)).fetchone()
         key = row[0] if row else identifier
-        if not re.fullmatch(r'[a-f0-9]{64}', key) or not db.execute(
+        if not isinstance(key, str) or not re.fullmatch(r'[a-f0-9]{64}', key) or not db.execute(
                 'SELECT 1 FROM history_events WHERE fingerprint=?', (key,)).fetchone():
             raise ValueError('unknown event or fingerprint')
         return key
@@ -408,7 +425,7 @@ class Queue:
             'release': r'https://github\.com/saphid/frame-control/releases/tag/[A-Za-z0-9._+-]{1,100}',
             'status': r'(?:investigating|blocked|fixed|released|already-fixed|duplicate|unrelated|unreproducible|deployment-smoke)',
         }
-        if kind not in patterns or not re.fullmatch(patterns[kind], value):
+        if kind not in patterns or not isinstance(value, str) or not re.fullmatch(patterns[kind], value):
             raise ValueError('invalid history artifact')
         with self.connect() as db:
             key = self.history_key(db, identifier)
@@ -426,13 +443,19 @@ class Queue:
 
     def import_history(self, body):
         # History-only ingestion deliberately never admits work or bypasses queue quotas.
-        if (body.get('repository') != REPO or type(body.get('project_id')) is not int
+        if (not isinstance(body, dict) or body.get('repository') != REPO
+                or type(body.get('project_id')) is not int
                 or body['project_id'] != PROJECT or not isinstance(body.get('events'), list)):
             raise ValueError('wrong history scope')
         rows = []
         for event in body['events']:
-            name, props = event['event'], event['properties']
-            eid = str(uuid.UUID(event['uuid']))
+            if not isinstance(event, dict):
+                raise ValueError('invalid history event')
+            name, props = event.get('event'), event.get('properties')
+            raw_uuid = event.get('uuid')
+            if not isinstance(props, dict) or not isinstance(raw_uuid, str):
+                raise ValueError('invalid history event')
+            eid = str(uuid.UUID(raw_uuid))
             if props.get('$lib') != 'frame-control' or name not in ('$exception', 'problem_report'):
                 raise ValueError('wrong event scope')
             if name == 'problem_report' and props.get('kind') != 'bug':
@@ -440,6 +463,8 @@ class Queue:
             evidence = props.get('$exception_message') if name == '$exception' else props.get('message')
             if not isinstance(evidence, str) or not evidence.strip() or len(evidence) > 16000:
                 raise ValueError('invalid evidence')
+            if 'timestamp' not in event:
+                raise ValueError('missing history timestamp')
             fingerprint = hashlib.sha256(json.dumps([name, props.get('$exception_type'), evidence],
                                                     ensure_ascii=True).encode()).hexdigest()
             rows.append((eid, fingerprint, name, history_time(event['timestamp']), 'posthog-history'))
@@ -518,7 +543,10 @@ def handler(queue, key, standard=False, request_deadline=5):
                     raise Rejected(404)
                 if self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length', [])) != 1:
                     raise Rejected(400)
-                length = int(self.headers['Content-Length'])
+                raw_len = (self.headers['Content-Length'] or '').strip()
+                if not (raw_len.isascii() and raw_len.isdigit()):
+                    raise Rejected(400)
+                length = int(raw_len)
                 if not 0 < length <= MAX_BODY:
                     raise Rejected(413)
                 raw = self.rfile.read(length)
@@ -619,8 +647,8 @@ def main():
             elif args.command == 'relate':
                 queue.relate_history(args.first, args.second, args.note)
             else:
-                print(json.dumps(queue.import_history(json.loads(Path(args.file).read_text()))))
-        except (ValueError, KeyError, TypeError):
+                print(json.dumps(queue.import_history(json.loads(Path(args.file).read_text(encoding='utf-8')))))
+        except (ValueError, KeyError, TypeError, OSError):
             parser.exit(1, 'invalid history request or scope\n')
     else:
         try:
