@@ -950,5 +950,99 @@ class Endpoint(unittest.TestCase):
                     server.backup_action({'action': 'list'})
 
 
+class Hardening(unittest.TestCase):
+    def test_ascii_only_backup_names_parts_and_remote_ids(self):
+        with self.assertRaises(backup.BackupError):
+            backup.backup_path('٢٠٢٦-١٠-٢٣-١٢٠٠٠٠')
+        self.assertIsNone(backup.PART.fullmatch('saves:١٢٣٤'))
+        self.assertIsNone(backup.PART.fullmatch('android:com.example.ü'))
+        self.assertIsNone(remote.part_roots('saves:١٢٣٤'))
+        self.assertEqual(
+            remote.restore_roots('settings:steam', f'{remote.STEAM}/userdata/١٢٣/241100/remote/controller_config/a.vdf'),
+            (),
+        )
+        with self.assertRaisesRegex(ValueError, 'bad restore stamp'):
+            remote.restore('saves:linux', '٢٠٢٦١٠٢٣-١٢٠٠٠٠', io.BytesIO())
+
+    def test_backup_handles_non_list_skipped_and_invalid_android_package_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / 'backups'
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode='w:gz') as tar:
+                info = tarfile.TarInfo('.config/unity3d/Game/save.dat')
+                info.size = 4
+                tar.addfile(info, io.BytesIO(b'data'))
+            archive_bytes = buf.getvalue()
+
+            def fake_remote_json(cmd, *args, **kwargs):
+                return {'build': '1', 'version': '1', 'parts': [
+                    {'id': 'saves:linux', 'kind': 'saves', 'label': 'Linux', 'skipped': None}
+                ]}
+
+            def fake_ssh_pack(command, src=None, dst=None, timeout=1800):
+                dst.write(archive_bytes)
+                return None
+
+            with patch.dict(os.environ, FRAME_BACKUP_DIR=str(store)), \
+                    patch.object(backup, 'remote_json', side_effect=fake_remote_json), \
+                    patch.object(backup, '_ssh', side_effect=fake_ssh_pack), \
+                    patch.object(android, 'list_apps', return_value=[
+                        {'package': '../evil', 'label': 'Bad', 'running': False}
+                    ]), \
+                    patch.object(backup.time, 'strftime', side_effect=lambda f: '2026-10-23-120001' if f == '%Y-%m-%d-%H%M%S' else '2026-10-23T12:00:01+0000'):
+                res = backup.backup(kinds=('saves', 'android'))
+                _, manifest_data = backup.read_manifest('2026-10-23-120001')
+            self.assertEqual(res['parts'], 1)
+            self.assertTrue(any(s['id'] == 'android:../evil' for s in res['skipped']))
+            self.assertEqual([p['id'] for p in manifest_data['parts']], ['saves:linux'])
+
+    def test_restore_plan_ignores_unhashable_remote_id_and_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / 'backups'
+            folder = store / '2026-10-23-120002'
+            (folder / 'saves').mkdir(parents=True)
+            archive = folder / 'saves' / 'saves-linux.tar.gz'
+            archive.write_bytes(b'dummy')
+            manifest_data = {
+                'format': backup.FORMAT,
+                'parts': [{
+                    'id': 'saves:linux', 'kind': 'saves', 'label': 'Linux',
+                    'archive': 'saves/saves-linux.tar.gz', 'sha256': backup._sha256(archive),
+                    'files': [{'path': '.config/unity3d/Game/save.dat'}],
+                }],
+            }
+            (folder / 'manifest.json').write_text(json.dumps(manifest_data), encoding='utf-8')
+            with patch.dict(os.environ, FRAME_BACKUP_DIR=str(store)), \
+                    patch.object(backup, 'remote_json', return_value={'parts': [
+                        {'id': ['bad'], 'status': 'ok'},
+                        {'id': 'saves:linux', 'status': ['bad']},
+                    ]}):
+                plan = backup.restore_plan('2026-10-23-120002')
+            self.assertEqual(plan['parts'][0]['status'], 'unknown')
+
+    def test_remote_restore_bounds_spool_and_tolerates_overflow_mtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with patch.object(remote, 'HOME', home), patch.object(remote, 'MAX_PART', 64):
+                with self.assertRaisesRegex(ValueError, 'too big'):
+                    remote.restore('saves:linux', '20261023-120000', io.BytesIO(b'x' * 128))
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode='w:gz') as tar:
+                info = tarfile.TarInfo('.config/unity3d/Game/save.dat')
+                info.size = 4
+                tar.addfile(info, io.BytesIO(b'data'))
+            buf.seek(0)
+            with patch.object(remote, 'HOME', home), \
+                    patch.object(remote.os, 'utime', side_effect=OverflowError('mtime too large')):
+                res = remote.restore('saves:linux', '20261023-120000', buf)
+            self.assertEqual(res['written'], 1)
+            self.assertEqual((home / '.config/unity3d/Game/save.dat').read_bytes(), b'data')
+
+    def test_remote_running_passes_timeout_and_handles_timeout_expired(self):
+        with patch.object(remote.subprocess, 'call', side_effect=subprocess.TimeoutExpired(['pgrep'], 5)) as call:
+            self.assertFalse(remote._running('gamescope'))
+        self.assertEqual(call.call_args.kwargs.get('timeout'), 5)
+
+
 if __name__ == '__main__':
     unittest.main()
