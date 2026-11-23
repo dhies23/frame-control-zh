@@ -80,9 +80,12 @@ function updateMethod({ platform, isPackaged, execPath, env, exists, writable })
 }
 
 function macBundle(execPath) {
+  if (typeof execPath !== "string") return null;
   const i = execPath.indexOf(".app/Contents/MacOS/");
   return i < 0 ? null : execPath.slice(0, i + 4);
 }
+
+const MAX_JSON_BYTES = 2 * 1024 * 1024;
 
 function get(url, { headers = {}, timeout = 20000, redirects = 5 } = {}) {
   return new Promise((resolve, reject) => {
@@ -104,9 +107,18 @@ function get(url, { headers = {}, timeout = 20000, redirects = 5 } = {}) {
 
 async function getJson(url, headers) {
   const res = await get(url, { headers });
-  let body = "";
-  for await (const chunk of res) body += chunk;
-  return JSON.parse(body);
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of res) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buf.length;
+    if (bytes > MAX_JSON_BYTES) {
+      res.destroy();
+      throw new Error("update metadata response too large");
+    }
+    chunks.push(buf);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
 // The release page the banner links to. update.json for 0.4.0 carried the draft's
@@ -122,23 +134,40 @@ function releasePage(version) {
 
 // update.json and the API's release both become { version, notes, page, assets }.
 function fromManifest(m) {
-  if (!parseVersion(m.version) || !Array.isArray(m.assets)) throw new Error("update.json is malformed");
-  const version = String(m.version).replace(/^v/i, "");
+  if (!m || typeof m !== "object" || Array.isArray(m) || !parseVersion(m.version) || !Array.isArray(m.assets)) {
+    throw new Error("update.json is malformed");
+  }
+  const version = String(m.version).trim().replace(/^v/i, "");
   const base = `https://github.com/${REPO}/releases/download/v${version}/`;
+  const assets = m.assets.map((a) => {
+    if (!a || typeof a !== "object" || typeof a.name !== "string" || !a.name) {
+      throw new Error("update.json is malformed");
+    }
+    return {
+      name: a.name,
+      url: base + encodeURIComponent(a.name),
+      size: typeof a.size === "number" && Number.isFinite(a.size) && a.size >= 0 ? a.size : 0,
+      digest: typeof a.digest === "string" ? a.digest : null,
+    };
+  });
   return { version, notes: String(m.notes || "").slice(0, 4000),
            page: releasePage(version),
            // Assets always come from this repository's release, whatever the manifest says.
-           assets: m.assets.map((a) => ({ name: String(a.name), url: base + encodeURIComponent(String(a.name)),
-                                          size: a.size, digest: a.digest || null })) };
+           assets };
 }
 
 function fromApi(r) {
+  if (!r || typeof r !== "object" || Array.isArray(r)) throw new Error("GitHub release response is malformed");
   if (r.draft || r.prerelease) throw new Error("GitHub returned an unpublished release");
-  const version = String(r.tag_name || "").replace(/^v/i, "");
+  const version = String(r.tag_name || "").trim().replace(/^v/i, "");
+  const rawAssets = Array.isArray(r.assets) ? r.assets : [];
+  const assets = rawAssets
+    .filter((a) => a && typeof a === "object" && typeof a.name === "string" && typeof a.browser_download_url === "string")
+    .map((a) => ({ name: a.name, url: a.browser_download_url, size: a.size,
+                   digest: typeof a.digest === "string" ? a.digest : null }));
   return { version, notes: String(r.body || "").slice(0, 4000),
            page: releasePage(version),
-           assets: (r.assets || []).map((a) => ({ name: a.name, url: a.browser_download_url, size: a.size,
-                                                 digest: a.digest || null })) };
+           assets };
 }
 
 async function latestRelease() {
@@ -151,10 +180,14 @@ async function latestRelease() {
 }
 
 async function download(asset, dest, onProgress) {
-  const m = /^sha256:([0-9a-f]{64})$/.exec(asset.digest || "");
+  const m = /^sha256:([0-9a-f]{64})$/i.exec(asset.digest || "");
   if (!m) throw new Error(`GitHub has no SHA-256 for ${asset.name}, so it can't be checked`);
+  const expectedSha = m[1].toLowerCase();
   const res = await get(asset.url, { timeout: 60000 });
-  const total = +res.headers["content-length"] || asset.size || 0;
+  const headerLen = Number(res.headers["content-length"]);
+  const assetSize = Number(asset.size);
+  const total = (Number.isFinite(headerLen) && headerLen > 0) ? headerLen
+    : (Number.isFinite(assetSize) && assetSize > 0 ? assetSize : 0);
   const hash = crypto.createHash("sha256");
   // "wx": a new file only, never through an existing file or symlink at that path.
   const out = fs.createWriteStream(dest, { mode: 0o755, flags: "wx" });
@@ -178,11 +211,13 @@ async function download(asset, dest, onProgress) {
     if (res.complete === false) {
       throw new Error(`${asset.name} download was cut short; nothing was changed`);
     }
-    if (hash.digest("hex") !== m[1]) {
+    if (hash.digest("hex") !== expectedSha) {
       throw new Error(`${asset.name} didn't match its SHA-256; nothing was changed`);
     }
   } catch (e) {
-    if (opened) fs.rmSync(dest, { force: true });
+    if (opened) {
+      try { fs.rmSync(dest, { force: true }); } catch {}
+    }
     throw e;
   }
 }
@@ -213,7 +248,10 @@ async function applyMac(release, bundle, onProgress) {
     await download(asset, zip, onProgress);
     await run("/usr/bin/ditto", ["-x", "-k", zip, stage]);
     fs.rmSync(zip, { force: true });
-    const name = fs.readdirSync(stage).find((n) => n.endsWith(".app"));
+    const name = fs.readdirSync(stage).find((n) => {
+      if (!n.endsWith(".app")) return false;
+      try { return fs.lstatSync(path.join(stage, n)).isDirectory(); } catch { return false; }
+    });
     if (!name) throw new Error("the download has no app in it");
     const fresh = path.join(stage, name);
     const version = (await run("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw",
@@ -224,7 +262,7 @@ async function applyMac(release, bundle, onProgress) {
     return () => spawn("/bin/sh", [script, String(process.pid), bundle, fresh, stage],
                        { detached: true, stdio: "ignore" }).unref();
   } catch (e) {
-    fs.rmSync(stage, { recursive: true, force: true });
+    try { fs.rmSync(stage, { recursive: true, force: true }); } catch {}
     throw e;
   }
 }
@@ -239,7 +277,7 @@ async function applyNsis(release, onProgress) {
     // /S: silent, into the existing install. --force-run: open the app afterwards.
     return () => spawn(exe, ["--updated", "/S", "--force-run"], { detached: true, stdio: "ignore" }).unref();
   } catch (e) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
     throw e;
   }
 }
@@ -255,7 +293,7 @@ async function applyAppImage(release, appImage, onProgress) {
     fs.chmodSync(next, 0o755);
     fs.renameSync(next, appImage);  // the running copy keeps its open file
   } finally {
-    fs.rmSync(stage, { recursive: true, force: true });
+    try { fs.rmSync(stage, { recursive: true, force: true }); } catch {}
   }
   // Without FUSE the AppImage runs extracted (--appimage-extract-and-run, which isn't passed
   // on to the app); a FUSE mount lives under /tmp/.mount_*. Keep the same mode on restart.

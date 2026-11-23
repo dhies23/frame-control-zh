@@ -278,3 +278,119 @@ test("download rejects and removes partial file when response ends with complete
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("updater hardening: malformed manifests/API, UTF-8 chunk boundaries, size cap, uppercase SHA-256, and cleanup errors", async () => {
+  const { fromManifest, fromApi, latestRelease } = require("../updater");
+
+  // 1. macBundle guards non-string execPath
+  assert.strictEqual(macBundle(null), null);
+  assert.strictEqual(macBundle(123), null);
+
+  // 2. fromManifest trims padded version and rejects non-object manifest or invalid asset entries
+  const padded = fromManifest({
+    version: " v0.4.65 ",
+    assets: [{ name: "Frame-Control-mac-arm64.zip", size: 10, digest: "sha256:" + "a".repeat(64) }],
+  });
+  assert.strictEqual(padded.version, "0.4.65");
+  assert.strictEqual(
+    padded.assets[0].url,
+    "https://github.com/saphid/frame-control/releases/download/v0.4.65/Frame-Control-mac-arm64.zip",
+  );
+  assert.throws(() => fromManifest(null), /malformed/);
+  assert.throws(() => fromManifest({ version: "0.4.65", assets: [null] }), /malformed/);
+  assert.throws(() => fromManifest({ version: "0.4.65", assets: [{ name: "" }] }), /malformed/);
+
+  // 3. fromApi rejects non-object payload and tolerates non-array / null assets
+  assert.throws(() => fromApi(null), /malformed/);
+  const apiRes = fromApi({ tag_name: " v0.4.65 ", assets: [null, { name: "ok.zip", browser_download_url: "https://example.invalid/ok.zip" }] });
+  assert.strictEqual(apiRes.version, "0.4.65");
+  assert.strictEqual(apiRes.assets.length, 1);
+
+  // 4. latestRelease decodes multi-byte UTF-8 split across chunks without corruption
+  const notes = "Release notes: 🚀 café 日本語";
+  const jsonBuf = Buffer.from(JSON.stringify({ version: "0.4.65", notes, assets: [] }), "utf8");
+  const emojiIdx = jsonBuf.indexOf(Buffer.from("🚀", "utf8"));
+  const restoreUtf8 = stubHttpsGet((_url, _opts, cb) => {
+    const req = new EventEmitter();
+    req.destroy = () => {};
+    queueMicrotask(() => {
+      const res = new PassThrough();
+      res.statusCode = 200;
+      res.headers = {};
+      cb(res);
+      res.write(jsonBuf.subarray(0, emojiIdx + 2));
+      res.end(jsonBuf.subarray(emojiIdx + 2));
+    });
+    return req;
+  });
+  try {
+    const rel = await latestRelease();
+    assert.strictEqual(rel.notes, notes);
+  } finally {
+    restoreUtf8();
+  }
+
+  // 5. latestRelease rejects oversized JSON responses
+  const restoreBig = stubHttpsGet((_url, _opts, cb) => {
+    const req = new EventEmitter();
+    req.destroy = () => {};
+    queueMicrotask(() => {
+      const res = new PassThrough();
+      res.statusCode = 200;
+      res.headers = {};
+      cb(res);
+      res.write(Buffer.alloc(3 * 1024 * 1024, 0x20));
+      res.end();
+    });
+    return req;
+  });
+  try {
+    await assert.rejects(latestRelease(), /too large/i);
+  } finally {
+    restoreBig();
+  }
+
+  // 6. download accepts uppercase SHA-256 hex and does not mask primary error if cleanup rmSync throws
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "frame-updater-hardening-"));
+  const okDest = path.join(dir, "upper.bin");
+  const failDest = path.join(dir, "fail.bin");
+  const payload = Buffer.from("hello-updater");
+  const upperDigest = sha256Digest(payload).replace(/^sha256:/, (p) => p)
+    .replace(/([0-9a-f]{64})$/, (h) => h.toUpperCase());
+  const restoreDl = stubHttpsGet((_url, _opts, cb) => {
+    const req = new EventEmitter();
+    req.destroy = () => {};
+    queueMicrotask(() => {
+      const res = new PassThrough();
+      res.statusCode = 200;
+      res.headers = { "content-length": "-5" };
+      cb(res);
+      res.end(payload);
+    });
+    return req;
+  });
+  try {
+    const progress = [];
+    await download(
+      { name: "upper.bin", url: "https://example.invalid/upper.bin", size: payload.length, digest: upperDigest },
+      okDest,
+      (done, total) => progress.push([done, total]),
+    );
+    assert.deepStrictEqual(fs.readFileSync(okDest), payload);
+    assert.deepStrictEqual(progress, [[payload.length, payload.length]]);
+
+    const origRmSync = fs.rmSync;
+    fs.rmSync = () => { throw new Error("EBUSY cleanup failure"); };
+    try {
+      await assert.rejects(
+        download({ name: "fail.bin", url: "https://example.invalid/fail.bin", size: payload.length, digest: sha256Digest("mismatch") }, failDest),
+        /didn't match its SHA-256/,
+      );
+    } finally {
+      fs.rmSync = origRmSync;
+    }
+  } finally {
+    restoreDl();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
