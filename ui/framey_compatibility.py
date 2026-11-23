@@ -9,7 +9,7 @@ DATA = Path(__file__).with_name('framey-compatibility.json')
 
 @lru_cache(maxsize=2)
 def _records(path):
-    return json.loads(path.read_text())['plugins']
+    return json.loads(path.read_text(encoding='utf-8'))['plugins']
 
 
 def lookup(plugin_id, digest, version, installed_shims=None):
@@ -23,7 +23,12 @@ def lookup(plugin_id, digest, version, installed_shims=None):
         if len(matches) != 1:
             return unknown
         record = matches[0]
-        result = {key: record[key] for key in ('status', 'reason', 'verification', 'blockInstall')}
+        result = {
+            'status': record['status'],
+            'reason': record['reason'],
+            'verification': list(record['verification']),
+            'blockInstall': record['blockInstall'],
+        }
         required = record.get('requiredShims', [])
         if result['status'] in ('works', 'partial') and required and installed_shims is not None and (
                 not isinstance(installed_shims, list) or

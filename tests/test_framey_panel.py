@@ -660,6 +660,18 @@ assert.throws(()=>eval(EXPRESSION),/library is unavailable/);
         self.assertEqual(get(f'/framey/module/14/{RECEIPT}/chunks/view.js')[0], 404)
         self.assertEqual(get(f'/framey/module/14/{"b"*64}/chunks/view.js')[0], 200)
 
+    def test_call_method_rejects_non_finite_args_and_malformed_plugin_status(self):
+        for bad_args in ([float('nan')], [float('inf')], [{'v': float('-inf')}]):
+            with self.assertRaises(framey_panel.PanelError):
+                framey_panel.call_method(
+                    lambda *a, **k: self.fail('Unexpected SSH'),
+                    14, 'ping', bad_args, False, RECEIPT,
+                )
+        for bad_status in ([], {}, {'plugins': None}, {'plugins': ['not-a-dict']}):
+            with patch.object(framey_panel.frame_decky, 'plugin_status', return_value=bad_status):
+                with self.assertRaises(framey_panel.PanelError):
+                    framey_panel._current_plugin(lambda *a, **k: '{}', 14, RECEIPT)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -24,7 +24,7 @@ class PanelError(ValueError):
 def _receipt_digest(path):
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 16_384:
         raise FileNotFoundError('Framey plugin store receipt unavailable')
-    meta = json.loads(path.read_text())
+    meta = json.loads(path.read_text(encoding='utf-8'))
     digest = meta.get('sha256') if isinstance(meta, dict) else None
     store_id = meta.get('storeId') if isinstance(meta, dict) else None
     # JSON booleans and floats compare equal to integers in Python. They
@@ -71,7 +71,7 @@ def _owned_dist(plugin_id, expected_receipt=None):
             raise FileNotFoundError('Framey plugin changed; reopen its panel')
         if not manifest.is_file() or manifest.stat().st_size > 16_384:
             raise FileNotFoundError('Framey plugin manifest unavailable')
-        data = json.loads(manifest.read_text())
+        data = json.loads(manifest.read_text(encoding='utf-8'))
         if not isinstance(data, dict):
             raise FileNotFoundError('Framey plugin manifest unavailable')
         flags = data.get('flags', [])
@@ -187,7 +187,11 @@ finally: page.sock.close()
 def _current_plugin(ssh, plugin_id, receipt):
     if not isinstance(receipt, str) or not RECEIPT.fullmatch(receipt):
         raise PanelError('Reopen the plugin panel to refresh its store receipt')
-    found = [p for p in frame_decky.plugin_status(ssh)['plugins'] if p.get('storeId') == plugin_id]
+    status = frame_decky.plugin_status(ssh)
+    plugins = status.get('plugins') if isinstance(status, dict) else None
+    if not isinstance(plugins, list) or any(not isinstance(p, dict) for p in plugins):
+        raise PanelError('Decky plugin inventory is unavailable')
+    found = [p for p in plugins if p.get('storeId') == plugin_id]
     if len(found) != 1:
         raise PanelError('The plugin is not managed by the Frame Control Decky store')
     if found[0].get('sha256') != receipt:
@@ -200,7 +204,13 @@ def call_method(ssh, plugin_id, method, args, legacy=False, receipt=None):
         raise PanelError('Choose an installed Decky store plugin')
     if not isinstance(method, str) or not METHOD.fullmatch(method):
         raise PanelError('Invalid plugin method')
-    if not isinstance(args, list) or len(args) > 8 or len(json.dumps(args).encode('utf-8')) > 256*1024:
+    if not isinstance(args, list) or len(args) > 8:
+        raise PanelError('Plugin method arguments are too large')
+    try:
+        encoded_args = json.dumps(args, allow_nan=False).encode('utf-8')
+    except (TypeError, ValueError):
+        raise PanelError('Plugin method arguments must be valid JSON')
+    if len(encoded_args) > 256*1024:
         raise PanelError('Plugin method arguments are too large')
     if type(legacy) is not bool or (legacy and (len(args) != 1 or not isinstance(args[0], dict))):
         raise PanelError('Legacy plugin methods need one keyword argument object')
