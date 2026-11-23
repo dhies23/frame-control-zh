@@ -22,18 +22,35 @@ def _parse(source, data):
     entries = []
     for item in root.findall('./channel/item'):
         page = item.findtext('link') or ''
-        p = urllib.parse.urlsplit(page)
-        if p.scheme != 'https' or not (p.hostname or '').endswith('.itch.io') or p.username or ':' in p.netloc:
+        if any(ord(c) < 32 or ord(c) == 127 for c in page):
+            continue
+        try:
+            p = urllib.parse.urlsplit(page)
+        except ValueError:
+            continue
+        host = p.hostname or ''
+        if (p.scheme != 'https' or not host.endswith('.itch.io') or host == '.itch.io'
+                or p.username or p.password or ':' in p.netloc):
             continue
         if item.findtext('price') != '$0.00' or item.findtext('platforms/android') != 'yes':
             continue
         cover = item.findtext('imageurl') or None
-        if cover and not cover.startswith('https://img.itch.zone/'):
-            cover = None
+        if cover:
+            if any(ord(c) < 32 or ord(c) == 127 for c in cover):
+                cover = None
+            else:
+                try:
+                    cp = urllib.parse.urlsplit(cover)
+                except ValueError:
+                    cover = None
+                else:
+                    if (cp.scheme != 'https' or cp.hostname != 'img.itch.zone'
+                            or cp.username or cp.password or ':' in cp.netloc):
+                        cover = None
         updated = None
         try:
             updated = parsedate_to_datetime(item.findtext('updateDate')).date().isoformat()
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError, IndexError, OverflowError):
             pass
         entries.append({'source': source['id'], 'id': page, 'package': None,
                         'name': item.findtext('plainTitle') or item.findtext('title') or page,
@@ -56,7 +73,7 @@ def search(source, query, limit=50):
     url = 'https://itch.io/games/free/platform-android/tag-' + tag + '.xml'
     for entry in _parse(source, _web.read(url, ('itch.io',), name='itch.io')):
         entries.setdefault(entry['id'], entry)
-    words = query.lower().split()
+    words = query.lower().split() if isinstance(query, str) else []
     return [e for e in entries.values() if all(w in (e['name'] + ' ' + e['summary']).lower()
                                                for w in words)][:limit]
 

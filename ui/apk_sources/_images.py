@@ -21,10 +21,12 @@ MAX_CACHE = 64 * 1024 * 1024
 
 
 def valid_url(url):
+    if not isinstance(url, str) or len(url) > 4096 or any(ord(c) < 32 or ord(c) == 127 for c in url):
+        return False
     try:
         p = urlsplit(url)
         return (p.scheme in ('https', 'http') and bool(p.hostname) and not p.username and not p.password
-                and p.port in (None, 80, 443) and len(url) <= 4096)
+                and p.port in (None, 80, 443))
     except (ValueError, TypeError):
         return False
 
@@ -45,12 +47,16 @@ def register(url):
 
 
 def artwork(entry, shots=12):
+    if not isinstance(entry, dict):
+        entry = {}
     images = entry.get('images') or {}
     if not isinstance(images, dict):
         images = {}
+    raw_shots = images.get('screenshots')
+    shot_list = raw_shots if isinstance(raw_shots, (list, tuple)) else []
     return {'icon': register(images.get('icon') or entry.get('icon')),
             'banner': register(images.get('banner')),
-            'screenshots': [path for path in (register(u) for u in (images.get('screenshots') or [])[:min(shots, 12)]) if path]}
+            'screenshots': [path for path in (register(u) for u in shot_list[:min(shots, 12)]) if path]}
 
 
 def image_type(data):
@@ -146,18 +152,25 @@ def get(url, headers=None, redirects=3, deadline=None, limit=MAX_IMAGE):
     if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):
         raise SourceError('Private network artwork is not allowed')
     # Connect to the checked IP, never resolve again between validation and use.
-    live = [socket.create_connection((addresses[0][4][0], port), timeout=min(10, left()))]
+    try:
+        live = [socket.create_connection((addresses[0][4][0], port), timeout=min(10, left()))]
+    except OSError as e:
+        if isinstance(e, TimeoutError) or time.monotonic() >= deadline:
+            raise SourceError('Artwork download took too long') from e
+        raise
 
     def expire():
         try:  # the plain socket method: it also ends a TLS handshake in progress
             socket.socket.shutdown(live[0], socket.SHUT_RDWR)
         except OSError:
             pass
-    watchdog = threading.Timer(left(), expire)
-    watchdog.daemon = True
-    watchdog.start()
-    conn = http.client.HTTPConnection(p.hostname, port, timeout=10)
+    watchdog = None
+    conn = None
     try:
+        watchdog = threading.Timer(left(), expire)
+        watchdog.daemon = True
+        watchdog.start()
+        conn = http.client.HTTPConnection(p.hostname, port, timeout=10)
         if p.scheme == 'https':
             # Handshake only once the watchdog can reach the TLS socket, within the remaining time.
             live[0] = ssl.create_default_context().wrap_socket(live[0], server_hostname=p.hostname,
@@ -176,29 +189,36 @@ def get(url, headers=None, redirects=3, deadline=None, limit=MAX_IMAGE):
         live[0].settimeout(min(10, left()))
         response = conn.getresponse()
         if response.status in (301, 302, 303, 307, 308) and redirects:
-            target = urljoin(url, response.getheader('Location', ''))
+            loc = response.getheader('Location')
+            if not loc:
+                raise SourceError('Artwork is unavailable')
+            target = urljoin(url, loc)
+            watchdog.cancel()
             conn.close()
+            live[0].close()
             return get(target, headers, redirects - 1, deadline, limit)
         if response.status != 200:
             raise SourceError('Artwork is unavailable')
-        data = b''
+        data = bytearray()
         while len(data) <= limit:
             live[0].settimeout(min(10, left()))
             chunk = response.read1(min(16384, limit + 1 - len(data)))  # one receive at most
             if not chunk:
                 break
-            data += chunk
+            data.extend(chunk)
         if len(data) > limit:
             raise SourceError('Artwork is too large')
         left()
-        return data
+        return bytes(data)
     except (OSError, http.client.HTTPException) as e:
         if isinstance(e, TimeoutError) or time.monotonic() >= deadline:
             raise SourceError('Artwork download took too long') from e
         raise
     finally:
-        watchdog.cancel()
-        conn.close()
+        if watchdog is not None:
+            watchdog.cancel()
+        if conn is not None:
+            conn.close()
         live[0].close()
 
 
