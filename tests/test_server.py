@@ -941,6 +941,89 @@ class ServerHardeningTests(unittest.TestCase):
             got = s.list_shots()
         self.assertEqual([x["id"] for x in got["shots"]], ["1/620/20261020120003_1.png"])
 
+    def test_endpoints_and_input_hardening(self):
+        from unittest.mock import Mock, patch
+        s = self.server
+
+        # 1. steam_frame, vr, and panels wrap malformed/non-dict remote JSON as Failure (502)
+        for bad in ("not-json", "[]", "null"):
+            with self.subTest(remote_json=bad), patch.object(s, "ssh", return_value=bad):
+                with self.assertRaises(s.Failure) as e1:
+                    s.steam_frame("list")
+                self.assertEqual(e1.exception.status, 502)
+                with self.assertRaises(s.Failure) as e2:
+                    s.vr({"action": "hud-stop"})
+                self.assertEqual(e2.exception.status, 502)
+                with self.assertRaises(s.Failure) as e3:
+                    s.panels()
+                self.assertEqual(e3.exception.status, 502)
+
+        # 2. _headset_record_run wraps TimeoutExpired/OSError as ClipError and passes UTF-8 replace
+        with patch.object(s.subprocess, "run", side_effect=s.subprocess.TimeoutExpired("bash", 1)):
+            with self.assertRaises(s.frame_clips.ClipError):
+                s._headset_record_run("true", 1)
+
+        # 3. input_event, touch_event, and num_value reject non-finite floats (Inf/-Inf)
+        for val in (float("inf"), float("-inf"), float("nan")):
+            with self.subTest(val=val):
+                with self.assertRaises(s.Failure):
+                    s.input_event({"dx": val})
+                with self.assertRaises(s.Failure):
+                    s.touch_event({"dx": val})
+                with self.assertRaises(s.Failure):
+                    s.touch_event({"scroll": [val, 0]})
+
+        # 4. PANEL_WINDOW and PANEL_DISPLAY reject non-ASCII Unicode digits
+        self.assertIsNone(s.PANEL_WINDOW.fullmatch("١٢٣"))
+        self.assertIsNone(s.PANEL_DISPLAY.fullmatch(":١"))
+
+        # 5. InputAgent.close and TouchAgent.close tolerate OSError on terminate()
+        dead_proc = Mock()
+        dead_proc.terminate.side_effect = ProcessLookupError("already exited")
+        dead_proc.stdin.close.side_effect = OSError("broken pipe")
+        s.InputAgent(packages=[]).close(dead_proc)
+        s.TouchAgent().close(dead_proc)
+
+        # 6. power() rejects CR in password and wraps OSError as Failure
+        with self.assertRaises(s.Failure) as pe:
+            s.power("suspend", "secret\r")
+        self.assertEqual(pe.exception.status, 400)
+        with patch.object(s.subprocess, "run", side_effect=FileNotFoundError("no sudo")):
+            with self.assertRaises(s.Failure):
+                s.power("suspend", "secret")
+
+        # 7. android_backup and titles reject NUL bytes cleanly with Failure (400), not ValueError
+        with self.assertRaises(s.Failure) as ab_err:
+            s.android_backup({"action": "begin", "paths": ["/tmp/bad\x00path"]})
+        self.assertEqual(ab_err.exception.status, 400)
+        with self.assertRaises(s.Failure) as ti_err:
+            s.titles({"action": "inspect", "path": "/tmp/bad\x00path"})
+        self.assertEqual(ti_err.exception.status, 400)
+
+        # 8. titles(action="install") cleans up staged entry and job slot if ensure_master() fails
+        with tempfile.TemporaryDirectory() as tmp:
+            stage_dir = Path(tmp) / "staged"
+            stage_dir.mkdir()
+            (stage_dir / "game.zip").write_bytes(b"zip")
+            token = "tok-cleanup-test"
+            entry = {"plan": {"source": "game.zip"}, "dir": str(stage_dir), "time": s.time.time(), "device": None}
+            with s._titles_lock:
+                s._staged[token] = entry
+            try:
+                with patch.object(s, "LINK", None), \
+                        patch.object(s.frame_titles, "discard") as discard_mock, \
+                        patch.object(s, "ensure_master", side_effect=s.Failure("offline")):
+                    with self.assertRaises(s.Failure):
+                        s.titles({"action": "install", "token": token})
+                discard_mock.assert_called_once_with(entry["plan"])
+                self.assertFalse(stage_dir.exists(), "staged temp dir must be removed on install startup failure")
+                with s._titles_lock:
+                    self.assertNotIn(token, s._title_jobs, "orphaned job entry must be removed on startup failure")
+            finally:
+                with s._titles_lock:
+                    s._staged.pop(token, None)
+                    s._title_jobs.pop(token, None)
+
 
 if __name__ == "__main__":
     unittest.main()
