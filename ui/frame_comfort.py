@@ -56,16 +56,24 @@ def new_session(body, now, boot_id):
             'warned': None, 'events': [], 'seq': 0, 'latched': [], 'error': None}
 
 
+def _num(value, default):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+
+
 def event(s, kind, message):
-    s['seq'] += 1
-    s['events'].append({'id': s['id'] + ':' + str(s['seq']), 'kind': kind,
-                        'message': message, 'time': time.time()})
-    s['events'] = s['events'][-40:]
+    seq = s.get('seq')
+    s['seq'] = (seq if type(seq) is int else 0) + 1
+    events = s.get('events')
+    if not isinstance(events, list):
+        events = []
+    events.append({'id': str(s.get('id') or '') + ':' + str(s['seq']), 'kind': kind,
+                   'message': message, 'time': time.time()})
+    s['events'] = events[-40:]
 
 
 def notify(message):
     r = subprocess.run([VRCMD, '--notify', 'Frame Control: ' + message],
-                       capture_output=True, text=True, timeout=20)
+                       capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=20)
     if r.returncode or 'succeeded' not in r.stdout:
         raise RuntimeError('SteamVR could not show the reminder: ' + (r.stderr or r.stdout)[-300:])
 
@@ -74,7 +82,7 @@ def home():
     # A total process deadline also bounds a CDP peer that keeps sending events
     # without completing the request. Keep cancellation ordered after this action.
     r = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--home'],
-                       capture_output=True, text=True, timeout=15)
+                       capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15)
     if r.returncode:
         raise RuntimeError('Steam Home failed: ' + (r.stdout or r.stderr)[-300:])
 
@@ -83,7 +91,7 @@ def open_home():
     page = Page()
     try:
         result = page.eval(HOME_JS)
-        if result.get('path') != '/routes/library/home':
+        if not isinstance(result, dict) or result.get('path') != '/routes/library/home':
             raise RuntimeError('Steam did not navigate Home')
     finally:
         page.sock.close()
@@ -130,7 +138,8 @@ def tick(s, now, sample, warn=notify, go_home=home, read_clock=clock):
     if o['stillMinutes'] and not s['stillSent'] and s['used'] >= o['stillMinutes'] * 60:
         event(s, 'still', f"Headset still active after {o['stillMinutes']} active minute(s). Check in with the wearer.")
         s['stillSent'] = True
-    low = b.get('percent') is not None and b['percent'] <= 15 and b.get('status') == 'Discharging'
+    pct = _num(b.get('percent'), None)
+    low = pct is not None and pct <= 15 and b.get('status') == 'Discharging'
     hot = sample.get('thermal')
     for kind, enabled, value, message in (
         ('battery', o['batteryAlert'], low if b else None, 'Frame battery is low (15% or less).'),
@@ -141,7 +150,7 @@ def tick(s, now, sample, warn=notify, go_home=home, read_clock=clock):
             s['latched'].append(kind)
         elif value is False and kind in s['latched']:
             # Battery hysteresis prevents repeated alerts around 15%.
-            if kind != 'battery' or b.get('status') == 'Charging' or (b.get('percent') or 0) >= 20:
+            if kind != 'battery' or b.get('status') == 'Charging' or (pct or 0) >= 20:
                 s['latched'].remove(kind)
 
 
@@ -156,7 +165,7 @@ def locked(name='state.lock', nonblocking=False):
 
 def read_state():
     try:
-        state = json.loads((ROOT / 'session.json').read_text())
+        state = json.loads((ROOT / 'session.json').read_text(encoding='utf-8'))
         if not isinstance(state, dict):
             raise ValueError('Saved session must be an object')
         return state
@@ -171,9 +180,13 @@ def read_state():
 
 def save(s):
     p = ROOT / 'session.tmp'
-    p.write_text(json.dumps(s))
-    p.chmod(0o600)
-    p.replace(ROOT / 'session.json')
+    try:
+        p.write_text(json.dumps(s), encoding='utf-8')
+        p.chmod(0o600)
+        p.replace(ROOT / 'session.json')
+    except BaseException:
+        p.unlink(missing_ok=True)
+        raise
 
 
 def current(s, now):
@@ -182,8 +195,11 @@ def current(s, now):
         s['error'] = 'Headset restarted. Start a new session.'
     out = dict(s)
     out['time'] = time.time()  # event age uses the Frame's clock, not the phone's
-    out['remaining'] = max(0, max(s.get('deadline', now), (s.get('warned') or 0) + 60) - now) if s.get('active') else 0
-    beat = s.get('heartbeat', s.get('started', now))  # a hand-edited state may lack either
+    deadline = _num(s.get('deadline'), now)
+    warned = _num(s.get('warned'), None)
+    end = max(deadline, warned + 60) if warned is not None else deadline
+    out['remaining'] = max(0, end - now) if s.get('active') else 0
+    beat = _num(s.get('heartbeat'), _num(s.get('started'), now))  # a hand-edited state may lack either
     if s.get('active') and now - beat > 90:
         out['error'] = 'Session worker is not responding. Timer enforcement is unverified; cancel and start again.'
     return out
