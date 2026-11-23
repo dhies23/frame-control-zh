@@ -28,6 +28,7 @@ holding init-stream*.m4s counts as a session.
 """
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -104,9 +105,9 @@ def record_command(name, audio, max_seconds=MAX_SECONDS, work=WORK):
     (seen on a Frame, build 20261015.6141207). If it's still there 10 s later it's
     killed. A recording that ends by itself (the time limit, an error) ends the wait
     too. The shell prints "started" once ffmpeg is running and "exit N" when it has gone."""
-    if not REC_NAME.fullmatch(name):
+    if not isinstance(name, str) or not REC_NAME.fullmatch(name):
         raise ValueError(f"bad recording name {name!r}")
-    if not 1 <= max_seconds <= MAX_SECONDS:
+    if isinstance(max_seconds, bool) or not isinstance(max_seconds, int) or not 1 <= max_seconds <= MAX_SECONDS:
         raise ValueError("max_seconds out of range")
     clock = "-thread_queue_size 1024 -use_wallclock_as_timestamps 1"
     inputs = f"{clock} -f v4l2 -video_size 1920x1080 -i {STREAM_DEVICE}"
@@ -134,7 +135,7 @@ def record_command(name, audio, max_seconds=MAX_SECONDS, work=WORK):
 
 def finish_command(name, work=WORK):
     """After the recording: make the .mp4 the computer gets (no re-encode), on the Frame."""
-    if not REC_NAME.fullmatch(name):
+    if not isinstance(name, str) or not REC_NAME.fullmatch(name):
         raise ValueError(f"bad recording name {name!r}")
     return (f"cd \"$HOME/{work}\" || exit 1; "
             f"[ -s {name}.mkv ] || {{ tail -c 2000 {name}.log >&2 2>/dev/null; echo 'The recording is empty' >&2; exit 1; }}; "
@@ -143,7 +144,7 @@ def finish_command(name, work=WORK):
 
 
 def cleanup_command(name, work=WORK):
-    if not REC_NAME.fullmatch(name):
+    if not isinstance(name, str) or not REC_NAME.fullmatch(name):
         raise ValueError(f"bad recording name {name!r}")
     return f"rm -f \"$HOME/{work}/{name}\".*"
 
@@ -263,7 +264,7 @@ class Recorder:
             if line == "" and (stopping or time.time() > deadline):
                 break  # no answer within 30 s of Stop, or well past the limit: close the channel
         _end(proc)
-        errors.close()
+        _close(errors)
         self.release(proc)
         with self._lock:
             self._proc = None
@@ -287,7 +288,12 @@ class Recorder:
     def save(self, name):
         """Make the .mp4 on the Frame and copy it here, never leaving a partial file in the folder."""
         out = self.run(finish_command(name) if self.work == WORK else finish_command(name, self.work), 600)
-        size = int(out.strip().splitlines()[-1]) if out.strip() else 0
+        size = 0
+        if isinstance(out, str) and out.strip():
+            try:
+                size = max(0, int(out.strip().splitlines()[-1]))
+            except ValueError:
+                size = 0
         _make_room(self.folder, size)
         incoming = Path(tempfile.mkdtemp(prefix=".incoming-", dir=self.folder))
         try:
@@ -305,6 +311,8 @@ def _make_room(folder, size):
 
 
 def _close(f):
+    if f is None:
+        return
     try:
         f.close()
     except OSError:
@@ -416,14 +424,17 @@ def chunk_gaps(files):
 
 def mpd_duration(text):
     """Seconds from the manifest's mediaPresentationDuration ("PT1M23.4S"), or None."""
-    m = re.search(r'mediaPresentationDuration="P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?"', text or "")
+    if not isinstance(text, str):
+        return None
+    m = re.search(r'mediaPresentationDuration="P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?"', text)
     if not m or not any(m.groups()):
         return None
     d, h, mi, s = m.groups()
     try:
-        return int(d or 0) * 86400 + int(h or 0) * 3600 + int(mi or 0) * 60 + float(s or 0)
+        seconds = int(d or 0) * 86400 + int(h or 0) * 3600 + int(mi or 0) * 60 + float(s or 0)
     except ValueError:
         return None
+    return seconds if math.isfinite(seconds) else None
 
 
 def _sessions(base, depth=0):
@@ -451,9 +462,13 @@ def describe(userdata, clip_id):
     files = [f for s in streams.values() for f in s]
     stats = [os.stat(f) for f in files]
     duration = None
-    for mpd in sorted(p for p in os.listdir(folder) if p.endswith(".mpd")):
+    mpds = sorted(
+        (e.path for e in os.scandir(folder) if e.name.endswith(".mpd") and e.is_file(follow_symlinks=False)),
+        key=os.path.basename,
+    )
+    for mpd in mpds:
         try:
-            duration = mpd_duration(Path(folder, mpd).read_text(errors="replace")[:20000])
+            duration = mpd_duration(Path(mpd).read_text(encoding="utf-8", errors="replace")[:20000])
         except OSError:
             pass
         if duration is not None:
@@ -543,7 +558,8 @@ def export(userdata, clip_id, home=None):
                         shutil.copyfileobj(src, dst, 1 << 20)
             inputs.append(path)
         out = out_dir / export_name(clip_id)
-        r = subprocess.run(stitch_command(inputs, out), capture_output=True, text=True, errors="replace", timeout=1800)
+        r = subprocess.run(stitch_command(inputs, out), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=1800)
         if r.returncode != 0 or not out.exists():
             raise ClipError("ffmpeg couldn't join the recording: " + (r.stderr.strip()[-1500:] or f"exit {r.returncode}"))
         for f in inputs:
@@ -566,7 +582,7 @@ def _sweep(work, older=6 * 3600):
 
 def remove_command(path):
     """Delete an export on the Frame once it's been copied (path as export returned it)."""
-    if not EXPORT_PATH.fullmatch(path or ""):
+    if not isinstance(path, str) or not EXPORT_PATH.fullmatch(path):
         raise ValueError(f"unexpected export path {path!r}")
     return f"rm -rf \"$HOME\"/{shlex.quote(path.rsplit('/', 1)[0])}"
 
@@ -579,9 +595,19 @@ def remove_command(path):
 def list_clips(run_frame, folder=None, *, device_id):
     """Steam's recordings on the Frame, each marked saved if its .mp4 is already here."""
     folder = Path(folder) if folder else VIDEOS_DIR
-    clips = run_frame(["list"], 60)["clips"]
-    for c in clips:
-        c["saved"] = clip_local_path(c["id"], device_id, folder).is_file()
+    answer = run_frame(["list"], 60)
+    if not isinstance(answer, dict) or not isinstance(answer.get("clips"), list):
+        raise ClipError("Unexpected clip list from the Frame")
+    clips = []
+    for c in answer["clips"]:
+        if not isinstance(c, dict):
+            continue
+        try:
+            saved = clip_local_path(c.get("id"), device_id, folder).is_file()
+        except ValueError:
+            continue
+        c["saved"] = saved
+        clips.append(c)
     return {"clips": clips, "folder": str(folder)}
 
 
@@ -591,10 +617,21 @@ def export_clip(clip_id, run_frame, run, fetch, folder=None, *, device_id):
     target = clip_local_path(clip_id, device_id, folder)  # validate before reaching the Frame
     name = target.name
     made = run_frame(["export", clip_id], 1900)
+    if not isinstance(made, dict):
+        raise ClipError("Unexpected export answer from the Frame")
     path = made.get("path")
     remove = remove_command(path)  # refuses a path that isn't one of our exports
     try:
-        _make_room(folder, int(made.get("size") or 0))
+        raw_size = made.get("size")
+        size = 0
+        if isinstance(raw_size, int) and not isinstance(raw_size, bool):
+            size = max(0, raw_size)
+        elif isinstance(raw_size, str):
+            try:
+                size = max(0, int(raw_size))
+            except ValueError:
+                size = 0
+        _make_room(folder, size)
         incoming = Path(tempfile.mkdtemp(prefix=".incoming-", dir=folder))
         try:
             fetch(path, incoming / name)

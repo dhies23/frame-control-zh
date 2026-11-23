@@ -723,5 +723,109 @@ class RealFfmpeg(unittest.TestCase):
         self.assertGreater(float(probe["format"]["duration"]), 64)
 
 
+class Hardening(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+
+    def test_non_string_names_paths_and_bool_max_seconds_raise_value_error(self):
+        for fn in (clips.finish_command, clips.cleanup_command, lambda n: clips.record_command(n, True)):
+            for bad in (None, 123, ["rec-20261020-201950"]):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    fn(bad)
+        for bad in (123, ["x"], True):
+            with self.subTest(remove=bad), self.assertRaises(ValueError):
+                clips.remove_command(bad)
+        for bad_sec in (True, False, 1.5, "10", None):
+            with self.subTest(max_seconds=bad_sec), self.assertRaises(ValueError):
+                clips.record_command("rec-20261020-201950", True, max_seconds=bad_sec)
+
+    def test_mpd_duration_guards_non_string_and_overflow(self):
+        self.assertIsNone(clips.mpd_duration(123))
+        self.assertIsNone(clips.mpd_duration(["PT1S"]))
+        self.assertIsNone(clips.mpd_duration(f'mediaPresentationDuration="PT{"9" * 400}S"'))
+
+    def test_describe_uses_utf8_and_skips_symlink_mpd(self):
+        ud = self.dir / "userdata"
+        folder = ud / "123" / "gamerecordings" / "video" / "bg_620_20261020_201950"
+        session(folder, streams=(0,), chunks=1, mpd='<MPD mediaPresentationDuration="PT42S">')
+        if POSIX:
+            secret = write(self.dir / "outside.mpd", b'<MPD mediaPresentationDuration="PT999S">')
+            os.symlink(secret, folder / "00_link.mpd")
+        encodings = []
+        orig_read = Path.read_text
+
+        def tracked_read(path_self, *args, **kwargs):
+            if path_self.suffix == ".mpd":
+                encodings.append(kwargs.get("encoding"))
+            return orig_read(path_self, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", tracked_read):
+            info = clips.describe(ud, "123/video/bg_620_20261020_201950")
+        self.assertEqual(info["duration"], 42.0)
+        self.assertEqual(encodings, ["utf-8"])
+
+    def test_export_passes_utf8_encoding_to_ffmpeg(self):
+        home = self.dir / "home"
+        ud = home / clips.STEAM_USERDATA
+        cid = "123/video/bg_620_20261020_201950"
+        session(ud / "123" / "gamerecordings" / "video" / "bg_620_20261020_201950", streams=(0,), chunks=1)
+        seen_enc = []
+
+        def fake_run(cmd, **kw):
+            seen_enc.append(kw.get("encoding"))
+            Path(cmd[-1]).write_bytes(b"mp4")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with mock.patch.object(clips.subprocess, "run", fake_run):
+            clips.export(ud, cid, home=home)
+        self.assertEqual(seen_enc, ["utf-8"])
+
+    def test_list_clips_export_clip_save_and_close_guard_malformed_payloads(self):
+        for bad in (None, [], "nope", {}, {"clips": "nope"}):
+            with self.subTest(bad=bad), self.assertRaises(clips.ClipError):
+                clips.list_clips(lambda args, t: bad, folder=self.dir, device_id="frame-a")
+
+        valid_id = "1/video/bg_620_20261020_201950"
+        got = clips.list_clips(
+            lambda args, t: {"clips": ["bogus", {"id": "../evil"}, {"no_id": 1}, {"id": valid_id}]},
+            folder=self.dir,
+            device_id="frame-a",
+        )
+        self.assertEqual([c["id"] for c in got["clips"]], [valid_id])
+        self.assertFalse(got["clips"][0]["saved"])
+
+        never = mock.Mock(side_effect=AssertionError("should not run"))
+        for bad_made in (None, [], "bad"):
+            with self.subTest(made=bad_made), self.assertRaises(clips.ClipError):
+                clips.export_clip(valid_id, lambda a, t: bad_made, never, never, folder=self.dir, device_id="frame-a")
+
+        remote_path = f"{clips.WORK}/export-0123456789abcdef/bg_620_20261020_201950.mp4"
+        for bad_size in ("not-a-number", True, -10, ["x"]):
+            cleaned = []
+            res = clips.export_clip(
+                valid_id,
+                lambda a, t, s=bad_size: {"path": remote_path, "size": s},
+                lambda cmd, t: cleaned.append(cmd),
+                lambda r, local: Path(local).write_bytes(b"mp4"),
+                folder=self.dir,
+                device_id="frame-a",
+            )
+            self.assertTrue(Path(res["file"]).is_file())
+            self.assertEqual(cleaned, [clips.remove_command(remote_path)])
+
+        rec = clips.Recorder(
+            mock.Mock(),
+            lambda cmd, t: "warning: non-numeric output\n",
+            lambda r, local: Path(local).write_bytes(b"mp4"),
+            lambda fn: fn(),
+            folder=self.dir / "rec",
+        )
+        rec.save("rec-20261020-201950")
+        self.assertEqual((self.dir / "rec" / "rec-20261020-201950.mp4").read_bytes(), b"mp4")
+
+        clips._close(None)
+
+
 if __name__ == "__main__":
     unittest.main()
