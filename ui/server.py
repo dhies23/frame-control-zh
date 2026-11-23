@@ -2820,7 +2820,7 @@ def title_job(query):
 # scripts/install-apk.sh, and is always torn down with an adb disconnect.
 
 ADB_PORTS = range(5555, 5600)
-SIZE_RE = re.compile(r"^(\d{3,4})x(\d{3,4})$")
+SIZE_RE = re.compile(r"^([0-9]{3,4})x([0-9]{3,4})$")
 DENSITY_RANGE = (120, 640)
 WIDTH_RANGE, HEIGHT_RANGE = (640, 3840), (360, 2160)
 FONT_RANGE = (0.5, 2.0)
@@ -2840,9 +2840,11 @@ def adb_path():
 def adb(adb_bin, *args, timeout=20):
     try:
         r = subprocess.run([adb_bin, *args], capture_output=True, stdin=subprocess.DEVNULL, text=True,
-                           errors="replace", timeout=timeout)
+                           encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         raise Failure(f"adb {' '.join(args[-2:])} timed out")
+    except OSError as exc:
+        raise Failure(f"adb {' '.join(args[-2:])} failed: {exc}") from exc
     out = (r.stdout + r.stderr).strip()
     if r.returncode != 0:
         raise Failure(out or f"adb exited {r.returncode}")
@@ -2942,14 +2944,23 @@ class AdbTunnel:
                 try:
                     proc.wait(5)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(5)
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    try:
+                        proc.wait(5)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
         except OSError:
             pass
         finally:
             _live_tunnels.discard(proc)
             if proc.stderr:
-                proc.stderr.close()
+                try:
+                    proc.stderr.close()
+                except OSError:
+                    pass
 
     def __exit__(self, *exc):
         try:
@@ -3022,8 +3033,8 @@ def parse_display(out):
         "packages": sorted(l.split(":", 1)[1] for l in parts.get("pkgs", []) if l.startswith("package:")),
         "physicalSize": pick(size, "physical size"),
         "overrideSize": pick(size, "override size"),
-        "physicalDensity": int(phys_d) if phys_d and phys_d.isdigit() else None,
-        "overrideDensity": int(over_d) if over_d and over_d.isdigit() else None,
+        "physicalDensity": int(phys_d) if phys_d and phys_d.isascii() and phys_d.isdigit() else None,
+        "overrideDensity": int(over_d) if over_d and over_d.isascii() and over_d.isdigit() else None,
         # null means never set, which Android treats as 1.0.
         "fontScale": font_scale,
     }
@@ -3041,12 +3052,12 @@ def lepton_ports():
         cols = line.split()
         if len(cols) >= 4:
             port = cols[3].rsplit(":", 1)[-1]
-            if port.isdigit() and int(port) in ADB_PORTS:
+            if port.isascii() and port.isdigit() and int(port) in ADB_PORTS:
                 ports.add(int(port))
     containers = {}
     for line in podman.splitlines():
         cols = line.split()
-        if len(cols) == 2 and cols[1].isdigit():
+        if len(cols) == 2 and cols[1].isascii() and cols[1].isdigit():
             containers[int(cols[1])] = cols[0]
     labels = dict(KNOWN_LABELS)
     for chunk in meta.split("@@m"):
@@ -3181,7 +3192,12 @@ def webinstall_start(body):
         # Started under the lock, so shutdown never sees a thread it can't join.
         worker = busy_thread(_webinstall_run, plan, job)
         _web_workers.add(worker)
-        worker.start()
+        try:
+            worker.start()
+        except BaseException:
+            _web_workers.discard(worker)
+            _web_jobs.pop(pid, None)
+            raise
     return {"job": pid}
 
 
@@ -3240,19 +3256,20 @@ def _webinstall_run(plan, job):
 
 
 def webinstall_job(query):
-    job = _web_jobs.get((parse_qs(query).get("id") or [""])[0])
-    if not job:
-        raise Failure("unknown install job", 404)
+    jid = (parse_qs(query).get("id") or [""])[0]
     with _web_lock:  # the worker adds and drops _conn meanwhile
+        job = _web_jobs.get(jid)
+        if not job:
+            raise Failure("unknown install job", 404)
         return {k: v for k, v in job.items() if k != "cancel" and not k.startswith("_")}
 
 
 def webinstall_cancel(body):
     jid = body.get("job")
-    job = _web_jobs.get(jid) if isinstance(jid, str) else None
-    if not job:
-        raise Failure("unknown install job", 404)
     with _web_lock:
+        job = _web_jobs.get(jid) if isinstance(jid, str) else None
+        if not job:
+            raise Failure("unknown install job", 404)
         if job["phase"] != "download":
             raise Failure("only the download can be cancelled", 409)
         job["cancel"] = True
@@ -3330,7 +3347,7 @@ def sweep_tmp(own=False):
 
 
 def _sweep_one(prefix, d, own=False):
-    m = re.fullmatch(re.escape(prefix) + r"(\d+)-.*", d.name)
+    m = re.fullmatch(re.escape(prefix) + r"([0-9]+)-.*", d.name)
     if not m:
         return
     pid = int(m[1])
@@ -3361,9 +3378,14 @@ def panels_action(body):
         remote = "python3 - --focus " + shlex.quote(key)
     else:
         raise Failure("Unknown panel action", 400)
-    result = json.loads(ssh(remote, stdin=script, timeout=45, retry=action == "list"))
+    try:
+        result = json.loads(ssh(remote, stdin=script, timeout=45, retry=action == "list"))
+    except ValueError:
+        raise Failure("Unexpected response from Frame", 502) from None
+    if not isinstance(result, dict):
+        raise Failure("Unexpected response from Frame", 502)
     if "error" in result:
-        raise Failure(result["error"], 502)
+        raise Failure(str(result["error"]), 502)
     return result
 
 
@@ -3408,7 +3430,7 @@ def backup_action(body):
         return {"message": f"Opened {folder} in {frame_host.FILE_MANAGER}"}
     if action == "backup":
         kinds = body.get("kinds", list(frame_backup.KINDS))
-        if not isinstance(kinds, list) or not kinds or any(k not in frame_backup.KINDS for k in kinds):
+        if not isinstance(kinds, list) or not kinds or any(not isinstance(k, str) or k not in frame_backup.KINDS for k in kinds):
             raise Failure("Choose what to back up", 400)
         name = agent_target()["name"]
         work = lambda report: frame_backup.backup(report, kinds, headset=name)  # noqa: E731
@@ -3447,7 +3469,8 @@ def media(body):
         identity = body.get("id")
         if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{32}/[^/\\\x00]+", identity):
             raise Failure("Invalid media id", 400)
-        if body.get("layout", "auto") not in frame_media.LAYOUTS:
+        layout = body.get("layout", "auto")
+        if not isinstance(layout, str) or layout not in frame_media.LAYOUTS:
             raise Failure("Invalid media layout", 400)
         if type(body.get("theatre", False)) is not bool:
             raise Failure("theatre must be true or false", 400)
@@ -3461,9 +3484,14 @@ root.mkdir(parents=True, exist_ok=True)
 for name, source in json.load(sys.stdin).items():
     path = root/name
     fd, temp = tempfile.mkstemp(dir=root, prefix=name+'.')
-    with os.fdopen(fd, 'w') as f:
-        f.write(source)
-    os.replace(temp, path)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(source)
+        os.replace(temp, path)
+    except BaseException:
+        try: os.unlink(temp)
+        except OSError: pass
+        raise
 """
         ssh("python3 -c " + shlex.quote(installer), stdin=json.dumps(sources))
         try:
@@ -3472,13 +3500,20 @@ for name, source in json.load(sys.stdin).items():
         except Failure as e:
             for line in reversed(getattr(e, "stdout", "").splitlines()):
                 try:
-                    detail = json.loads(line).get("error")
+                    parsed = json.loads(line)
+                    detail = parsed.get("error") if isinstance(parsed, dict) else None
                 except (ValueError, AttributeError):
                     continue
                 if detail:
-                    raise Failure(detail) from None
+                    raise Failure(str(detail)) from None
             raise
-        return json.loads(out)
+        try:
+            data = json.loads(out)
+        except ValueError:
+            raise Failure("Unexpected response from Frame", 502) from None
+        if not isinstance(data, dict):
+            raise Failure("Unexpected response from Frame", 502)
+        return data
 
 
 def push_media(path):
@@ -3549,11 +3584,18 @@ def macview_action(body):
     action = body.get("action")
     try:
         if action == "show":
-            w, h = body.get("w"), body.get("h")
-            if isinstance(w, bool) or isinstance(h, bool):
+            def opt_int(val):
+                if val is None or val == "":
+                    return None
+                if isinstance(val, bool):
+                    raise Failure("w and h must be integers", 400)
+                if isinstance(val, int):
+                    return val or None
+                if isinstance(val, str) and val.strip().isascii() and val.strip().isdigit():
+                    return int(val.strip()) or None
                 raise Failure("w and h must be integers", 400)
-            return macview.show(str(body.get("src") or ""), str(body.get("quality") or "balanced"),
-                                int(w) if w else None, int(h) if h else None)
+            w, h = opt_int(body.get("w")), opt_int(body.get("h"))
+            return macview.show(str(body.get("src") or ""), str(body.get("quality") or "balanced"), w, h)
         if action == "stop":
             return macview.stop(body.get("src") or None)
         if action == "permissions":
@@ -3748,7 +3790,7 @@ def transfer_local(body):
     """Copy a desktop-selected file without a second, size-limited HTTP upload to /tmp."""
     if os.environ.get("FRAME_CONTROL_APP") != "1":
         raise Failure("Direct file copy needs the Frame Control desktop app", 403)
-    if body.get("action") != "copy-local" or not isinstance(body.get("path"), str):
+    if body.get("action") != "copy-local" or not isinstance(body.get("path"), str) or "\x00" in body["path"]:
         raise Failure("Choose a file on this computer", 400)
     path = Path(body["path"])
     if not path.is_absolute() or not path.name or path.name.startswith("."):
@@ -4173,12 +4215,24 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/contact":
                 self.send_json(frame_contact.state())
             elif path == "/api/computer/state":
-                self.send_json(json.loads(ssh("python3 -", stdin=(HERE / "frame_computer.py").read_text(encoding="utf-8"), timeout=20)))
+                try:
+                    state_data = json.loads(ssh("python3 -", stdin=(HERE / "frame_computer.py").read_text(encoding="utf-8"), timeout=20))
+                except ValueError:
+                    raise Failure("Unexpected response from Frame", 502) from None
+                if not isinstance(state_data, dict):
+                    raise Failure("Unexpected response from Frame", 502)
+                self.send_json(state_data)
             elif path == "/api/status":
                 self.send_json(status({}))
             elif path == "/api/storage":
                 with working(self.headers.get("X-Frame-Device")):
-                    self.send_json(json.loads(ssh("python3 -", stdin=(HERE / "frame_storage.py").read_text(encoding="utf-8"), timeout=20)))
+                    try:
+                        storage_data = json.loads(ssh("python3 -", stdin=(HERE / "frame_storage.py").read_text(encoding="utf-8"), timeout=20))
+                    except ValueError:
+                        raise Failure("Unexpected response from Frame", 502) from None
+                    if not isinstance(storage_data, dict):
+                        raise Failure("Unexpected response from Frame", 502)
+                    self.send_json(storage_data)
             elif path == "/api/running":
                 self.send_json(running_games())
             elif path == "/api/steam/owned":
@@ -4242,7 +4296,10 @@ class Handler(BaseHTTPRequestHandler):
             if not handler:
                 self.send_json({"error": "not found"}, 404)
                 return
-            length = int(self.headers.get("Content-Length") or 0)
+            raw_len = (self.headers.get("Content-Length") or "0").strip()
+            if not (raw_len.isascii() and raw_len.isdigit()):
+                raise Failure("invalid Content-Length", 400)
+            length = int(raw_len)
             if not 0 <= length <= MAX_JSON:
                 raise Failure("request body too large", 413)
             body = json.loads(self.rfile.read(length) or b"{}")
@@ -4304,22 +4361,35 @@ class Handler(BaseHTTPRequestHandler):
         # stderr goes to a file: nothing reads it while streaming, and a full
         # pipe would stall ffmpeg. It's only read if the stream fails to start.
         errors = tempfile.TemporaryFile()
-        proc = subprocess.Popen([*SSH, FRAME, remote], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=errors)
+        try:
+            proc = subprocess.Popen([*SSH, FRAME, remote], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=errors)
+        except BaseException:
+            errors.close()
+            raise
         try:
             _live_tunnels.add(proc)
             # One viewer at a time: a new stream (another tab, a reload) ends the last one.
             with _stream_lock:
                 old, _stream_proc = _stream_proc, proc
             if old and old.poll() is None:
-                old.terminate()
+                try:
+                    old.terminate()
+                except OSError:
+                    pass
             chunks = _pipe_reader(proc.stdout)
             # Nothing is sent until the first bytes arrive, so a failure to
             # start still comes back as a JSON error.
             first = _next_chunk(chunks, 20)
             if not first:
-                proc.kill()
-                proc.wait()
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
                 errors.seek(0)
                 err = strip_ansi(errors.read().decode(errors="replace")).strip()
                 raise Failure(err or "The Frame sent no video for 20 s")
@@ -4342,14 +4412,29 @@ class Handler(BaseHTTPRequestHandler):
                 pass  # the page stopped watching (or stopped reading); the body has started, so no JSON
         finally:
             if proc.poll() is None:
-                proc.terminate()
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    try:
+                        proc.wait(timeout=5)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+                except OSError:
+                    pass
             for f in (proc.stdin, proc.stdout, errors):
-                f.close()
+                if f is not None:
+                    try:
+                        f.close()
+                    except OSError:
+                        pass
             _live_tunnels.discard(proc)
 
     def upload(self):
@@ -4358,7 +4443,10 @@ class Handler(BaseHTTPRequestHandler):
         raw_name = unquote(self.headers.get("X-Filename", ""))
         name = os.path.basename(raw_name)
         mode = self.headers.get("X-Mode", "push")
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_len = (self.headers.get("Content-Length") or "0").strip()
+        if not (raw_len.isascii() and raw_len.isdigit()):
+            raise Failure("invalid Content-Length", 400)
+        length = int(raw_len)
         if (not name or name in (".", "..") or name.startswith(".") or "/" in name or "\\" in raw_name
                 or any(ord(c) < 32 or ord(c) == 127 for c in raw_name)):
             raise Failure("missing filename", 400)
@@ -4543,7 +4631,10 @@ def main():
             LINK.stop()
         for proc in list(_live_tunnels):  # ADB forwards and video streams cut off mid-way
             if proc.poll() is None:
-                proc.terminate()
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
         _purge_titles(now=float("inf"))  # unconfirmed title uploads
         # Staging folders of work still running (a patched APK mid-copy, an index
         # download): leaving below skips the cleanup their TemporaryDirectory would

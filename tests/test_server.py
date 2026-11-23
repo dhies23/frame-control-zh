@@ -1024,6 +1024,99 @@ class ServerHardeningTests(unittest.TestCase):
                     s._staged.pop(token, None)
                     s._title_jobs.pop(token, None)
 
+    def test_server_adb_webinstall_media_panels_macview_and_transfer_hardening(self):
+        from unittest.mock import Mock, patch
+        s = self.server
+
+        # 1. SIZE_RE, parse_display, lepton_ports, and _sweep_one reject non-ASCII Unicode digits
+        self.assertIsNone(s.SIZE_RE.fullmatch("١٢٨٠x٧٢٠"))
+        parsed = s.parse_display("@@density\nPhysical density: ²⁴⁰\nOverride density: ³²⁰\n")
+        self.assertIsNone(parsed["physicalDensity"])
+        self.assertIsNone(parsed["overrideDensity"])
+        with patch.object(s, "ssh", return_value="LISTEN 0 128 127.0.0.1:٥٥٥٥ 0.0.0.0:*\n@@podman\nctr ٥٥٥٥\n@@meta\n"):
+            ports, containers, _ = s.lepton_ports()
+        self.assertEqual(ports, [])
+        self.assertEqual(containers, {})
+        # _sweep_one ignores directory with non-ASCII digits instead of crashing int()
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_dir = Path(tmp) / "frame-webinstall-²³-abc"
+            bad_dir.mkdir()
+            s._sweep_one("frame-webinstall-", bad_dir, own=False)
+            self.assertTrue(bad_dir.exists())
+
+        # 2. adb() wraps OSError as Failure
+        with patch.object(s.subprocess, "run", side_effect=FileNotFoundError("no adb")):
+            with self.assertRaises(s.Failure):
+                s.adb("/missing/adb", "devices")
+
+        # 3. AdbTunnel._stop_ssh tolerates TimeoutExpired after kill and OSError on stderr.close
+        tunnel = object.__new__(s.AdbTunnel)
+        proc = Mock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = [s.subprocess.TimeoutExpired("ssh", 5), s.subprocess.TimeoutExpired("ssh", 5)]
+        proc.stderr.close.side_effect = OSError("already closed")
+        tunnel.proc = proc
+        tunnel._stop_ssh()
+        proc.kill.assert_called_once()
+
+        # 4. webinstall_start rolls back _web_jobs and _web_workers if worker.start() raises
+        fake_worker = Mock()
+        fake_worker.start.side_effect = RuntimeError("can't start new thread")
+        plan = {"name": "App", "size": 10, "url": "https://example.invalid/a.apk", "exe": None, "kind": "apk"}
+        with s._web_lock:
+            saved_plans, saved_jobs = dict(s._web_plans), dict(s._web_jobs)
+            saved_workers, saved_closing = set(s._web_workers), s._web_closing
+            s._web_plans.clear()
+            s._web_jobs.clear()
+            s._web_workers.clear()
+            s._web_closing = False
+            s._web_plans["p1"] = plan
+        try:
+            with patch.object(s, "busy_thread", return_value=fake_worker):
+                with self.assertRaises(RuntimeError):
+                    s.webinstall_start({"id": "p1"})
+            with s._web_lock:
+                self.assertEqual(s._web_jobs, {}, "failed start must not leave a stuck job blocking future web installs")
+                self.assertEqual(s._web_workers, set(), "failed start must not leave an unstarted thread in _web_workers")
+        finally:
+            with s._web_lock:
+                s._web_plans.clear(); s._web_plans.update(saved_plans)
+                s._web_jobs.clear(); s._web_jobs.update(saved_jobs)
+                s._web_workers.clear(); s._web_workers.update(saved_workers)
+                s._web_closing = saved_closing
+
+        # 5. panels_action and media wrap malformed/non-dict remote JSON as Failure (502)
+        for bad in ("not-json", "[]", "null"):
+            with self.subTest(bad=bad), patch.object(s, "ssh", return_value=bad):
+                with self.assertRaises(s.Failure) as e1:
+                    s.panels_action({"action": "list"})
+                self.assertEqual(e1.exception.status, 502)
+                with self.assertRaises(s.Failure) as e2:
+                    s.media({"action": "list"})
+                self.assertEqual(e2.exception.status, 502)
+
+        # 6. media layout and backup kinds reject unhashable values cleanly with Failure (400)
+        with self.assertRaises(s.Failure) as me:
+            s.media({"action": "play", "id": "a" * 32 + "/video.mp4", "layout": ["bad"]})
+        self.assertEqual(me.exception.status, 400)
+        with patch.object(s, "LOCAL", False):
+            with self.assertRaises(s.Failure) as be:
+                s.backup_action({"action": "backup", "kinds": [["bad"]]})
+            self.assertEqual(be.exception.status, 400)
+
+        # 7. macview_action rejects non-int/non-finite w/h with Failure (400)
+        with patch.object(s, "LOCAL", False):
+            for bad_w in ("abc", float("inf"), ["1920"]):
+                with self.subTest(bad_w=bad_w), self.assertRaises(s.Failure) as mve:
+                    s.macview_action({"action": "show", "src": "display:1", "w": bad_w, "h": 1080})
+                self.assertEqual(mve.exception.status, 400)
+
+        # 8. transfer_local rejects NUL bytes in path cleanly with Failure (400)
+        with patch.dict(s.os.environ, {"FRAME_CONTROL_APP": "1"}):
+            with self.assertRaises(s.Failure) as te:
+                s.transfer_local({"action": "copy-local", "path": "/tmp/bad\x00file.bin"})
+            self.assertEqual(te.exception.status, 400)
+
 
 if __name__ == "__main__":
     unittest.main()
