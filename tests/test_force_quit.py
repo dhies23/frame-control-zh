@@ -419,5 +419,60 @@ class Routes(test_server.ServerGuards):
         self.assertEqual(self.request("POST", "/api/running", {"action": "quit", "appid": "620"})[0], 403)
 
 
+class Hardening(unittest.TestCase):
+    def test_snapshot_tolerates_non_utf8_proc_stat_and_missing_proc_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "123"
+            p.mkdir()
+            (p / "stat").write_bytes(b"123 (bad\xffcomm) S 1 " + b"0 " * 17 + b"42 0\n")
+            (p / "cmdline").write_bytes(b"/bin/test\0")
+            got = frame_running.snapshot(tmp)
+        self.assertIn(123, got)
+        self.assertEqual(got[123]["ppid"], 1)
+        self.assertEqual(frame_running.snapshot(str(Path(tmp) / "missing")), {})
+
+    def test_steam_view_and_quit_game_close_owned_page_and_guard_malformed_eval(self):
+        page = mock.MagicMock()
+        page.eval.return_value = None
+        with mock.patch.object(frame_running, "Page", return_value=page):
+            self.assertEqual(frame_running.steam_view({620}), (None, {}))
+        page.close.assert_called_once()
+
+        page2 = mock.MagicMock()
+        page2.eval.return_value = {"running": [620], "names": {"bad": "x", "620": "Portal 2"}}
+        self.assertEqual(frame_running.steam_view({620}, page=page2), ([620], {620: "Portal 2"}))
+        page2.close.assert_not_called()
+
+        # quit_game must close the Page even if TerminateApp fails.
+        qpage = mock.MagicMock()
+        qpage.eval.side_effect = frame_running.Fail("eval boom")
+        with mock.patch.object(frame_running, "Page", return_value=qpage), \
+             mock.patch.object(frame_running, "running", return_value=[
+                 {"appid": 620, "gameid": "620", "name": "Portal 2", "kind": "steam", "processes": 1}]), \
+             mock.patch.object(frame_running.os, "getuid", return_value=ME, create=True), \
+             mock.patch.object(frame_running, "snapshot", return_value={}):
+            out = frame_running.quit_game(620)
+        self.assertEqual(out["method"], "gone")
+        qpage.close.assert_called_once()
+
+    def test_lepton_containers_uses_utf8_replace_and_main_rejects_bad_appids(self):
+        with mock.patch.object(frame_running.subprocess, "run",
+                               return_value=subprocess.CompletedProcess([], 0, stdout="c1\n", stderr="")) as run:
+            self.assertEqual(frame_running.lepton_containers(), {"c1"})
+        self.assertEqual(run.call_args.kwargs.get("encoding"), "utf-8")
+        self.assertEqual(run.call_args.kwargs.get("errors"), "replace")
+
+        for bad in ("0", "²"):
+            out = []
+            with mock.patch.object(frame_running.sys, "argv", ["frame_running.py", "quit", bad]), \
+                 mock.patch("builtins.print", side_effect=out.append), \
+                 mock.patch.object(frame_running, "quit_game") as q:
+                with self.assertRaises(SystemExit) as cm:
+                    frame_running.main()
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("usage:", json.loads(out[0])["error"])
+            q.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

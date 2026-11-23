@@ -67,7 +67,8 @@ RUNNING_JS = """((ids) => {
 
 def read(path, mode="r"):
     try:
-        with open(path, mode) as f:
+        kwargs = {"encoding": "utf-8", "errors": "replace"} if "b" not in mode else {}
+        with open(path, mode, **kwargs) as f:
             return f.read()
     except OSError:
         return None
@@ -76,8 +77,12 @@ def read(path, mode="r"):
 def snapshot(proc="/proc"):
     """pid -> {ppid, start, state, uid, comm, argv} for every process that can be read."""
     out = {}
-    for d in os.listdir(proc):
-        if not d.isdigit():
+    try:
+        entries = os.listdir(proc)
+    except OSError:
+        return out
+    for d in entries:
+        if not (d.isascii() and d.isdigit()):
             continue
         stat = read(f"{proc}/{d}/stat")
         try:
@@ -229,14 +234,16 @@ def android_apps():
             continue
         if isinstance(m, dict) and m.get("package"):
             for key in ("shortcut", "instance"):
-                if str(m.get(key) or "").isdigit():
-                    out[int(m[key])] = m
+                val = str(m.get(key) or "")
+                if val.isascii() and val.isdigit():
+                    out[int(val)] = m
     return out
 
 
 def lepton_containers():
     try:
-        r = subprocess.run(["podman", "ps", "--format", "{{.Names}}"], capture_output=True, text=True, timeout=10)
+        r = subprocess.run(["podman", "ps", "--format", "{{.Names}}"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return set()
     return set(r.stdout.split())
@@ -258,13 +265,45 @@ def devkit_title(procs, pids):
     return None
 
 
+def _close_page(page):
+    if page is None:
+        return
+    if hasattr(page, "close"):
+        try:
+            page.close()
+        except OSError:
+            pass
+    elif getattr(page, "sock", None) is not None:
+        try:
+            page.sock.close()
+        except OSError:
+            pass
+
+
 def steam_view(ids, page=None):
     """Steam's own running list and app names, or (None, {}) without Steam."""
+    owned_page = page is None
+    p = page
     try:
-        r = (page or Page()).eval(RUNNING_JS % json.dumps(sorted(ids)))
+        if owned_page:
+            p = Page()
+        r = p.eval(RUNNING_JS % json.dumps(sorted(ids)))
     except (Fail, OSError):
         return None, {}
-    return r.get("running"), {int(k): v for k, v in (r.get("names") or {}).items()}
+    finally:
+        if owned_page:
+            _close_page(p)
+    if not isinstance(r, dict):
+        return None, {}
+    raw_names = r.get("names")
+    names = {}
+    if isinstance(raw_names, dict):
+        for k, v in raw_names.items():
+            ks = str(k)
+            if ks.isascii() and ks.isdigit():
+                names[int(ks)] = v
+    raw_running = r.get("running")
+    return (raw_running if isinstance(raw_running, list) else None), names
 
 
 def running(procs=None, uid=None, steam=steam_view, android=android_apps, containers=lepton_containers):
@@ -276,8 +315,9 @@ def running(procs=None, uid=None, steam=steam_view, android=android_apps, contai
     apps = android()
     up = containers() if apps else set()
     for m in apps.values():
-        if f"lepton-steamlaunch-{m.get('instance')}" in up and str(m.get("shortcut") or "").isdigit():
-            found.setdefault(int(m["shortcut"]), [])
+        sc = str(m.get("shortcut") or "")
+        if f"lepton-steamlaunch-{m.get('instance')}" in up and sc.isascii() and sc.isdigit():
+            found.setdefault(int(sc), [])
     listed, names = steam(set(found))
     for raw in listed or ():
         if isinstance(raw, bool):
@@ -312,20 +352,25 @@ def quit_game(appid, sleep=time.sleep, clock=time.monotonic):
     if not app:
         return {"name": None, "method": "gone", "message": "That game isn't running"}
     name = app["name"]
+    page = None
     try:
-        page = Page()
-        page.eval(f"SteamClient.Apps.TerminateApp({json.dumps(app['gameid'])}, false)")
-    except (Fail, OSError):
-        page = None     # Steam isn't answering: the processes are all that's left to stop
-    end = clock() + (STEAM_WAIT if page else 0)
-    while True:
-        procs = snapshot()
-        left = reapers(procs, os.getuid()).get(appid) or (page and appid in (steam_view({appid}, page)[0] or ()))
-        if not left:
-            return {"name": name, "method": "steam" if page else "gone", "message": f"Quit {name}"}
-        if clock() >= end:
-            break
-        sleep(0.5)
+        try:
+            page = Page()
+            page.eval(f"SteamClient.Apps.TerminateApp({json.dumps(app['gameid'])}, false)")
+        except (Fail, OSError):
+            _close_page(page)
+            page = None     # Steam isn't answering: the processes are all that's left to stop
+        end = clock() + (STEAM_WAIT if page else 0)
+        while True:
+            procs = snapshot()
+            left = reapers(procs, os.getuid()).get(appid) or (page and appid in (steam_view({appid}, page)[0] or ()))
+            if not left:
+                return {"name": name, "method": "steam" if page else "gone", "message": f"Quit {name}"}
+            if clock() >= end:
+                break
+            sleep(0.5)
+    finally:
+        _close_page(page)
     if not reapers(procs, os.getuid()).get(appid):
         # Steam still lists it, but there's no process of it to stop.
         raise Fail(f"Steam didn't quit {name}, and none of its processes were found on the Frame")
@@ -339,7 +384,8 @@ def main():
         cmd = sys.argv[1] if len(sys.argv) > 1 else ""
         if cmd == "list":
             out = {"running": running()}
-        elif cmd == "quit" and len(sys.argv) == 3 and sys.argv[2].isdigit() and len(sys.argv[2]) <= 10:
+        elif (cmd == "quit" and len(sys.argv) == 3 and sys.argv[2].isascii()
+              and sys.argv[2].isdigit() and len(sys.argv[2]) <= 10 and int(sys.argv[2]) > 0):
             out = quit_game(int(sys.argv[2]))
         else:
             raise Fail("usage: list | quit APPID")
