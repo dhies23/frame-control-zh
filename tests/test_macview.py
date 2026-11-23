@@ -69,7 +69,7 @@ class Helpers(unittest.TestCase):
         class Proc:
             def poll(self): return None
             def terminate(self): ended.append(self)
-            def wait(self): return 0
+            def wait(self, timeout=None): return 0
             stderr = io.StringIO("")
 
         def probe(port):
@@ -292,6 +292,111 @@ class Helpers(unittest.TestCase):
         self.assertIsNone(mv.tunnel)
         old_tunnel.terminate.assert_called_once_with()
         self.assertEqual(tracked, [good_proc])
+
+    def test_call_wraps_http_exception_and_rejects_non_dict_json(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.ensure_agent = lambda: None
+        mv.port = 47123
+        with mock.patch.object(frame_macview.urllib.request, "urlopen",
+                               side_effect=http.client.RemoteDisconnected("closed")):
+            with self.assertRaises(frame_macview.MacViewError):
+                mv.call("/status")
+
+        class FakeResp(io.BytesIO):
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                self.close()
+
+        with mock.patch.object(frame_macview.urllib.request, "urlopen", return_value=FakeResp(b"[]")):
+            with self.assertRaises(frame_macview.MacViewError):
+                mv.call("/status")
+
+    def test_subprocess_calls_use_utf8_replace_and_failed_tunnel_closes_stderr(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.unavailable = lambda: None
+        mv.build = lambda: None
+        mv.port = 47000
+
+        agent_proc = mock.Mock()
+        agent_proc.poll.return_value = None
+        agent_proc.stdout = io.StringIO("listening on 127.0.0.1:47000\n")
+        agent_proc.stdin = io.StringIO()
+        with mock.patch.object(frame_macview.subprocess, "Popen", return_value=agent_proc) as popen:
+            mv.ensure_agent()
+        self.assertEqual(popen.call_args.kwargs.get("encoding"), "utf-8")
+        self.assertEqual(popen.call_args.kwargs.get("errors"), "replace")
+
+        stderr = io.StringIO("connect failed")
+        killed = []
+
+        class HungTunnel:
+            def __init__(self):
+                self.stderr = stderr
+                self.waits = 0
+            def poll(self):
+                return None
+            def terminate(self):
+                pass
+            def kill(self):
+                killed.append(True)
+            def wait(self, timeout=None):
+                self.waits += 1
+                if self.waits == 1:
+                    raise subprocess.TimeoutExpired(["ssh"], timeout)
+                return -9
+
+        with mock.patch.object(frame_macview.subprocess, "Popen", return_value=HungTunnel()) as popen, \
+                mock.patch.object(frame_macview.time, "sleep"), \
+                mock.patch.object(mv, "_probe", return_value=False):
+            self.assertFalse(mv._open_tunnel([], [47900]))
+        self.assertEqual(popen.call_args.kwargs.get("encoding"), "utf-8")
+        self.assertEqual(popen.call_args.kwargs.get("errors"), "replace")
+        self.assertTrue(stderr.closed)
+        self.assertEqual(killed, [True])
+
+        mv2 = frame_macview.MacView(["ssh"], lambda remote, **kw: "13: usb0 inet 10.86.200.233/29 scope global", "frame")
+        ssh_g = mock.Mock(stdout="hostname frame.example.ts.net\n")
+        with mock.patch.object(frame_macview.socket, "create_connection"), \
+                mock.patch.object(frame_macview.subprocess, "run", return_value=ssh_g) as run_mock:
+            mv2._usb_route()
+        self.assertEqual(run_mock.call_args.kwargs.get("encoding"), "utf-8")
+        self.assertEqual(run_mock.call_args.kwargs.get("errors"), "replace")
+
+    def test_show_guards_non_string_src_unhashable_quality_bad_dimensions_and_missing_ticket(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "panel ok", "frame")
+        for bad_src in (None, 123, ["window:1"]):
+            with self.assertRaises(frame_macview.MacViewError):
+                mv.show(bad_src)
+
+        mv.ensure_tunnel = lambda **kw: None
+        mv.remote_port = 47900
+        mv.call = lambda path, **kw: {"screen": True, "ticket": "tk"} if path == "/ticket" else {"screen": True}
+        out = mv.show("test", quality=["sharp"], width="bad", height=True)
+        self.assertEqual(out["src"], "test")
+
+        mv.call = lambda path, **kw: {"screen": True}
+        with self.assertRaises(frame_macview.MacViewError):
+            mv.show("test")
+
+    def test_restart_agent_tolerates_gone_agent_and_terminate_timeout(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.agent = mock.Mock(poll=lambda: None)
+
+        def drop_agent(path, **kw):
+            mv.agent = None
+            return {"screen": False, "accessibility": False}
+
+        mv.call = drop_agent
+        mv.restart_agent()
+
+        hung = mock.Mock(poll=lambda: None)
+        hung.wait.side_effect = [subprocess.TimeoutExpired(["agent"], 5), -9]
+        mv.agent = hung
+        mv.call = lambda path, **kw: {"screen": False, "accessibility": False}
+        mv.restart_agent()
+        hung.terminate.assert_called_once()
+        hung.kill.assert_called_once()
 
 
 class WS:
