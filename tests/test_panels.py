@@ -1,14 +1,16 @@
 """Fake-Frame panel responses and the headset page's real HTTP guards."""
 import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import http.client
+import io
 import json
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'ui'))
 import frame_panels as panels
@@ -54,6 +56,52 @@ class Panels(unittest.TestCase):
             with self.assertRaises(panels.PanelError):
                 panels.focus(key)
         self.assertEqual(run.call_count, 1)  # only valid-looking 'missing' enumerates
+
+    def test_run_uses_utf8_replace_and_parse_overlays_guards_non_string(self):
+        seen = {}
+
+        def fake_run(args, **kw):
+            seen['encoding'] = kw.get('encoding')
+            seen['errors'] = kw.get('errors')
+            return subprocess.CompletedProcess(args, 0, 'ok', '')
+
+        with patch.object(panels.subprocess, 'run', side_effect=fake_run):
+            self.assertEqual(panels.run(['vrcmd']), 'ok')
+        self.assertEqual(seen, {'encoding': 'utf-8', 'errors': 'replace'})
+        for bad in (None, 123, ['---- OVERLAYS ----']):
+            with self.assertRaises(panels.PanelError):
+                panels.parse_overlays(bad)
+
+    def test_open_switcher_uses_utf8_and_wraps_invalid_or_non_dict_json(self):
+        for payload in ('not-json\n', '[]\n', '"ok"\n'):
+            stream = io.StringIO(payload)
+            proc = Mock(stdout=stream)
+            with patch.object(panels.subprocess, 'Popen', return_value=proc) as popen:
+                with self.assertRaises(panels.PanelError):
+                    panels.open_switcher()
+            self.assertEqual(popen.call_args.kwargs.get('encoding'), 'utf-8')
+            self.assertEqual(popen.call_args.kwargs.get('errors'), 'replace')
+            self.assertTrue(stream.closed)
+
+    @unittest.skipIf(sys.platform == 'win32', 'serve() uses fcntl on Linux/SteamOS')
+    def test_serve_handles_missing_flatpak_and_closes_server_if_browser_popen_fails(self):
+        with tempfile.TemporaryDirectory() as home:
+            home_path = Path(home)
+            for err in (FileNotFoundError('no flatpak'), subprocess.TimeoutExpired(['flatpak'], 10)):
+                with patch.object(panels.Path, 'home', return_value=home_path), \
+                     patch.object(panels.Path, 'is_file', return_value=False), \
+                     patch.object(panels.subprocess, 'run', side_effect=err):
+                    with self.assertRaisesRegex(panels.PanelError, 'needs Chromium'):
+                        panels.serve()
+
+            fake_server = Mock(server_port=12345)
+            with patch.object(panels.Path, 'home', return_value=home_path), \
+                 patch.object(panels.Path, 'is_file', side_effect=lambda p: str(p) == '/usr/bin/chromium', autospec=True), \
+                 patch.object(panels, 'HTTPServer', return_value=fake_server), \
+                 patch.object(panels.subprocess, 'Popen', side_effect=OSError('exec failed')):
+                with self.assertRaises(OSError):
+                    panels.serve()
+            fake_server.server_close.assert_called_once()
 
 
 class HeadsetHTTP(unittest.TestCase):

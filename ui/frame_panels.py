@@ -27,8 +27,8 @@ class PanelError(Exception):
 
 def run(args):
     try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=10,
-                           env={**os.environ, 'DISPLAY': ':0', 'LC_ALL': 'C.UTF-8'})
+        p = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', errors='replace',
+                           timeout=10, env={**os.environ, 'DISPLAY': ':0', 'LC_ALL': 'C.UTF-8'})
     except (OSError, subprocess.TimeoutExpired) as e:
         raise PanelError('The panel service did not answer: ' + str(e))
     if p.returncode:
@@ -40,7 +40,7 @@ def parse_overlays(text):
     """Only main dashboard panels, never their thumbnails, layers or cursors.
     vrcmd output verified on SteamVR 2.18.1, BUILD_ID 20260925.6191901.
     """
-    if '---- OVERLAYS ----' not in text:
+    if not isinstance(text, str) or '---- OVERLAYS ----' not in text:
         raise PanelError('SteamVR did not return its panel list. Is the headset awake?')
     panels = []
     for line in text.splitlines():
@@ -185,30 +185,37 @@ def serve():
         elif Path('/usr/bin/chromium').is_file():
             command = ['/usr/bin/chromium']
             profile = folder / 'chromium'
-        elif subprocess.run(['flatpak', 'info', 'org.chromium.Chromium'],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode == 0:
-            command = ['flatpak', 'run', 'org.chromium.Chromium']
-            profile = Path.home() / '.var/app/org.chromium.Chromium/data/frame-panel-switcher'
         else:
-            raise PanelError('The headset switcher needs Chromium. The companion switcher still works.')
+            try:
+                has_flatpak = subprocess.run(['flatpak', 'info', 'org.chromium.Chromium'],
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                             timeout=10).returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                has_flatpak = False
+            if has_flatpak:
+                command = ['flatpak', 'run', 'org.chromium.Chromium']
+                profile = Path.home() / '.var/app/org.chromium.Chromium/data/frame-panel-switcher'
+            else:
+                raise PanelError('The headset switcher needs Chromium. The companion switcher still works.')
         server = HTTPServer(('127.0.0.1', 0), Handler)
         server.key = secrets.token_urlsafe(32)
         server.closing = False
         server.timeout = .5
-        url = 'http://127.0.0.1:%d/#%s' % (server.server_port, server.key)
-        env = {**os.environ, 'DISPLAY': ':0'}
-        env.pop('WAYLAND_DISPLAY', None)
-        browser = subprocess.Popen([*command, '--ozone-platform=x11',
-                                    '--user-data-dir=' + str(profile),
-                                    '--no-first-run', '--no-default-browser-check',
-                                    '--password-store=basic', '--window-size=1200,800', '--app=' + url],
-                                   env=env, start_new_session=True, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        def stop(signum, frame):
-            server.closing = True
-        signal.signal(signal.SIGTERM, stop)
-        win = None
+        browser = None
         try:
+            url = 'http://127.0.0.1:%d/#%s' % (server.server_port, server.key)
+            env = {**os.environ, 'DISPLAY': ':0'}
+            env.pop('WAYLAND_DISPLAY', None)
+            browser = subprocess.Popen([*command, '--ozone-platform=x11',
+                                        '--user-data-dir=' + str(profile),
+                                        '--no-first-run', '--no-default-browser-check',
+                                        '--password-store=basic', '--window-size=1200,800', '--app=' + url],
+                                       env=env, start_new_session=True, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            def stop(signum, frame):
+                server.closing = True
+            signal.signal(signal.SIGTERM, stop)
+            win = None
             deadline = time.monotonic() + 30
             while not win and time.monotonic() < deadline and browser.poll() is None:
                 server.handle_request()  # Chromium must fetch the page before it has a title
@@ -229,12 +236,18 @@ def serve():
                     break
         finally:
             server.server_close()
-            if browser.poll() is None:
-                os.killpg(browser.pid, signal.SIGTERM)
+            if browser is not None and browser.poll() is None:
+                try:
+                    os.killpg(browser.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
                 try:
                     browser.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    os.killpg(browser.pid, signal.SIGKILL)
+                    try:
+                        os.killpg(browser.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     browser.wait()
 
 
@@ -242,12 +255,19 @@ def open_switcher():
     # This command runs from an installed path, never from the SSH stdin copy.
     proc = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--serve'],
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            text=True, start_new_session=True)
-    line = proc.stdout.readline()
-    proc.stdout.close()
+                            text=True, encoding='utf-8', errors='replace', start_new_session=True)
+    try:
+        line = proc.stdout.readline()
+    finally:
+        proc.stdout.close()
     if not line:
         raise PanelError('The headset switcher could not start.')
-    result = json.loads(line)
+    try:
+        result = json.loads(line)
+    except ValueError:
+        raise PanelError('The headset switcher could not start.')
+    if not isinstance(result, dict):
+        raise PanelError('The headset switcher could not start.')
     if 'error' in result:
         raise PanelError(result['error'])
     return result
