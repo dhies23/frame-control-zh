@@ -34,7 +34,8 @@ class AuditError(Exception):
 def github_json(path):
     result = subprocess.run(
         ["gh", "api", f"repos/{REPO}/{path}"],
-        capture_output=True, text=True, check=False, timeout=60,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False, timeout=60,
     )
     if result.returncode:
         raise AuditError(f"GitHub read failed for {path}: {result.stderr.strip()}")
@@ -70,13 +71,22 @@ def validate_assets(release):
         expected.add("update.json")
     if not isinstance(assets, list) or len(assets) != len(expected):
         raise AuditError(f"expected exactly {len(expected)} release assets")
-    by_name = {asset.get("name"): asset for asset in assets if isinstance(asset, dict)}
-    if set(by_name) != expected or len(by_name) != len(assets):
+    by_name = {}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            raise AuditError("release has invalid asset entry")
+        name = asset.get("name")
+        if not isinstance(name, str) or name in by_name:
+            raise AuditError("release has missing, duplicate, or unexpected assets")
+        by_name[name] = asset
+    if set(by_name) != expected:
         raise AuditError("release has missing, duplicate, or unexpected assets")
     for name, asset in by_name.items():
-        if (not isinstance(asset.get("id"), int) or asset["id"] <= 0
-                or not isinstance(asset.get("size"), int) or asset["size"] <= 0
-                or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", asset.get("digest") or "")):
+        digest = asset.get("digest")
+        if (type(asset.get("id")) is not int or asset["id"] <= 0
+                or type(asset.get("size")) is not int or asset["size"] <= 0
+                or not isinstance(digest, str)
+                or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest)):
             raise AuditError(f"{name} has no valid ID, size, or SHA-256 digest")
     try:
         expected_sums = CHECKSUMS["checksums"](release).encode("ascii")
@@ -120,7 +130,7 @@ def validate_update_manifest(path, release):
     if not isinstance(manifest, dict):
         raise AuditError("update.json is not an object")
     tag = release.get("tag_name")
-    if not isinstance(tag, str) or not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+    if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
         raise AuditError("published release has an invalid tag")
     if manifest.get("version") != tag[1:]:
         raise AuditError("update.json version differs from the release tag")
@@ -155,7 +165,10 @@ def inspect_package(path, name, version):
                            if entry.endswith("Frame Control.app/Contents/Info.plist")]
                 if len(matches) != 1:
                     raise AuditError(f"{name} has {len(matches)} app Info.plist files")
-                found = plistlib.loads(archive.read(matches[0])).get("CFBundleShortVersionString")
+                plist = plistlib.loads(archive.read(matches[0]))
+                if not isinstance(plist, dict):
+                    raise AuditError(f"{name} Info.plist is not a dictionary")
+                found = plist.get("CFBundleShortVersionString")
                 if found != version:
                     raise AuditError(f"{name} bundle version {found!r} is not {version}")
                 detail["bundleVersion"] = found
@@ -163,7 +176,8 @@ def inspect_package(path, name, version):
     if name.endswith(".deb"):
         result = subprocess.run(
             ["dpkg-deb", "-f", str(path), "Version", "Architecture"],
-            capture_output=True, text=True, check=False, timeout=60,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=False, timeout=60,
         )
         fields = [line.partition(":")[2].strip() for line in result.stdout.splitlines()]
         architecture = "arm64" if "arm64" in name else "amd64"
@@ -202,7 +216,7 @@ def inspect_package(path, name, version):
 
 
 def audit(tag, report_path, launch_x86_appimage=False):
-    if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
         raise AuditError("expected a version tag such as v0.4.54")
     if report_path.exists():
         raise AuditError(f"report already exists; choose a new path: {report_path}")
@@ -238,7 +252,8 @@ def audit(tag, report_path, launch_x86_appimage=False):
                 path.chmod(0o755)
                 result = subprocess.run(
                     [sys.executable, str(SCRIPTS / "check-appimage-launch.py"), str(path)],
-                    capture_output=True, text=True, check=False, timeout=120,
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    check=False, timeout=120,
                 )
                 if result.returncode or digest not in result.stdout:
                     raise AuditError(f"isolated AppImage launch failed: {result.stderr.strip()}")
