@@ -94,6 +94,8 @@ def _get_text(path, params, timeout=5):
 
 def frame_rating(appid, timeout=10):
     """0 unknown, 1 unsupported, 2 playable, 3 verified (same scale as the client's)."""
+    if isinstance(appid, bool) or not isinstance(appid, int) or appid <= 0:
+        return 0
     with _lock:
         hit = _compat.get(appid)
     if hit and time.time() - hit[0] < COMPAT_TTL:
@@ -141,7 +143,8 @@ class SearchResults(HTMLParser):
         attrs = dict(attrs)
         classes = (attrs.get("class") or "").split()
         if tag == "a" and "search_result_row" in classes:
-            match = re.match(r"https://store\.steampowered\.com/(app|sub|bundle)/(\d+)(?:/|$)", attrs.get("href") or "")
+            match = re.match(r"https://store\.steampowered\.com/(app|sub|bundle)/(\d+)(?:/|$)",
+                             attrs.get("href") or "", re.ASCII)
             if match:
                 kind, appid = match.groups()
                 self.row = {"id": int(appid) if kind == "app" else f"{kind}_{appid}",
@@ -175,7 +178,7 @@ class SearchResults(HTMLParser):
             for key in ("name", "price_text", "original_price_text", "release"):
                 if key in self.row:
                     self.row[key] = self.row[key].strip()
-            discount = re.fullmatch(r"-(\d{1,3})%", self.row.pop("discount_text", "").strip())
+            discount = re.fullmatch(r"-(\d{1,3})%", self.row.pop("discount_text", "").strip(), re.ASCII)
             if discount and 0 < int(discount[1]) <= 100:
                 self.row["discount_percent"] = int(discount[1])
             if self.row["name"]:
@@ -235,11 +238,14 @@ class ReviewSummaries(HTMLParser):
 
 def search(term, cc, start=0, item_type="all", sort="relevance", vr="all", price="any", discount=False, tags="", hidef2p=False):
     """Public Steam result pages; type and sorting apply before pagination."""
-    if not isinstance(term, str):
+    if not isinstance(term, str) or not isinstance(cc, str) or not cc:
         raise ValueError("Invalid Steam search options")
     term = term.strip()[:100]
-    if (item_type not in SEARCH_TYPES or sort not in SEARCH_SORTS or vr not in SEARCH_VR
-            or price not in SEARCH_PRICES or not valid_search_tags(tags) or type(discount) is not bool
+    if (not isinstance(item_type, str) or item_type not in SEARCH_TYPES
+            or not isinstance(sort, str) or sort not in SEARCH_SORTS
+            or not isinstance(vr, str) or vr not in SEARCH_VR
+            or not isinstance(price, str) or price not in SEARCH_PRICES
+            or not valid_search_tags(tags) or type(discount) is not bool
             or type(hidef2p) is not bool
             or type(start) is not int or not 0 <= start <= 1000000):
         raise ValueError("Invalid Steam search options")
@@ -286,6 +292,8 @@ def search(term, cc, start=0, item_type="all", sort="relevance", vr="all", price
 
 def details(appid, cc):
     """Public metadata only. Missing price/type stays unknown; failures are retried."""
+    if isinstance(appid, bool) or not isinstance(appid, int) or appid <= 0 or not isinstance(cc, str) or not cc:
+        raise ValueError("Invalid Steam title request")
     key = (appid, cc)
     with _lock:
         hit = _details.get(key)
