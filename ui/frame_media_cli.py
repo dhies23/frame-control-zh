@@ -42,5 +42,5 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (ValueError, server.Failure) as e:
+    except (ValueError, OSError, server.Failure) as e:
         sys.exit(str(e))
