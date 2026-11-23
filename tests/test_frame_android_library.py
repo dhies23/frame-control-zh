@@ -819,11 +819,12 @@ class AndroidGuardsTests(unittest.TestCase):
             android.xr_compat_files('/nonexistent/missing.apk')
         with self.assertRaises(android.FrameError):
             android.split_size(['/nonexistent/missing-split.apk'])
-        with tempfile.NamedTemporaryFile(suffix='.apk') as f:
-            with android.zipfile.ZipFile(f.name, 'w') as z:
+        with tempfile.TemporaryDirectory() as tmp:
+            apk_path = os.path.join(tmp, 'sample.apk')
+            with android.zipfile.ZipFile(apk_path, 'w') as z:
                 z.writestr('assets/a', b'1')
             with self.assertRaises(android.FrameError):
-                android.read_member(f.name, 'assets/missing')
+                android.read_member(apk_path, 'assets/missing')
 
     def test_remove_guards_non_list_shortcut_warnings(self):
         meta = {'package': 'org.test.app', 'label': 'App', 'instance': 2800000001, 'shortcut': 42, 'game_id': 1}
