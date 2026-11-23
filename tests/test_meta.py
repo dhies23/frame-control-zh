@@ -1399,6 +1399,73 @@ class Hardening(unittest.TestCase):
         notes = meta.report_notes({'outcome': 'runs', 'version_code': True, 'signals': {}})
         self.assertNotIn('version code', notes)
 
+    def test_fetch_wraps_and_redacts_incomplete_read(self):
+        import http.client
+        class BrokenBody:
+            def read(self, n=-1):
+                raise http.client.HTTPException(f'stream cut while carrying {TOKEN}')
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                pass
+        with meta.tempfile.TemporaryDirectory() as tmp, \
+                patch.object(meta, '_follow', return_value=(200, {}, BrokenBody())), \
+                patch.object(meta, '_current', return_value=True):
+            dest = Path(tmp) / 'base.apk'
+            with self.assertRaises(meta.MetaError) as caught:
+                meta.fetch('1', dest, 1024, TOKEN, 0)
+            self.assertNotIn(TOKEN, str(caught.exception))
+            self.assertFalse((Path(tmp) / 'base.apk.part').exists())
+
+    def test_public_handles_string_min_sdk_without_type_error(self):
+        out = meta._public({'id': '1', 'title': 'Game', 'min_sdk': '31'})
+        self.assertIn('API 31', out['incompatible'])
+
+    def test_check_url_rejects_control_chars_and_public_address_guards_non_str(self):
+        for bad in ('https://graph.oculus.com/a\r\nb', 'https://graph.oculus.com/\x00'):
+            with self.subTest(bad=bad), self.assertRaises(meta.MetaError):
+                meta.check_url(bad)
+        for bad_ip in (None, 123, ['1.1.1.1']):
+            with self.subTest(bad_ip=bad_ip):
+                self.assertFalse(meta.public_address(bad_ip))
+
+    def test_unicode_digits_rejected_for_ids_and_zero_now_respected(self):
+        self.assertIsNone(meta._file({'id': '\u00b2'}))
+        self.assertNotIn('binary_id', meta.parse_binary({'id': '\u00b2'}))
+        data = {'viewer': {'user': {'active_entitlements': {'nodes': [
+            {'item': {'id': '\u00b2', 'display_name': 'Bad'}},
+            {'expiration_time': 10, 'item': {'id': '42', 'display_name': 'Early'}},
+        ]}}}}
+        apps = meta.parse_entitlements(data, now=0)
+        self.assertEqual([a['id'] for a in apps], ['42'])
+        with meta.tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            entry = root / 'com.example.game-0000'
+            entry.mkdir()
+            os.utime(str(entry), (100, 100))
+            with patch.object(meta, 'cache_root', return_value=root):
+                meta.sweep_cache(now=0)
+            self.assertTrue(entry.exists())
+
+    def test_collect_log_and_report_notes_guard_malformed_meta_and_signals(self):
+        with patch.object(android, 'ssh') as ssh:
+            for bad in (None, {}, {'instance': True}, {'instance': 'abc'}):
+                with self.subTest(bad=bad), self.assertRaisesRegex(meta.MetaError, 'instance'):
+                    meta.collect_log(bad)
+        ssh.assert_not_called()
+        for bad_signals in (None, [], {'matched': None}, {'matched': 'gpu'}):
+            with self.subTest(bad_signals=bad_signals):
+                notes = meta.report_notes({'outcome': 'runs', 'signals': bad_signals})
+                self.assertIn('Meta library test: runs', notes)
+
+    def test_cli_rejects_dangling_wait_flag(self):
+        with patch.object(meta, 'run_test') as rt, \
+                patch.object(sys, 'argv', ['frame_meta.py', 'test', PKG, '--wait']):
+            with self.assertRaises(SystemExit) as caught:
+                meta.main()
+        self.assertIn('--wait', str(caught.exception))
+        rt.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
