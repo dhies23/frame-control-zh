@@ -18,23 +18,35 @@ FILE_FAULT = re.compile(r'no arm64-v8a build|needs Android API')
 
 def about_app(r):
     """False for reports about one wrong APK file rather than the app itself."""
+    if not isinstance(r, dict):
+        return False
+    notes = r.get('notes')
     return not (r.get('result') == 'install_failed' and not r.get('rating')
-                and FILE_FAULT.search(r.get('notes') or ''))
+                and isinstance(notes, str) and FILE_FAULT.search(notes))
 
 
 def verdict(reports):
     """(verdict, summary lines) for one package's reports, or None."""
-    reports = [r for r in reports or () if about_app(r)]
+    if not isinstance(reports, (list, tuple)):
+        return None
+    reports = [r for r in reports if about_app(r)]
     if not reports:
         return None
-    rs = sorted(reports, key=lambda r: r.get('date') or '')
-    people = [r for r in rs if r.get('rating')]
+    rs = sorted(reports, key=lambda r: r.get('date') if isinstance(r.get('date'), str) else '')
+    people = [r for r in rs if isinstance(r.get('rating'), str) and r['rating']]
     best = people[-1] if people else rs[-1]
     kind = best.get('rating') or best.get('result')
-    v = {'works': 'works', 'runs': 'works', 'issues': 'maybe'}.get(kind, 'no')
-    n_ok = sum((r.get('rating') or r.get('result')) in ('works', 'runs') for r in rs)
-    lines = [f"Reported on a Frame {(best.get('date') or '')[:10]} (v{best.get('version')}): "
-             f"{kind}{' – ' + best['notes'] if best.get('notes') else ''}"]
+    v = {'works': 'works', 'runs': 'works', 'issues': 'maybe'}.get(kind, 'no') if isinstance(kind, str) else 'no'
+    n_ok = sum(
+        (k in ('works', 'runs'))
+        for r in rs
+        for k in (r.get('rating') or r.get('result'),)
+        if isinstance(k, str)
+    )
+    date_str = best['date'][:10] if isinstance(best.get('date'), str) else ''
+    notes = best.get('notes')
+    note_suffix = f' – {notes}' if isinstance(notes, str) and notes else ''
+    lines = [f"Reported on a Frame {date_str} (v{best.get('version')}): {kind}{note_suffix}"]
     if len(rs) > 1:
         lines.append(f'{len(rs)} reports, {n_ok} working')
     return v, lines
@@ -42,6 +54,9 @@ def verdict(reports):
 
 def by_package(reports):
     out = {}
+    if not isinstance(reports, (list, tuple)):
+        return out
     for r in reports:
-        out.setdefault(r['package'], []).append(r)
+        if isinstance(r, dict) and isinstance(r.get('package'), str) and r['package']:
+            out.setdefault(r['package'], []).append(r)
     return out
