@@ -586,6 +586,34 @@ class Parms(unittest.TestCase):
         self.assertEqual(prep.call_args.args[2], {'good': b'banner'})
         self.assertEqual(result['shortcut'], 7)
 
+    def test_id_regexes_reject_trailing_newline_and_copy_tree_uses_utf8(self):
+        with mock.patch.object(frame_titles, 'ssh', side_effect=AssertionError('ssh called for bad id')):
+            for bad_id in ('Game\n', 123, ['Game']):
+                with self.subTest(bad_id=bad_id), self.assertRaisesRegex(FrameError, 'bad title id'):
+                    frame_titles._check_id(bad_id)
+            with self.assertRaisesRegex(FrameError, 'bad title id'):
+                frame_titles._install({'id': 'Game\n', 'name': 'Game', 'root': '/tmp', 'size': 1,
+                                       'target': 'game.exe', 'runtime': 'proton-experimental', 'source': 'x'}, lambda *_: None)
+
+        with mock.patch.object(frame_titles, 'ssh', return_value=json.dumps([{'id': 'Game\n', 'settings': {}, 'meta': {}}])):
+            self.assertEqual(frame_titles.list_titles(), [])
+
+        with mock.patch.object(frame_titles, '_rsync', return_value=False), \
+                mock.patch.object(frame_titles, 'ssh', return_value=''), \
+                mock.patch.object(frame_titles.frame_host, 'run_ssh') as run_ssh:
+            frame_titles._copy_tree('/tmp/src', 'dest')
+        self.assertEqual(run_ssh.call_args.kwargs.get('encoding'), 'utf-8')
+        self.assertEqual(run_ssh.call_args.kwargs.get('errors'), 'replace')
+
+    def test_choose_and_install_plan_reject_non_string_and_nul_inputs(self):
+        with tempfile.TemporaryDirectory() as root:
+            plan = {'root': root, 'candidates': [], 'name': 'Demo', 'id': 'Demo', 'target': 'a.exe'}
+            for bad_rel in (123, ['game.exe'], 'game\x00.exe', 'game\n.exe'):
+                with self.subTest(bad_rel=bad_rel), self.assertRaises(FrameError):
+                    frame_titles._choose(plan, bad_rel)
+            with self.assertRaises(FrameError):
+                frame_titles.install_plan(plan, name=['Demo'])
+
 
 if __name__ == '__main__':
     unittest.main()
