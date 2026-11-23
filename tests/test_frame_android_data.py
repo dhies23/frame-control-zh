@@ -351,3 +351,56 @@ class BackupTests(unittest.TestCase):
                         patch.object(data, '_stream', return_value=payload):
                     with self.assertRaisesRegex(android.FrameError, 'could not read restore result'):
                         data.restore_data(PKG, archive)
+
+    def test_remote_app_data_validates_package_instance_and_manifest_types(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / PKG).mkdir()
+            (root / PKG / 'save').write_bytes(b'data')
+
+            for bad_pkg in ('../escape', 'org.example.*', 'com/evil', 'bad', 123):
+                with self.assertRaisesRegex(ValueError, 'invalid package'):
+                    REMOTE['backup'](root, bad_pkg, 1, io.BytesIO())
+                with self.assertRaisesRegex(ValueError, 'invalid package'):
+                    REMOTE['restore'](root, bad_pkg, 1, io.BytesIO())
+
+            for bad_inst in (True, False, -1, '1', None):
+                with self.assertRaisesRegex(ValueError, 'invalid instance'):
+                    REMOTE['backup'](root, PKG, bad_inst, io.BytesIO())
+                with self.assertRaisesRegex(ValueError, 'invalid instance'):
+                    REMOTE['restore'](root, PKG, bad_inst, io.BytesIO())
+
+            # Boolean format/instance in manifest must not match integer 1
+            bool_archive = root / 'bool.tar.gz'
+            with tarfile.open(bool_archive, 'w:gz') as archive:
+                payload = json.dumps({'format': True, 'package': PKG, 'instance': 1}).encode()
+                m = tarfile.TarInfo('manifest.json')
+                m.size = len(payload)
+                archive.addfile(m, io.BytesIO(payload))
+                d = tarfile.TarInfo('data')
+                d.type = tarfile.DIRTYPE
+                archive.addfile(d)
+            with self.assertRaisesRegex(ValueError, 'does not match'):
+                REMOTE['inspect_archive'](bool_archive, PKG, 1)
+
+            bool_inst_archive = root / 'bool-inst.tar.gz'
+            with tarfile.open(bool_inst_archive, 'w:gz') as archive:
+                payload = json.dumps({'format': 1, 'package': PKG, 'instance': True}).encode()
+                m = tarfile.TarInfo('manifest.json')
+                m.size = len(payload)
+                archive.addfile(m, io.BytesIO(payload))
+                d = tarfile.TarInfo('data')
+                d.type = tarfile.DIRTYPE
+                archive.addfile(d)
+            with self.assertRaisesRegex(ValueError, 'does not match'):
+                REMOTE['inspect_archive'](bool_inst_archive, PKG, 1)
+
+            # main() rejects Unicode digits and traversal package before touching filesystem
+            for bad_argv in (
+                ['app-data.py', 'backup', '../escape', '1'],
+                ['app-data.py', 'backup', PKG, '-1'],
+                ['app-data.py', 'backup', PKG, '\u0661'],
+            ):
+                with patch.object(sys, 'argv', bad_argv):
+                    with self.assertRaises(ValueError):
+                        REMOTE['main']()

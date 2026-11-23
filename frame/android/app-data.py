@@ -3,6 +3,7 @@ import contextlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import sys
 import tarfile
@@ -12,9 +13,18 @@ import time
 MAX_BYTES = 20 * 1024 ** 3
 MAX_FILES = 100000
 MAX_MANIFEST = 1024 * 1024
+PKG_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$', re.ASCII)
+
+
+def _validate_target(package, instance):
+    if not isinstance(package, str) or not PKG_RE.fullmatch(package):
+        raise ValueError('invalid package name')
+    if type(instance) is not int or instance < 0:
+        raise ValueError('invalid instance id')
 
 
 def inspect_archive(path, package, instance):
+    _validate_target(package, instance)
     names, total, manifest = set(), 0, None
     with tarfile.open(path, 'r:gz') as archive:
         for member in archive:
@@ -30,23 +40,32 @@ def inspect_archive(path, package, instance):
                 raise ValueError('archive has too many files, links or special files')
             if member.uid < 0 or member.gid < 0 or member.uid > 65535 or member.gid > 65535:
                 raise ValueError('archive owner outside Android user namespace')
+            if member.size < 0:
+                raise ValueError('archive member has negative size')
             total += member.size
             if total > MAX_BYTES:
                 raise ValueError('archive exceeds 20 GiB')
             if name == 'manifest.json' and member.isfile() and member.size <= MAX_MANIFEST:
-                manifest = json.load(archive.extractfile(member))
+                with archive.extractfile(member) as manifest_fp:
+                    manifest = json.load(manifest_fp)
             elif parts[0] != 'data':
                 raise ValueError('unexpected archive member')
-        if (not isinstance(manifest, dict) or manifest.get('format') != 1 or
-                manifest.get('package') != package or manifest.get('instance') != instance or
+        if (not isinstance(manifest, dict) or
+                type(manifest.get('format')) is not int or manifest.get('format') != 1 or
+                manifest.get('package') != package or
+                type(manifest.get('instance')) is not int or manifest.get('instance') != instance or
                 'data' not in names):
             raise ValueError('backup does not match this package and instance')
+    skipped = manifest.get('skipped_link_count', 0)
+    if type(skipped) is not int or skipped < 0:
+        raise ValueError('invalid skipped link count in backup manifest')
     return {'files': len(names) - 1, 'bytes': total, 'package': package, 'instance': instance,
-            'skipped_links': manifest.get('skipped_link_count', 0)}
+            'skipped_links': skipped}
 
 
 def backup(root, package, instance, output):
     import io
+    _validate_target(package, instance)
     source = root / package
     if source.is_symlink() or not source.is_dir():
         raise ValueError('private app data does not exist or is a symlink')
@@ -60,6 +79,8 @@ def backup(root, package, instance, output):
                 links.append({'path': member.name[:512], 'target': member.linkname[:256]})
             return None
         if member.islnk():  # a second name for a file already archived: store its content again
+            if not member.name.startswith('data/'):
+                raise ValueError('unexpected hardlink archive path')
             member.type, member.linkname = tarfile.REGTYPE, ''
             member.size = os.lstat(str(source / member.name[len('data/'):])).st_size
         count += 1
@@ -79,6 +100,7 @@ def backup(root, package, instance, output):
 
 
 def restore(root, package, instance, input_stream):
+    _validate_target(package, instance)
     source = root / package
     if source.is_symlink() or not source.is_dir():
         raise ValueError('private app data does not exist or is a symlink')
@@ -115,6 +137,8 @@ def restore(root, package, instance, input_stream):
             for target, member in reversed(directories):
                 apply_metadata(target, member)
         with package_lock(root, package):  # another restore of this package must not delete our copy
+            if source.is_symlink() or not source.is_dir():
+                raise ValueError('private app data does not exist or is a symlink')
             previous = root / ('.' + package + '.before-restore-' + str(time.time_ns()))
             source.rename(previous)
             try:
@@ -148,8 +172,11 @@ def apply_metadata(path, member):
 
 
 def main():
-    action, package, instance = sys.argv[1:]
-    instance = int(instance)
+    action, package, instance_arg = sys.argv[1:]
+    if not re.fullmatch(r'[0-9]+', instance_arg):
+        raise ValueError('invalid instance id')
+    instance = int(instance_arg)
+    _validate_target(package, instance)
     root = Path.home() / '.local/share/Steam/steamapps/compatdata' / str(instance) / 'internal'
     if root.is_symlink() or root.resolve() != root.absolute():
         raise ValueError('private-data directory traverses a symlink')
