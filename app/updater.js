@@ -56,27 +56,27 @@ function assetName(platform, arch, method) {
 
 // How this copy can update itself: mac-zip, nsis, appimage, or manual (with why).
 function updateMethod({ platform, isPackaged, execPath, env, exists, writable }) {
-  if (!isPackaged) return { method: "manual", why: "running from a source checkout" };
+  if (!isPackaged) return { method: "manual", why: "正在从源码目录运行" };
   if (platform === "darwin") {
     const bundle = macBundle(execPath);
-    if (!bundle) return { method: "manual", why: "can't find the app bundle" };
+    if (!bundle) return { method: "manual", why: "找不到应用包" };
     if (bundle.includes("/AppTranslocation/") || bundle.startsWith("/Volumes/")) {
-      return { method: "manual", why: "move Frame Control to Applications first" };
+      return { method: "manual", why: "请先把 Frame Control 移到「应用程序」" };
     }
-    if (!writable(path.dirname(bundle))) return { method: "manual", why: `${path.dirname(bundle)} isn't writable` };
+    if (!writable(path.dirname(bundle))) return { method: "manual", why: `${path.dirname(bundle)} 不可写` };
     return { method: "mac-zip", bundle };
   }
   if (platform === "win32") {
     // electron-builder's NSIS install puts its uninstaller next to the app.
     const dir = path.dirname(execPath);
     if (exists(path.join(dir, "Uninstall Frame Control.exe"))) return { method: "nsis" };
-    return { method: "manual", why: "not installed with the installer" };
+    return { method: "manual", why: "不是用安装程序安装的" };
   }
   if (platform === "linux" && env.APPIMAGE) {
-    if (!writable(path.dirname(env.APPIMAGE))) return { method: "manual", why: "the AppImage's folder isn't writable" };
+    if (!writable(path.dirname(env.APPIMAGE))) return { method: "manual", why: "AppImage 所在文件夹不可写" };
     return { method: "appimage", appImage: env.APPIMAGE };
   }
-  return { method: "manual", why: "installed from a package" };
+  return { method: "manual", why: "由软件包安装" };
 }
 
 function macBundle(execPath) {
@@ -94,13 +94,13 @@ function get(url, { headers = {}, timeout = 20000, redirects = 5 } = {}) {
         res.resume();
         let next;
         try { next = new URL(res.headers.location, url); } catch (e) { return reject(e); }
-        if (next.protocol !== "https:") return reject(new Error("refusing a non-HTTPS redirect"));
+        if (next.protocol !== "https:") return reject(new Error("拒绝非 HTTPS 重定向"));
         return resolve(get(next.href, { headers, timeout, redirects: redirects - 1 }));
       }
       if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode} from ${new URL(url).host}`)); }
       resolve(res);
     });
-    req.on("timeout", () => req.destroy(new Error("timed out")));
+    req.on("timeout", () => req.destroy(new Error("超时")));
     req.on("error", reject);
   });
 }
@@ -114,7 +114,7 @@ async function getJson(url, headers) {
     bytes += buf.length;
     if (bytes > MAX_JSON_BYTES) {
       res.destroy();
-      throw new Error("update metadata response too large");
+      throw new Error("更新元数据响应过大");
     }
     chunks.push(buf);
   }
@@ -135,13 +135,13 @@ function releasePage(version) {
 // update.json and the API's release both become { version, notes, page, assets }.
 function fromManifest(m) {
   if (!m || typeof m !== "object" || Array.isArray(m) || !parseVersion(m.version) || !Array.isArray(m.assets)) {
-    throw new Error("update.json is malformed");
+    throw new Error("update.json 格式错误");
   }
   const version = String(m.version).trim().replace(/^v/i, "");
   const base = `https://github.com/${REPO}/releases/download/v${version}/`;
   const assets = m.assets.map((a) => {
     if (!a || typeof a !== "object" || typeof a.name !== "string" || !a.name) {
-      throw new Error("update.json is malformed");
+      throw new Error("update.json 格式错误");
     }
     return {
       name: a.name,
@@ -157,8 +157,8 @@ function fromManifest(m) {
 }
 
 function fromApi(r) {
-  if (!r || typeof r !== "object" || Array.isArray(r)) throw new Error("GitHub release response is malformed");
-  if (r.draft || r.prerelease) throw new Error("GitHub returned an unpublished release");
+  if (!r || typeof r !== "object" || Array.isArray(r)) throw new Error("GitHub 发行版响应格式错误");
+  if (r.draft || r.prerelease) throw new Error("GitHub 返回了未发布的发行版");
   const version = String(r.tag_name || "").trim().replace(/^v/i, "");
   const rawAssets = Array.isArray(r.assets) ? r.assets : [];
   const assets = rawAssets
@@ -181,7 +181,7 @@ async function latestRelease() {
 
 async function download(asset, dest, onProgress) {
   const m = /^sha256:([0-9a-f]{64})$/i.exec(asset.digest || "");
-  if (!m) throw new Error(`GitHub has no SHA-256 for ${asset.name}, so it can't be checked`);
+  if (!m) throw new Error(`GitHub 没有 ${asset.name}，无法校验`);
   const expectedSha = m[1].toLowerCase();
   const res = await get(asset.url, { timeout: 60000 });
   const headerLen = Number(res.headers["content-length"]);
@@ -209,10 +209,10 @@ async function download(asset, dest, onProgress) {
   try {
     await pipeline(res, meter, out);
     if (res.complete === false) {
-      throw new Error(`${asset.name} download was cut short; nothing was changed`);
+      throw new Error(`${asset.name} 下载被中断，未做任何更改`);
     }
     if (hash.digest("hex") !== expectedSha) {
-      throw new Error(`${asset.name} didn't match its SHA-256; nothing was changed`);
+      throw new Error(`${asset.name} 的 SHA-256 不匹配，未做任何更改`);
     }
   } catch (e) {
     if (opened) {
@@ -240,7 +240,7 @@ open "$app"
 
 async function applyMac(release, bundle, onProgress) {
   const asset = release.assets.find((a) => a.name === assetName("darwin", process.arch, "mac-zip"));
-  if (!asset) throw new Error(`the release has no ${assetName("darwin", process.arch, "mac-zip")}`);
+  if (!asset) throw new Error(`发行版中没有 ${assetName("darwin", process.arch, "mac-zip")}`);
   // Staged beside the app, so the final move stays on one volume.
   const stage = fs.mkdtempSync(path.join(path.dirname(bundle), ".frame-control-update-"));
   try {
@@ -252,11 +252,11 @@ async function applyMac(release, bundle, onProgress) {
       if (!n.endsWith(".app")) return false;
       try { return fs.lstatSync(path.join(stage, n)).isDirectory(); } catch { return false; }
     });
-    if (!name) throw new Error("the download has no app in it");
+    if (!name) throw new Error("下载内容里没有应用");
     const fresh = path.join(stage, name);
     const version = (await run("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw",
                                                    path.join(fresh, "Contents", "Info.plist")])).trim();
-    if (version !== release.version) throw new Error(`the download is version ${version}, not ${release.version}`);
+    if (version !== release.version) throw new Error(`下载的版本是 ${version}, not ${release.version}`);
     const script = path.join(stage, "swap.sh");
     fs.writeFileSync(script, MAC_SWAP);
     return () => spawn("/bin/sh", [script, String(process.pid), bundle, fresh, stage],
@@ -269,7 +269,7 @@ async function applyMac(release, bundle, onProgress) {
 
 async function applyNsis(release, onProgress) {
   const asset = release.assets.find((a) => a.name === assetName("win32", process.arch, "nsis"));
-  if (!asset) throw new Error(`the release has no ${assetName("win32", process.arch, "nsis")}`);
+  if (!asset) throw new Error(`发行版中没有 ${assetName("win32", process.arch, "nsis")}`);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "frame-control-update-"));
   try {
     const exe = path.join(dir, asset.name);
@@ -284,7 +284,7 @@ async function applyNsis(release, onProgress) {
 
 async function applyAppImage(release, appImage, onProgress) {
   const asset = release.assets.find((a) => a.name === assetName("linux", process.arch, "appimage"));
-  if (!asset) throw new Error(`the release has no ${assetName("linux", process.arch, "appimage")}`);
+  if (!asset) throw new Error(`发行版中没有 ${assetName("linux", process.arch, "appimage")}`);
   // A private folder beside the AppImage, so the final rename stays on one filesystem.
   const stage = fs.mkdtempSync(path.join(path.dirname(appImage), ".frame-control-update-"));
   try {
@@ -307,11 +307,11 @@ async function applyAppImage(release, appImage, onProgress) {
 // Downloads and prepares the update; returns a function that starts the swap,
 // to be called just before the app quits.
 async function prepare(release, how, onProgress, current) {
-  if (!isNewer(release.version, current)) throw new Error(`${release.version} isn't newer than ${current}`);
+  if (!isNewer(release.version, current)) throw new Error(`${release.version} 不新于 ${current}`);
   if (how.method === "mac-zip") return applyMac(release, how.bundle, onProgress);
   if (how.method === "nsis") return applyNsis(release, onProgress);
   if (how.method === "appimage") return applyAppImage(release, how.appImage, onProgress);
-  throw new Error(how.why || "this copy can't update itself");
+  throw new Error(how.why || "此副本无法自行更新");
 }
 
 function writable(dir) {

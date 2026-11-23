@@ -27,9 +27,9 @@
   // their own fallback strings when the isolated panel has no Steam tokens.
   window.LocalizationManager = {m_rgLocalesToUse:[navigator.language || 'en'],
     m_mapTokens:new Map(), m_mapFallbackTokens:new Map([
-      ['Settings_Bluetooth_Connected','Connected'],
-      ['Settings_Bluetooth_NotConnected','Not connected'],
-      ['Settings_Bluetooth_Devices','Devices'],
+      ['Settings_Bluetooth_Connected','已连接'],
+      ['Settings_Bluetooth_NotConnected','未连接'],
+      ['Settings_Bluetooth_Devices','设备'],
     ])};
   const root = document.getElementById('framey-root');
   const error = document.getElementById('framey-error');
@@ -82,7 +82,7 @@
       await Promise.race([seeded, new Promise((_, reject) => {
         timer = setTimeout(() => {
           acceptSeed = rejectSeed = null;
-          reject(Error('Framey plugin storage did not initialize'));
+          reject(Error('Framey 插件存储未初始化'));
         }, 5000);
       })]);
     } finally {clearTimeout(timer);}
@@ -124,7 +124,7 @@
     const next = new Map(cache); next.set(name, data);
     if (next.size > 64 || name.length > 256 || data.length > 65536 ||
         JSON.stringify(Object.fromEntries(next)).length > cacheLimit)
-      throw new DOMException('Framey plugin cache is full', 'QuotaExceededError');
+      throw new DOMException('Framey 插件缓存已满', 'QuotaExceededError');
     cache.set(name, data);
   }
   function persistCache() {
@@ -138,12 +138,12 @@
   parent.postMessage({type:'framey:cache:init', session:cacheSession}, '*');
 
   function request(method, args, legacy=false, type='framey:call', timeout=30000) {
-    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(method)) return Promise.reject(Error('Invalid backend method'));
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(method)) return Promise.reject(Error('后端方法无效'));
     const id = ++nextId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { pending.delete(id); reject(Error(type==='framey:cache:commit'
-        ? 'Could not confirm saved plugin settings; the parent did not reply. Reopen the panel to read the saved value.'
-        : 'Decky backend timed out')); }, timeout);
+        ? '无法确认插件设置已保存；父窗口没有回应。重新打开面板即可查看已保存的值。'
+        : 'Decky 后端超时')); }, timeout);
       pending.set(id, {resolve, reject, timer});
       parent.postMessage({type, id, method, args, legacy, session:cacheSession}, '*');
     });
@@ -169,8 +169,8 @@
       item.signal?.removeEventListener('abort', item.abort);
       const remaining = item.deadline - Date.now();
       if (remaining <= 0 || item.signal?.aborted) {
-        item.reject(item.signal?.aborted ? new DOMException('Request aborted', 'AbortError')
-          : Error('Decky backend timed out'));
+        item.reject(item.signal?.aborted ? new DOMException('请求已中止', 'AbortError')
+          : Error('Decky 后端超时'));
         dispatchFetch();
         return;
       }
@@ -179,7 +179,7 @@
         .then(item.resolve, item.reject).finally(() => {fetchActive = false; dispatchFetch();});
     }
     function queueFetch(args, signal) {
-      if (fetchQueue.length >= 16) return Promise.reject(Error('Syncthing HTTP queue is full'));
+      if (fetchQueue.length >= 16) return Promise.reject(Error('Syncthing HTTP 队列已满'));
       return new Promise((resolve, reject) => {
         const item = {args, signal, resolve, reject, deadline:Date.now()+30000};
         const remove = error => {
@@ -190,8 +190,8 @@
           signal?.removeEventListener('abort', item.abort);
           reject(error);
         };
-        item.abort = () => remove(new DOMException('Request aborted', 'AbortError'));
-        item.timer = setTimeout(() => remove(Error('Decky backend timed out')), 30000);
+        item.abort = () => remove(new DOMException('请求已中止', 'AbortError'));
+        item.timer = setTimeout(() => remove(Error('Decky 后端超时')), 30000);
         signal?.addEventListener('abort', item.abort, {once:true});
         fetchQueue.push(item);
         dispatchFetch();
@@ -199,26 +199,26 @@
     }
     window.fetch = async (input, init={}) => {
       if (typeof input !== 'string' || !input.startsWith('http://127.0.0.1:58384/'))
-        throw new TypeError('Syncthing HTTP origin is fixed');
+        throw new TypeError('Syncthing HTTP 源地址固定');
       const url = new URL(input);
       if (url.origin !== 'http://127.0.0.1:58384' || url.username || url.password || url.hash)
-        throw new TypeError('Syncthing HTTP origin is fixed');
+        throw new TypeError('Syncthing HTTP 源地址固定');
       if (!init || typeof init !== 'object' || (init.body != null && init.body !== ''))
-        throw new TypeError('Syncthing HTTP request body is unavailable');
-      if (init.signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+        throw new TypeError('Syncthing HTTP 请求体不可用');
+      if (init.signal?.aborted) throw new DOMException('请求已中止', 'AbortError');
       const method = String(init.method || 'GET').toUpperCase();
-      if (!['GET','POST'].includes(method)) throw new TypeError('Syncthing HTTP method is unavailable');
+      if (!['GET','POST'].includes(method)) throw new TypeError('Syncthing HTTP 方法不可用');
       const headers = Object.fromEntries(new Headers(init.headers || {}));
       if (Object.keys(headers).some(name => !['accept','content-type','authorization','x-api-key'].includes(name)))
-        throw new TypeError('Syncthing HTTP header is unavailable');
+        throw new TypeError('Syncthing HTTP 请求头不可用');
       const reply = await queueFetch({method, path:url.pathname+url.search, headers}, init.signal);
-      if (!reply?.success) throw Error(String(reply?.result || 'Syncthing HTTP bridge unavailable'));
+      if (!reply?.success) throw Error(String(reply?.result || 'Syncthing HTTP 桥接不可用'));
       const data = reply.result;
       if (!data || !Number.isInteger(data.status) || data.status < 200 || data.status > 599 ||
           typeof data.body !== 'string' || data.body.length > 262144 ||
           typeof data.headers?.['content-type'] !== 'string')
-        throw Error('Invalid Syncthing HTTP response');
-      if (init.signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+        throw Error('Syncthing HTTP 响应无效');
+      if (init.signal?.aborted) throw new DOMException('请求已中止', 'AbortError');
       return new Response([204,205,304].includes(data.status) ? null : data.body,
         {status:data.status, headers:{'content-type':data.headers['content-type']}});
     };
@@ -228,7 +228,7 @@
       constructor(url, protocols) {
         super();
         if (url !== 'ws://localhost:8887' || protocols !== undefined)
-          throw new TypeError('Wine Cellar socket URL or protocol unavailable');
+          throw new TypeError('Wine Cellar 套接字 URL 或协议不可用');
         this.url = url;
         this.readyState = WineSocket.CONNECTING;
         this.onopen = this.onmessage = this.onerror = this.onclose = null;
@@ -237,7 +237,7 @@
         wineSockets.add(this);
         request('framey_ws_open', []).then(token => {
           if (typeof token !== 'string' || !/^[0-9a-f]{32}$/.test(token))
-            throw Error('Invalid Wine Cellar socket token');
+            throw Error('Wine Cellar 套接字令牌无效');
           this._token = token;
           if (this.readyState !== WineSocket.CONNECTING) {
             request('framey_ws_close', [token]).catch(() => {});
@@ -263,10 +263,10 @@
         try {
           const data = await request('framey_ws_poll', [this._token]);
           if (!data || !Array.isArray(data.messages) || data.messages.length > 32 || typeof data.closed !== 'boolean')
-            throw Error('Invalid Wine Cellar socket response');
+            throw Error('Wine Cellar 套接字响应无效');
           for (const message of data.messages) {
             if (typeof message !== 'string' || message.length > 262144)
-              throw Error('Invalid Wine Cellar socket message');
+              throw Error('Wine Cellar 套接字消息无效');
             if (this.readyState !== WineSocket.OPEN) break;
             this._emit('message', new MessageEvent('message', {data:message}));
           }
@@ -276,9 +276,9 @@
       }
       send(data) {
         if (this.readyState !== WineSocket.OPEN)
-          throw new DOMException('Wine Cellar socket is not open', 'InvalidStateError');
+          throw new DOMException('Wine Cellar 套接字未打开', 'InvalidStateError');
         if (typeof data !== 'string' || data.length > 65536)
-          throw new TypeError('Wine Cellar socket accepts bounded text only');
+          throw new TypeError('Wine Cellar 套接字只接受限定长度的文本');
         this._sendChain = this._sendChain.then(() => request('framey_ws_send', [this._token, data]));
         this._sendChain.catch(error => this._fail(error));
       }
@@ -304,7 +304,7 @@
       .then(data => {
         subscribedRevision = revision;
         if (!data || !Array.isArray(data.events) || !Number.isSafeInteger(data.cursor))
-          throw Error('Invalid Decky event response');
+          throw Error('Decky 事件响应无效');
         eventCursor = data.cursor;
         for (const event of data.events) {
           if (!Array.isArray(event.args)) continue;
@@ -331,9 +331,9 @@
   }
   function addPluginEvent(event, listener) {
     if (typeof event !== 'string' || !/^[A-Za-z0-9_#:/.-]{1,128}$/.test(event) || typeof listener !== 'function')
-      throw Error('Invalid Decky event listener');
+      throw Error('Decky 事件监听器无效');
     if (!eventListeners.has(event)) {
-      if (eventListeners.size >= 32) throw Error('Too many Decky event names');
+      if (eventListeners.size >= 32) throw Error('Decky 事件名过多');
       eventListeners.set(event, new Set());
     }
     eventListeners.get(event).add(listener);
@@ -370,7 +370,7 @@
       else if (!pairs || pairs.length > 64 ||
           pairs.some(([key, value]) => key.length > 256 || typeof value !== 'string' || value.length > 65536) ||
           JSON.stringify(entries).length > cacheLimit)
-        rejectSeed(Error('Framey plugin storage returned invalid data'));
+        rejectSeed(Error('Framey 插件存储返回了无效数据'));
       else {
         for (const [key, value] of pairs) cache.set(key, value);
         acceptSeed();
@@ -519,7 +519,7 @@
       value:selected < 0 ? '' : String(selected), disabled:!!disabled, tabIndex:dropdownTabIndex(focusable),
       'aria-label':typeof menuLabel==='string' ? menuLabel : typeof label==='string' ? label : undefined,
       onChange:e=>{const entry=choices[Number(e.target.value)];if(!disabled && entry)onChange?.(entry);}},
-      selected < 0 && R.createElement('option', {value:'', disabled:true}, strDefaultLabel || 'Choose an option'),
+      selected < 0 && R.createElement('option', {value:'', disabled:true}, strDefaultLabel || '选择一个选项'),
       entries);
   };
   const DropdownRichInput = props => {
@@ -586,9 +586,9 @@
     };
     return R.createElement('div', null,
       R.createElement('button', {type:'button', tabIndex:dropdownTabIndex(props.focusable), disabled:!!props.disabled || phase==='loading', onClick:load},
-        phase==='ready' ? 'Reload options' : 'Load options'),
-      phase==='loading' && R.createElement('p', {role:'status'}, 'Waiting for plugin options…'),
-      phase==='loading' && R.createElement('button', {type:'button', tabIndex:dropdownTabIndex(props.focusable), disabled:!!props.disabled, onClick:cancel}, 'Cancel loading'),
+        phase==='ready' ? '重新加载选项' : '加载选项'),
+      phase==='loading' && R.createElement('p', {role:'status'}, '正在等待插件选项…'),
+      phase==='loading' && R.createElement('button', {type:'button', tabIndex:dropdownTabIndex(props.focusable), disabled:!!props.disabled, onClick:cancel}, '取消加载'),
       error && R.createElement('p', {role:'alert'}, error),
       phase==='ready' && DropdownInput({...props, onChange:entry=>{
         if (!current.current.disabled && gate.current.phase==='ready' && gate.current.mounted)
@@ -602,7 +602,7 @@
       // Keep the plugin's current-value view visible before a deferred read.
       // Native selection and the existing showMenu gate still own choices.
       typeof props.renderButtonValue==='function' && R.createElement('div', null,
-        props.renderButtonValue(selected ? selected.label : props.strDefaultLabel || 'Choose an option')),
+        props.renderButtonValue(selected ? selected.label : props.strDefaultLabel || '选择一个选项')),
       typeof props.onMenuWillOpen==='function' ? R.createElement(PreparedDropdown, props) : DropdownInput(props),
       props.tooltip != null && R.createElement('small', null, props.tooltip));
   };
@@ -656,7 +656,7 @@
         onKeyDown:e=>{if(!disabled)onKeyDown?.(e);}, onKeyUp:e=>{if(!disabled)onKeyUp?.(e);}}),
       bShowClearAction && (bAlwaysShowClearAction || String(value ?? draft).length>0) &&
         R.createElement('button', {type:'button', disabled:!!disabled, onClick:clear,
-          'aria-label':typeof ariaLabel==='string' ? `Clear ${ariaLabel}` : typeof label==='string' ? `Clear ${label}` : 'Clear text'}, 'Clear'),
+          'aria-label':typeof ariaLabel==='string' ? `清除 ${ariaLabel}` : typeof label==='string' ? `清除 ${label}` : '清除文字'}, '清除'),
       inlineControls, tooltip != null && R.createElement('small', null, tooltip));
   });
   const SliderField = ({label, description, tooltip, icon, className, value, min=0, max=100, step=1, disabled, showValue, editableValue,
@@ -687,7 +687,7 @@
         'data-framey-notch':entry.notchIndex, style:{gridColumn:entry.notchIndex+1}}, entry.label))),
     editableValue ? R.createElement('span', null,
       R.createElement('input', {type:'number', value, min, max, step, disabled:!!disabled,
-        'aria-label':typeof label==='string'?`${label} value`:'Slider value',
+        'aria-label':typeof label==='string'?`${label} value`:'滑块值',
         style:{width:'7ch'}, onChange:e=>{
           const raw=e.target.value, next=Number(raw);
           if(!disabled && raw.trim()!=='' && e.target.validity?.valid!==false &&
@@ -695,8 +695,8 @@
         }}), valueSuffix) : showValue && R.createElement('span', null, String(value) + valueSuffix),
     permitted(resetValue) &&
       R.createElement('button', {type:'button', disabled:!!disabled,
-        'aria-label':typeof label==='string'?`Reset ${label}`:'Reset slider value',
-        onClick:()=>{if(!disabled && permitted(resetValue))onChange?.(resetValue);}}, 'Reset'),
+        'aria-label':typeof label==='string'?`重置 ${label}`:'重置滑块值',
+        onClick:()=>{if(!disabled && permitted(resetValue))onChange?.(resetValue);}}, '重置'),
     tooltip != null && R.createElement('small', null, tooltip));
   };
   const PanelSection = ({title, spinner, children}) => R.createElement('section', {'aria-busy':spinner ? true : undefined},
@@ -790,7 +790,7 @@
         }
         publish(failed ? {...snapshot,busy:false,
           ...(current.current.disableReordering ? {rows:snapshot.saved,dirty:false} : {}),
-          error:String(failure?.message || failure) || 'Could not save order'} :
+          error:String(failure?.message || failure) || '无法保存顺序'} :
           {...snapshot,rows,saved:rows,dirty:false,busy:false,error:''});
       };
       let result;
@@ -808,13 +808,13 @@
           fieldProps?.description && R.createElement('small', null, fieldProps.description),
           !shown.dirty && !pending.current && Interactables && R.createElement(Interactables,{entry}),
           reorder && R.createElement('button', {type:'button',disabled:locked || index===0,
-            'aria-label':`Move entry ${index+1} up`,onClick:()=>move(shown,index,-1)}, 'Move up'),
+            'aria-label':`移动条目 ${index+1} up`,onClick:()=>move(shown,index,-1)}, '上移'),
           reorder && R.createElement('button', {type:'button',disabled:locked || index===shown.rows.length-1,
-            'aria-label':`Move entry ${index+1} down`,onClick:()=>move(shown,index,1)}, 'Move down'))))),
+            'aria-label':`移动条目 ${index+1} down`,onClick:()=>move(shown,index,1)}, '下移'))))),
       reorder && shown.dirty && R.createElement('button', {type:'button',disabled:locked,
-        onClick:()=>save(shown)}, 'Save order'),
+        onClick:()=>save(shown)}, '保存顺序'),
       reorder && shown.dirty && R.createElement('button', {type:'button',disabled:locked,
-        onClick:()=>{if(valid(shown))publish({...shown,rows:shown.saved,dirty:false,error:''});}}, 'Cancel reordering'),
+        onClick:()=>{if(valid(shown))publish({...shown,rows:shown.saved,dirty:false,error:''});}}, '取消排序'),
       shown.error && R.createElement('p', {role:'alert'}, shown.error));
   };
   const ProgressBar = ({nProgress, value, max=100, indeterminate=false, focusable}) => R.createElement('progress', {
@@ -885,16 +885,16 @@
       R.createElement('h2', null, strTitle),
       strDescription && R.createElement('div', null, strDescription), children,
       error && R.createElement('p', {role:'alert'}, error),
-      bDestructiveWarning && R.createElement('p', {className:'framey-destructive-note'}, 'Destructive action'),
+      bDestructiveWarning && R.createElement('p', {className:'framey-destructive-note'}, '危险操作'),
       R.createElement('button', {type:'button', disabled:!!bOKDisabled || busy,
         className:bDestructiveWarning ? 'framey-destructive' : undefined,
         onClick:action(onOK, bOKDisabled)}, strOKButtonText || 'OK'),
       onMiddleButton && R.createElement('button', {type:'button', disabled:!!bMiddleDisabled || busy,
-        onClick:action(onMiddleButton, bMiddleDisabled)}, strMiddleButtonText || 'More'),
+        onClick:action(onMiddleButton, bMiddleDisabled)}, strMiddleButtonText || '更多'),
       !bAlertDialog && R.createElement('button', {type:'button', disabled:!!bCancelDisabled || busy,
-        onClick:action(onCancel, bCancelDisabled)}, strCancelButtonText || 'Cancel'));
+        onClick:action(onCancel, bCancelDisabled)}, strCancelButtonText || '取消'));
   };
-  const ColorPickerModal = ({closeModal, onConfirm, title='Color Picker',
+  const ColorPickerModal = ({closeModal, onConfirm, title='颜色选择器',
     defaultH=0, defaultS=100, defaultL=50, defaultA=1, frameySetModalBusy}) => {
     const limits = [360,100,100,1];
     const [values, setValues] = R.useState(() =>
@@ -928,9 +928,9 @@
     };
     return R.createElement(ConfirmModal, {strTitle:title, onOK:confirm,
       onCancel:()=>{gate.current.mounted=false;}, closeModal, frameySetModalBusy},
-      R.createElement('div', {role:'img', 'aria-label':'Colour preview',
+      R.createElement('div', {role:'img', 'aria-label':'颜色预览',
         style:{backgroundColor:colour(values),height:'64px',border:'1px solid currentColor'}}),
-      ['Hue','Saturation','Lightness','Alpha'].map((label,index) => R.createElement(SliderField, {
+      ['色相','饱和度','亮度','不透明度'].map((label,index) => R.createElement(SliderField, {
         key:label, label, value:values[index], min:0, max:limits[index], step:index===3?0.01:1,
         showValue:true, editableValue:true, disabled:saving, onChange:value=>change(index,value)})));
   };
@@ -942,7 +942,7 @@
     modalRoot.render(modals.length ? modals.map((modal,index) => {
       const props=modal.element?.props || {}, isMenu=modal.element?.type===Menu;
       const title=typeof props.strTitle==='string' ? props.strTitle :
-        isMenu && typeof props.label==='string' && props.label.trim() ? props.label : 'Plugin dialog';
+        isMenu && typeof props.label==='string' && props.label.trim() ? props.label : '插件对话框';
       const cancelText=isMenu && typeof props.cancelText==='string' && props.cancelText.trim() ? props.cancelText : 'Close';
       return R.createElement('section', {key:modal.id, className:'framey-dialog', tabIndex:-1,
         ref:node=>{modal.node=node;}, hidden:index!==modals.length-1,
@@ -1056,7 +1056,7 @@
         component?.$$typeof === Symbol.for('react.forward_ref');
       if (!routePattern(path) ||
           (typeof component !== 'function' && !R.isValidElement(component) && !wrapped))
-        throw Error('Framey route needs a local path and React component');
+        throw Error('Framey 路由需要本地路径和 React 组件');
       const registration = {component, id:++routeId};
       routes.set(path, registration);
       refreshRoute();
@@ -1087,7 +1087,7 @@
       },0);
       // Removal retires this notification before plugin code can reenter Close.
       // Cleanup failures cannot undo dismissal or leave ClosedPromise pending.
-      const failed = failure => {error.textContent='Dialog close callback failed: '+String(failure?.message || failure);};
+      const failed = failure => {error.textContent='对话框关闭回调失败： '+String(failure?.message || failure);};
       try {Promise.resolve(onClosed?.()).catch(failed);} catch (failure) {failed(failure);}
     };
     modal.close = Close;
@@ -1275,8 +1275,8 @@
   // Legacy decky-frontend-lib 3.25.0 identifiers. Only the Decky tab has a
   // local equivalent here; exporting constants does not expose Steam menus.
   const QuickAccessTab = Object.freeze(Object.fromEntries([
-    ...['Notifications','RemotePlayTogetherControls','VoiceChat','Friends',
-      'Settings','Perf','Help','Music'].map((name,value)=>[name,value]), ['Decky',999],
+    ...['通知','RemotePlayTogetherControls','VoiceChat','好友',
+      '设置','性能','帮助','音乐'].map((name,value)=>[name,value]), ['Decky',999],
   ].flatMap(([name,value])=>[[name,value],[value,name]])));
   // A finite set of local SVGs for published panel controls, not Steam's icon
   // module. In particular, SteamGridDB dereferences these before rendering its
@@ -1315,7 +1315,7 @@
     staticClasses: {Title:'framey-title'},
     Navigation: {Navigate:navigate, NavigateBack:navigateBack, CloseSideMenus:()=>navigate(null),
       OpenQuickAccessMenu:tab=>{
-        if (tab!==QuickAccessTab.Decky) throw Error('Steam Quick Access tabs are unavailable in Framey');
+        if (tab!==QuickAccessTab.Decky) throw Error('Framey 中不支持 Steam 快捷访问标签页');
         navigate(null);
       },
       NavigateToExternalWeb: url => { if (/^https:\/\//.test(url)) window.open(url, '_blank', 'noopener'); }},
@@ -1354,7 +1354,7 @@
   // lookup, but never claim playback or expose Steam's mutable audio store.
   localModules.set('framey/ui-audio', Object.freeze({UIAudio:Object.freeze({
     GamepadUIAudio:Object.freeze({available:false, AudioPlaybackManager:Object.freeze({
-      PlayAudioURL:()=>{throw Error('Steam UI sound playback is not supported in Framey');},
+      PlayAudioURL:()=>{throw Error('Framey 不支持 Steam 界面音效播放');},
     })}),
   })}));
   // Unsupported subscriptions remain inert. Lifetime callbacks below relay
@@ -1380,8 +1380,8 @@
       'RegisterForGameActionStart','RegisterForGameActionEnd','RegisterForGameActionUserRequest']),
     GameSessions:{...register(['RegisterForScreenshotNotification']),
       RegisterForAppLifetimeNotifications:listener=>{
-        if (typeof listener !== 'function') throw Error('Invalid Steam lifetime listener');
-        if (runningListeners.size >= 32) throw Error('Too many Steam lifetime listeners');
+        if (typeof listener !== 'function') throw Error('Steam 生命周期监听器无效');
+        if (runningListeners.size >= 32) throw Error('Steam 生命周期监听器过多');
         runningListeners.add(listener);
         const dispose=()=>runningListeners.delete(listener);
         dispose.unregister=dispose; return dispose;
@@ -1400,12 +1400,12 @@
     Storage:{
       GetJSON:async key=>{
         const value=storage.getItem('steam-client:'+String(key));
-        if(value===null)throw Error('Not found');
+        if(value===null)throw Error('未找到');
         return value;
       },
       SetObject:async(key,value)=>{
         const encoded=JSON.stringify(value);
-        if(encoded===undefined)throw Error('SteamClient.Storage requires a JSON value');
+        if(encoded===undefined)throw Error('SteamClient.Storage 需要一个 JSON 值');
         setCacheItem('steam-client:'+String(key),encoded);
         // Unlike localStorage's synchronous API, this async API can report
         // whether the parent actually persisted the snapshot before success.
@@ -1428,15 +1428,15 @@
       polling = request('read',[],false,'framey:downloads').then(data => {
         if (!data?.ready || !Array.isArray(data.items) || data.items.length > 2048 ||
             !Number.isSafeInteger(data.revision) || data.revision < 1)
-          throw Error('Steam has not supplied its download list yet');
+          throw Error('Steam 尚未提供下载列表');
         if (closed || !listeners.size) return;
         available = true;
         revision = data.revision;
-        if (error.textContent.startsWith('Download queue unavailable:')) error.textContent = '';
+        if (error.textContent.startsWith('下载队列不可用：')) error.textContent = '';
         for (const listener of listeners) listener(true,[{remote_client_id:'0',item_data:data.items}]);
       }).catch(failure => {
         available = false;
-        if (!closed && listeners.size) error.textContent = 'Download queue unavailable: '+failure.message;
+        if (!closed && listeners.size) error.textContent = '下载队列不可用： '+failure.message;
       }).finally(() => {
         polling = null;
         if (!closed && listeners.size) timer = setTimeout(poll,2000);
@@ -1444,12 +1444,12 @@
     };
     window.SteamClient.Downloads = {
       RegisterForDownloadItems:listener => {
-        if (typeof listener !== 'function' || listeners.size >= 8) throw Error('Invalid download listener');
+        if (typeof listener !== 'function' || listeners.size >= 8) throw Error('下载监听器无效');
         listeners.add(listener); poll();
         return {unregister() {listeners.delete(listener); if (!listeners.size) close();}};
       },
       FrameyQueueDownloads:async appids => {
-        if (closed || !available || !listeners.size) throw Error('Steam download list is unavailable');
+        if (closed || !available || !listeners.size) throw Error('Steam 下载列表不可用');
         const value = await request('queue',[appids,revision],false,'framey:downloads');
         clearTimeout(timer); poll();
         return value;
@@ -1477,10 +1477,10 @@
     };
     addContent('span', logo);
     addContent('span', icon);
-    addContent('strong', title || 'Plugin notice');
+    addContent('strong', title || '插件通知');
     addContent('p', body);
     addContent('small', subtext);
-    const close = document.createElement('button'); close.type='button'; close.textContent='Dismiss';
+    const close = document.createElement('button'); close.type='button'; close.textContent='忽略';
     let dismissed = false;
     const dismiss = () => {
       if (dismissed) return;
@@ -1509,16 +1509,16 @@
     static getDerivedStateFromError(failure) {
       // Published render helpers also throw strings. Capture a nonempty text
       // diagnostic so falsy thrown values cannot bypass this boundary.
-      return {failure:String(failure?.message || failure) || 'Unknown render failure'};
+      return {failure:String(failure?.message || failure) || '未知的渲染错误'};
     }
     render() { return this.state.failure ? R.createElement('p', {role:'alert'},
-      `This Decky panel is not compatible with Framey: ${this.state.failure}`) : this.props.children; }
+      `此 Decky 面板与 Framey 不兼容： ${this.state.failure}`) : this.props.children; }
   }
   // Toast fields mount in separate React roots, outside the plugin surface.
   // Keep failures local so healthy fields and the native dismissal survive.
   class ToastBoundary extends PanelBoundary {
     render() { return this.state.failure ? R.createElement('span', {role:'alert'},
-      `This notification content could not be displayed: ${this.state.failure}`) : this.props.children; }
+      `无法显示此通知内容： ${this.state.failure}`) : this.props.children; }
   }
   class DialogBoundary extends PanelBoundary {
     static getDerivedStateFromProps(props, state) {
@@ -1530,7 +1530,7 @@
       return this.state.failure ? R.createElement(R.Fragment, null, super.render(),
         // Match handle.Close: broken plugin cancellation handlers, hidden
         // close icons or disabled Cancel cannot strand the panel behind inert.
-        R.createElement('button', {type:'button', onClick:this.props.close}, 'Close failed dialog')) : this.props.children;
+        R.createElement('button', {type:'button', onClick:this.props.close}, '关闭错误对话框')) : this.props.children;
     }
   }
   function PluginSurface({plugin}) {
@@ -1563,14 +1563,14 @@
     }
     return R.createElement(R.Fragment, null,
       plugin.titleView && R.createElement('header', null, plugin.titleView),
-      route && R.createElement('button', {type:'button', onClick:()=>navigate(null)}, 'Back to plugin'),
-      plugin.content && plugin.settings && R.createElement('nav', {'aria-label':'Plugin views'},
+      route && R.createElement('button', {type:'button', onClick:()=>navigate(null)}, '返回插件'),
+      plugin.content && plugin.settings && R.createElement('nav', {'aria-label':'插件视图'},
         R.createElement('button', {type:'button', 'aria-current':view === 'panel' ? 'page' : undefined,
-          onClick:()=>setView('panel')}, 'Panel'),
+          onClick:()=>setView('panel')}, '面板'),
         R.createElement('button', {type:'button', 'aria-current':view === 'settings' ? 'page' : undefined,
-          onClick:()=>setView('settings')}, 'Settings')),
-      actions.length > 0 && R.createElement('section', {'aria-label':'Plugin quick actions'},
-        R.createElement('h2', null, 'Quick actions'),
+          onClick:()=>setView('settings')}, '设置')),
+      actions.length > 0 && R.createElement('section', {'aria-label':'插件快捷操作'},
+        R.createElement('h2', null, '快捷操作'),
         ...actions.map((action, index) => R.createElement('button', {key:index, type:'button',
           disabled:running !== null, onClick:()=>runAction(action,index)}, action.label))),
       message && R.createElement('p', {role:'status'}, message),
@@ -1584,7 +1584,7 @@
   }
   // Decky exposes picker failures as rejected promises. Keep the method
   // available so plugins' .then/.catch handlers can handle this limitation.
-  const unsupportedFilePicker = () => Promise.reject(Error('Decky file picker is not supported on Frame'));
+  const unsupportedFilePicker = () => Promise.reject(Error('Frame 不支持 Decky 文件选择器'));
   window.__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIInit = {
     connect: (version, name) => ({
       _version: Math.min(version, 2),
@@ -1593,10 +1593,10 @@
       addEventListener:addPluginEvent, removeEventListener:removePluginEvent,
       routerHook, toaster,
       openFilePicker: unsupportedFilePicker,
-      fetchNoCors: () => Promise.reject(Error('Decky proxy fetch is unavailable in Framey')),
-      executeInTab: () => Promise.reject(Error('Steam tab injection is unavailable in Framey')),
-      injectCssIntoTab: () => Promise.reject(Error('Steam tab injection is unavailable in Framey')),
-      removeCssFromTab: () => Promise.reject(Error('Steam tab injection is unavailable in Framey')),
+      fetchNoCors: () => Promise.reject(Error('Framey 中无法使用 Decky 代理请求')),
+      executeInTab: () => Promise.reject(Error('Framey 中无法进行 Steam 标签页注入')),
+      injectCssIntoTab: () => Promise.reject(Error('Framey 中无法进行 Steam 标签页注入')),
+      removeCssFromTab: () => Promise.reject(Error('Framey 中无法进行 Steam 标签页注入')),
       getExternalResourceURL: () => null,
       useQuickAccessVisible: () => true,
     }),
@@ -1606,16 +1606,16 @@
     openFilePicker: unsupportedFilePicker, openFilePickerV2: unsupportedFilePicker,
     callPluginMethod: (method, kwargs={}) => {
       if (!kwargs || typeof kwargs !== 'object' || Array.isArray(kwargs))
-        return Promise.resolve({success:false, result:'Legacy plugin arguments must be an object'});
+        return Promise.resolve({success:false, result:'旧版插件参数必须是对象'});
       // Decky's legacy route takes keyword arguments and returns this envelope.
       return ask(method, [kwargs], true).catch(failure=>({success:false, result:String(failure.message || failure)}));
     },
     // Decky's legacy API resolves failures as an envelope; modern fetchNoCors
     // rejects instead. Let older plugins handle their ordinary failure branch.
-    fetchNoCors: async () => ({success:false, result:'Decky proxy fetch is not supported on Frame'}),
+    fetchNoCors: async () => ({success:false, result:'Frame 不支持 Decky 代理请求'}),
   };
   function projectApps(rows, limit) {
-    if (!Array.isArray(rows) || rows.length > limit) throw Error('Invalid Steam app overview');
+    if (!Array.isArray(rows) || rows.length > limit) throw Error('Steam 应用概览无效');
     return rows.map(row => {
       if (!Array.isArray(row) || (row.length !== 8 && row.length !== 9) || !Number.isSafeInteger(row[0]) || row[0] <= 0 ||
           typeof row[1] !== 'string' || row[1].length > 2048 ||
@@ -1623,7 +1623,7 @@
           typeof row[4] !== 'string' || !/^\d{1,20}$/.test(row[4]) ||
           row.slice(5,8).some(value=>value != null && (!Number.isFinite(value) || value < 0)) ||
           (row.length === 9 && row[8] !== null && typeof row[8] !== 'boolean'))
-        throw Error('Invalid Steam app overview');
+        throw Error('Steam 应用概览无效');
       const [appid,display_name,sort_as,app_type,gameid,
         minutes_playtime_forever,minutes_playtime_last_two_weeks,rt_last_time_played] = row;
       return {appid,display_name,sort_as,app_type,gameid,
@@ -1640,11 +1640,11 @@
     if (!snapshot || !Array.isArray(snapshot.apps) || snapshot.apps.length > 10000 ||
         !Array.isArray(snapshot.gameIds) || snapshot.gameIds.length > 10000 ||
         (snapshot.steamId != null && (typeof snapshot.steamId !== 'string' || !/^\d{17}$/.test(snapshot.steamId))))
-      throw Error('Invalid Steam library snapshot');
+      throw Error('Steam 库快照无效');
     const apps = projectApps(snapshot.apps, 10000);
     const map = new Map(apps.map(app=>[app.appid,app]));
     if (map.size !== apps.length || snapshot.gameIds.some(id=>!Number.isSafeInteger(id) || !map.has(id)))
-      throw Error('Invalid Steam game collection');
+      throw Error('Steam 游戏合集无效');
     window.appStore = {allApps:apps, m_mapApps:map,
       GetAppOverviewByAppID:id=>map.get(Number(id)),
       GetAppOverviewByGameID:id=>apps.find(app=>app.gameid === String(id)),
@@ -1659,12 +1659,12 @@
         !Array.isArray(data.events) || data.events.length > 64 ||
         !Array.isArray(data.artwork) || data.artwork.length > 65 ||
         !Number.isSafeInteger(data.cursor) || data.cursor < 0 || typeof data.lifetimeAvailable !== 'boolean')
-      throw Error('Invalid Steam running snapshot');
+      throw Error('Steam 运行快照无效');
     const apps = projectApps(data.apps, 65), map = new Map(apps.map(app=>[app.appid,app]));
     if (map.size !== apps.length || new Set(data.runningIds).size !== data.runningIds.length ||
         data.runningIds.some(id=>!Number.isSafeInteger(id) || !map.has(id)) ||
         (data.mainAppId !== null && (!Number.isSafeInteger(data.mainAppId) || !map.has(data.mainAppId))))
-      throw Error('Invalid Steam running apps');
+      throw Error('Steam 运行中的应用无效');
     let sequence = 0;
     const publicArt = value => typeof value === 'string' && value.length <= 2048 &&
       /^https:\/\/(?:[a-z0-9-]+\.)*steamstatic\.com\/steam\/apps\/[^?#\s\\]+$/.test(value);
@@ -1672,13 +1672,13 @@
     for (const row of data.artwork) {
       if (!Array.isArray(row) || row.length !== 3 || !map.has(row[0]) || artwork.has(row[0]) ||
           (row[1] !== null && !publicArt(row[1])) || !Array.isArray(row[2]) || row[2].length > 8 ||
-          row[2].some(url=>!publicArt(url))) throw Error('Invalid Steam public artwork');
+          row[2].some(url=>!publicArt(url))) throw Error('Steam 公共封面图无效');
       artwork.set(row[0],[row[1],[...row[2]]]);
     }
     for (const event of data.events) {
       if (!Number.isSafeInteger(event?.sequence) || event.sequence <= sequence || event.sequence > data.cursor ||
           !Number.isSafeInteger(event.unAppID) || event.unAppID <= 0 || typeof event.bRunning !== 'boolean')
-        throw Error('Invalid Steam lifetime event');
+        throw Error('Steam 生命周期事件无效');
       sequence = event.sequence;
     }
     // Update detached stores before callbacks read Router.RunningApps.
@@ -1743,15 +1743,15 @@
           ['const __frameyLegacy =\n', bytes, '\nexport default __frameyLegacy;'] : [bytes], {type:'text/javascript'}));
         try { module = await import(url); } finally { URL.revokeObjectURL(url); }
       }
-      if (typeof module.default !== 'function') throw Error('The Decky frontend has no plugin entry point');
+      if (typeof module.default !== 'function') throw Error('Decky 前端没有插件入口');
       plugin = await module.default(legacyServerAPI);
       if (legacy && plugin?.title && !plugin.titleView) plugin.titleView = plugin.title;
-      if (!plugin?.content && !plugin?.settings) throw Error('The Decky plugin has no panel to display');
+      if (!plugin?.content && !plugin?.settings) throw Error('此 Decky 插件没有可显示的面板');
       window.ReactDOM.createRoot(root).render(R.createElement(PanelBoundary, null,
         R.createElement(PluginSurface, {plugin})));
       parent.postMessage({type:'framey:ready', session:cacheSession}, '*');
     } catch (failure) {
-      error.textContent = `This Decky panel is not compatible with Framey: ${failure.message}`;
+      error.textContent = `此 Decky 面板与 Framey 不兼容： ${failure.message}`;
       parent.postMessage({type:'framey:error', session:cacheSession,
         message:failure.message}, '*');
     }

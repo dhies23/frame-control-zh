@@ -20,12 +20,12 @@
     bridge = window.__frameyRunningBridgeV1 = {api, sessions, remove, timer:null};
   }
   let item = bridge.sessions.get(payload.session);
-  if (item && item.pluginId !== payload.pluginId) throw Error('Framey running session belongs to another plugin');
+  if (item && item.pluginId !== payload.pluginId) throw Error('Framey 运行会话属于另一个插件');
   if (!payload.active) {bridge.remove(payload.session); return null;}
   const store = window.SteamUIStore;
-  if (!Array.isArray(store?.RunningApps)) throw Error('Steam running apps are unavailable');
+  if (!Array.isArray(store?.RunningApps)) throw Error('Steam 运行中的应用不可用');
   const apps = store.RunningApps;
-  if (apps.length > 64) throw Error('Too many running Steam apps');
+  if (apps.length > 64) throw Error('运行中的 Steam 应用过多');
   const main = store.MainRunningApp;
   const project = app => [app.appid, app.display_name, app.sort_as, app.app_type, String(app.gameid),
     app.minutes_playtime_forever, app.minutes_playtime_last_two_weeks, app.rt_last_time_played];
@@ -48,7 +48,7 @@
     return [app.appid, vertical, Array.isArray(custom) ? custom.slice(0,8).map(publicArt).filter(Boolean) : []];
   });
   if (!item) {
-    if (bridge.sessions.size >= 4) throw Error('Too many Framey running sessions');
+    if (bridge.sessions.size >= 4) throw Error('Framey 运行会话过多');
     item = {pluginId:payload.pluginId, queue:[], sequence:0, touched:Date.now(), handle:null};
     if (typeof api?.RegisterForAppLifetimeNotifications === 'function') {
       item.handle = api.RegisterForAppLifetimeNotifications(event => {

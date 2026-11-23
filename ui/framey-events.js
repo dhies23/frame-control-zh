@@ -5,7 +5,7 @@
   const sessionIdleMs = 60000;
   const backend = window.DeckyBackend;
   if (!backend?.addEventListener || !backend?.removeEventListener)
-    throw Error('Decky backend events are unavailable');
+    throw Error('Decky 后端事件不可用');
   let bridge = window.__frameyEventBridgeV1;
   if (bridge && bridge.backend !== backend) {
     for (const key of [...bridge.sessions.keys()]) bridge.remove(key);
@@ -23,13 +23,13 @@
   }
   const key = payload.session;
   let item = bridge.sessions.get(key);
-  if (item && item.name !== payload.name) throw Error('Framey event session belongs to another plugin');
+  if (item && item.name !== payload.name) throw Error('Framey 事件会话属于另一个插件');
   if (!payload.events.length) {
     bridge.remove(key);
     return {events:[], cursor:0};
   }
   if (!item) {
-    if (bridge.sessions.size >= 4) throw Error('Too many Framey event sessions');
+    if (bridge.sessions.size >= 4) throw Error('Framey 事件会话过多');
     item = {name:payload.name, names:new Set(), queue:[], sequence:0, touched:Date.now()};
     item.listener = data => {
       if (data?.plugin !== item.name || !item.names.has(data.event) || !Array.isArray(data.args)) return;

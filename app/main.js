@@ -94,11 +94,11 @@ async function hasSsh(env) {
   try { await run("ssh", ["-V"], { timeout: 5000, env, windowsHide: true }); return true; } catch { return false; }
 }
 
-const PYTHON_HELP = app.isPackaged ? "The bundled Python is missing; reinstall Frame Control."
-  : "Install Python 3.8 or later, then reopen the app.";
+const PYTHON_HELP = app.isPackaged ? "内置 Python 缺失；请重新安装 Frame Control。"
+  : "请安装 Python 3.8 或更高版本，然后重新打开应用。";
 const SSH_HELP = IS_WIN
-  ? "Turn on Windows' OpenSSH client: Settings → System → Optional features → Add a feature → OpenSSH Client."
-  : "Install the OpenSSH client (e.g. sudo apt install openssh-client).";
+  ? "开启 Windows 的 OpenSSH 客户端：设置 → 系统 → 可选功能 → 添加功能 → OpenSSH 客户端。"
+  : "安装 OpenSSH 客户端（例如 sudo apt install openssh-client）。";
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -129,8 +129,8 @@ async function startServer() {
                 ...(app.isPackaged ? { FRAME_CONTROL_PACKAGED: "1" } : {}),
                 ...(fs.existsSync(TOOLS) ? { FRAME_CONTROL_TOOLS: TOOLS } : {}) };
   python = await findPython(env);
-  if (!python) throw new Error(`Frame Control needs Python 3.8 or later. ${PYTHON_HELP}`);
-  if (!await hasSsh(env)) throw new Error(`Frame Control needs the ssh command. ${SSH_HELP}`);
+  if (!python) throw new Error(`Frame Control 需要 Python 3.8 或更高版本。 ${PYTHON_HELP}`);
+  if (!await hasSsh(env)) throw new Error(`Frame Control 需要 ssh 命令。 ${SSH_HELP}`);
   const port = await freePort();
   fs.mkdirSync(LOG_DIR, { recursive: true });
   const log = fs.openSync(LOG, "a");
@@ -159,13 +159,13 @@ async function startServer() {
 
   const target = `http://127.0.0.1:${port}/`;
   for (let i = 0; i < 100; i++) {
-    if (exited !== null) throw new Error(`The server exited (${exited}). See ${LOG}.`);
+    if (exited !== null) throw new Error(`服务器已退出 (${exited}). See ${LOG}.`);
     if (await ping(target)) { url = target; serverStarted = Date.now(); return; }
     await new Promise((r) => setTimeout(r, 100));
   }
   if (server === child) server = null;
   endServer(child);
-  throw new Error(`The server didn't start within 10 seconds. See ${LOG}.`);
+  throw new Error(`服务器在 10 秒内未能启动。请查看 ${LOG}.`);
 }
 
 // Closing stdin lets server.py close its SSH connections and exit (the only clean
@@ -186,15 +186,15 @@ function stopServer() {
   if (server) endServer(server);
 }
 
-function errorPage(message, title = "Frame Control couldn't start") {
+function errorPage(message, title = "Frame Control 无法启动") {
   const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
   const html = `<!doctype html><meta charset="utf-8"><body style="margin:0;height:100vh;display:grid;
     place-items:center;background:${BG};color:#e6edf3;font:14px -apple-system,sans-serif">
     <div style="max-width:560px;padding:32px;line-height:1.5"><h2>${esc(title)}</h2>
     <p>${esc(message)}</p>
     <p><button onclick="this.disabled = true; frameApp.restartServer()" style="font:inherit;padding:6px 16px;
-      border-radius:6px;border:1px solid #30363d;background:#21262d;color:inherit;cursor:pointer">Try Again</button></p>
-    <p style="color:#8b98a8">Frame → Restart Server does the same.</p></div>`;
+      border-radius:6px;border:1px solid #30363d;background:#21262d;color:inherit;cursor:pointer">重试</button></p>
+    <p style="color:#8b98a8">Frame → 重启服务器 效果相同。</p></div>`;
   return "data:text/html;charset=utf-8," + encodeURIComponent(html);
 }
 
@@ -206,7 +206,7 @@ function serverDied(why) {
   url = null;
   if (!win) return;
   if (Date.now() - serverStarted > 60000) restartServer();
-  else win.loadURL(errorPage(`Its server stopped unexpectedly (${why}). See ${LOG}.`, "Frame Control stopped"));
+  else win.loadURL(errorPage(`服务器意外停止了 (${why}). See ${LOG}.`, "Frame Control 已停止"));
 }
 
 // Restarts that overlap share one: two could each start a server, and the one
@@ -265,11 +265,11 @@ async function firstRunCheck() {
   setupOffered = true;
   const { response } = await dialog.showMessageBox(win, {
     type: "info",
-    message: "Connect to your Steam Frame",
-    detail: `There's no "${FRAME}" SSH alias yet. On the Frame, turn on Steam Settings → System → `
-          + "Enable Developer Mode, then Developer → Set User Password. Then run the setup: it finds the "
-          + "headset, creates a key, and asks for that password once in a terminal window.",
-    buttons: ["Set Up Connection…", "Later"],
+    message: "连接你的 Steam Frame",
+    detail: `还没有 ${FRAME} SSH 别名。在 Frame 上，打开 Steam 设置 → 系统 → `
+          + "开启开发者模式，然后进入 开发者 → 设置用户密码。接着运行初始化：它会找到 "
+          + "头显，创建一个密钥，并在终端窗口里询问一次该密码。",
+    buttons: ["设置连接…", "稍后"],
     defaultId: 0, cancelId: 1,
   });
   if (response === 0) setUpConnection();
@@ -301,7 +301,7 @@ ipcMain.handle("preferences:write", (e, key, value) => fromUi(e) ? preferences.w
 ipcMain.handle("clipboard:writeImage", (e, bytes) => {
   if (!fromUi(e) || !(bytes instanceof Uint8Array)) return false;
   const img = nativeImage.createFromBuffer(Buffer.from(bytes));
-  if (img.isEmpty()) throw new Error("not an image");
+  if (img.isEmpty()) throw new Error("不是图片");
   clipboard.writeImage(img);
   return true;
 });
@@ -321,11 +321,11 @@ const obsSource = createObsSource({
   // Keep the button hidden until native Windows/Frame streaming is verified.
   supported: !IS_WIN,
   prepare: async alias => {
-    if (!fs.existsSync(OBS_SCRIPT)) throw new Error("The OBS helper is missing; reinstall Frame Control.");
+    if (!fs.existsSync(OBS_SCRIPT)) throw new Error("OBS 辅助程序缺失；请重新安装 Frame Control。");
     const env = { ...process.env, PATH: await loginPath() };
     const executable = python || await findPython(env);
     if (!executable) throw new Error(PYTHON_HELP);
-    if (quitting || alias !== activeAlias()) throw new Error("The selected headset changed; try again.");
+    if (quitting || alias !== activeAlias()) throw new Error("所选头显已变化；请重试。");
     return { executable, args: [...PY_FLAGS, OBS_SCRIPT], env };
   },
   onState: state => {
@@ -356,7 +356,7 @@ const activeAlias = () => (devices.find(d => d.active) || {}).alias || FRAME;
 // SSH through the server, so it goes to the headset and address the app is using
 // (with its own pinned identity), and refuses when there's none.
 function openSsh() {
-  if (!url) return dialog.showErrorBox("Couldn't open SSH", "Frame Control's server isn't running.");
+  if (!url) return dialog.showErrorBox("无法打开 SSH", "Frame Control 的服务器未运行。");
   const body = JSON.stringify({ what: "terminal" });
   const req = http.request(new URL("/api/open", url), {
     method: "POST", timeout: 15000,
@@ -368,11 +368,11 @@ function openSsh() {
       if (res.statusCode === 200) return;
       let why = `HTTP ${res.statusCode}`;
       try { why = JSON.parse(data).error || why; } catch {}
-      dialog.showErrorBox("Couldn't open SSH", why);
+      dialog.showErrorBox("无法打开 SSH", why);
     });
   });
-  req.on("error", (e) => dialog.showErrorBox("Couldn't open SSH", e.message));
-  req.on("timeout", () => req.destroy(new Error("the server didn't answer")));
+  req.on("error", (e) => dialog.showErrorBox("无法打开 SSH", e.message));
+  req.on("timeout", () => req.destroy(new Error("服务器没有响应")));
   req.end(body);
 }
 function showDevices() {
@@ -380,15 +380,15 @@ function showDevices() {
 }
 
 ipcMain.handle("comfort:notify", (e, message) => {
-  if (!fromUi(e) || typeof message !== "string" || message.length > 500) throw new Error("Invalid notification");
-  if (!Notification.isSupported()) throw new Error("System notifications are unavailable");
+  if (!fromUi(e) || typeof message !== "string" || message.length > 500) throw new Error("通知无效");
+  if (!Notification.isSupported()) throw new Error("系统通知不可用");
   return new Promise((resolve, reject) => {
     const notification = new Notification({title: "Frame Control", body: message});
-    const timer = setTimeout(() => reject(new Error("Notification delivery was not confirmed. Check system notification settings.")), 5000);
+    const timer = setTimeout(() => reject(new Error("通知发送未确认。请检查系统通知设置。")), 5000);
     notification.once("show", () => { clearTimeout(timer); resolve(true); });
     notification.once("failed", (_event, error) => {
       clearTimeout(timer);
-      reject(new Error("Notification delivery failed. Check system notification settings: " + error));
+      reject(new Error("通知发送失败。请检查系统通知设置： " + error));
     });
     notification.show();
   });
@@ -399,7 +399,7 @@ ipcMain.handle("comfort:notify", (e, message) => {
 // connect path; the page asks for it and only hears the server's answer.
 function postApi(apiPath, body) {
   return new Promise((resolve, reject) => {
-    if (!url) return reject(new Error("Frame Control's server isn't running."));
+    if (!url) return reject(new Error("Frame Control 的服务器未运行。"));
     const data = JSON.stringify(body);
     const req = http.request(new URL(apiPath, url), {
       method: "POST", timeout: 60000,
@@ -416,7 +416,7 @@ function postApi(apiPath, body) {
       });
     });
     req.on("error", reject);
-    req.on("timeout", () => req.destroy(new Error("the server didn't answer")));
+    req.on("timeout", () => req.destroy(new Error("服务器没有响应")));
     req.end(data);
   });
 }
@@ -430,7 +430,7 @@ const meta = () => (metaSignIn ||= createMetaSignIn({
 }));
 ipcMain.handle("meta:signin", (e, acknowledged) => {
   if (!fromUi(e)) return null;
-  if (acknowledged !== true) return { ok: false, error: "My Meta library is experimental: tick that you understand the warning first." };
+  if (acknowledged !== true) return { ok: false, error: "Meta 库仍是实验性功能：请先勾选确认你已了解该警告。" };
   return meta().signIn();
 });
 ipcMain.handle("meta:signout", (e) => fromUi(e) ? meta().signOut() : false);
@@ -445,7 +445,7 @@ let linkPage = null;  // the webContents whose current page is listening
 function openInstallLink(raw) {
   const req = parseInstallLink(raw);
   if (!req) {
-    app.whenReady().then(() => dialog.showErrorBox("Frame Control can't use this link",
+    app.whenReady().then(() => dialog.showErrorBox("Frame Control 无法使用此链接",
       "Install links look like frame-control://install?manifest=https://… or frame-control://install?url=https://…"));
     return;
   }
@@ -497,22 +497,22 @@ async function checkForUpdate({ manual = false } = {}) {
       if (manual) offerUpdateDialog();
     } else {
       setUpdate({ status: "none", latest, how });
-      if (manual) dialog.showMessageBox(win, { type: "info", message: "Frame Control is up to date",
-                                               detail: `You have ${update.current}, the newest version.` });
+      if (manual) dialog.showMessageBox(win, { type: "info", message: "Frame Control 已是最新版本",
+                                               detail: `你当前是 ${update.current}，即最新版本。` });
     }
   } catch (e) {
     // A failed check: nothing to install, and never an older release kept from before.
     setUpdate({ status: "check-failed", error: e.message, latest: null });
-    if (manual) dialog.showMessageBox(win, { type: "warning", message: "Couldn't check for updates", detail: e.message });
+    if (manual) dialog.showMessageBox(win, { type: "warning", message: "无法检查更新", detail: e.message });
   }
 }
 
 async function offerUpdateDialog() {
   const r = update.latest;
   const { response } = await dialog.showMessageBox(win, {
-    type: "info", message: `Frame Control ${r.version} is available`,
-    detail: `You have ${update.current}.` + (update.how.method === "manual" ? ` Download it from the release page (${update.how.why}).` : ""),
-    buttons: [update.how.method === "manual" ? "Open Release Page" : "Update and Restart", "Later"], defaultId: 0, cancelId: 1,
+    type: "info", message: `Frame Control ${r.version} 可用`,
+    detail: `你当前是 ${update.current}.` + (update.how.method === "manual" ? ` 请从发布页面下载（${update.how.why}).` : ""),
+    buttons: [update.how.method === "manual" ? "打开发布页" : "更新并重启", "稍后"], defaultId: 0, cancelId: 1,
   });
   if (response === 0) installUpdate();
 }
@@ -583,10 +583,10 @@ function ensureTray() {
 function updateTrayMenu() {
   if (!tray) return;
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: "Open Frame Control", click: showWindow },
-    { label: "Open at Login", type: "checkbox", checked: loginItem.enabled(), click: toggleLoginItem },
+    { label: "打开 Frame Control", click: showWindow },
+    { label: "登录时启动", type: "checkbox", checked: loginItem.enabled(), click: toggleLoginItem },
     { type: "separator" },
-    { label: "Quit Frame Control", click: () => app.quit() },
+    { label: "退出 Frame Control", click: () => app.quit() },
   ]));
 }
 
@@ -598,7 +598,7 @@ function toggleLoginItem() {
     buildMenu();
     updateTrayMenu();
   } catch (err) {
-    dialog.showErrorBox("Open at Login", String(err.message || err));
+    dialog.showErrorBox("登录时启动", String(err.message || err));
     buildMenu();
     updateTrayMenu();
   }
@@ -643,11 +643,11 @@ async function runInTerminal(argv) {
   try {
     const env = { ...process.env, PATH: await loginPath() };
     const py = python || await findPython(env);
-    if (!py) throw new Error(`Python 3.8 or later is needed. ${PYTHON_HELP}`);
+    if (!py) throw new Error(`需要 Python 3.8 或更高版本。 ${PYTHON_HELP}`);
     await run(py, [...PY_FLAGS, path.join(ROOT, "ui", "frame_host.py"), "terminal", "--", ...argv],
               { env, timeout: 15000, windowsHide: true });
   } catch (err) {
-    dialog.showErrorBox("Couldn't open a terminal", String((err.stderr || err.message || err)).trim());
+    dialog.showErrorBox("无法打开终端", String((err.stderr || err.message || err)).trim());
   }
 }
 
@@ -664,7 +664,7 @@ async function setUpConnection(name = activeAlias()) {
 function buildMenu() {
   const template = [
     ...(IS_MAC ? [{ label: app.name, submenu: [
-      { role: "about" }, { label: "Check for Updates…", click: () => checkForUpdate({ manual: true }) },
+      { role: "about" }, { label: "检查更新…", click: () => checkForUpdate({ manual: true }) },
       { type: "separator" }, { role: "services" }, { type: "separator" },
       { role: "hide" }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" }, { role: "quit" },
     ] }] : []),
@@ -673,26 +673,26 @@ function buildMenu() {
     {
       label: "Frame",
       submenu: [
-        { label: "Set Up Connection…", click: () => setUpConnection() },
-        { label: "Open at Login", type: "checkbox", checked: loginItem.enabled(),
+        { label: "设置连接…", click: () => setUpConnection() },
+        { label: "登录时启动", type: "checkbox", checked: loginItem.enabled(),
           enabled: app.isPackaged, click: toggleLoginItem },
-        { label: IS_MAC ? "Open SSH in Terminal" : "Open SSH in a Terminal", click: openSsh },
+        { label: IS_MAC ? "在终端中打开 SSH" : "在终端中打开 SSH", click: openSsh },
         { type: "separator" },
         ...(devices.length > 1 ? [{
-          label: "Headset",
+          label: "头显",
           submenu: devices.map(d => ({ label: d.name, type: "radio", checked: d.active,
                                        click: () => { if (win) win.webContents.send("use-device", d.id); } })),
         }] : []),
-        { label: "Devices…", accelerator: "CmdOrCtrl+5", click: showDevices },
+        { label: "设备…", accelerator: "CmdOrCtrl+5", click: showDevices },
         { type: "separator" },
-        { label: "Open in Browser", click: () => url && shell.openExternal(url) },
-        { label: "Restart Server", click: () => win ? restartServer() : createWindow() },
-        { label: "Show Server Log", click: () => shell.openPath(fs.existsSync(LOG) ? LOG : LOG_DIR) },
-        ...(IS_WIN ? [] : [{ label: "Reveal Helper Scripts", click: () => shell.openPath(SCRIPTS) }]),
+        { label: "在浏览器中打开", click: () => url && shell.openExternal(url) },
+        { label: "重启服务器", click: () => win ? restartServer() : createWindow() },
+        { label: "查看服务器日志", click: () => shell.openPath(fs.existsSync(LOG) ? LOG : LOG_DIR) },
+        ...(IS_WIN ? [] : [{ label: "显示辅助脚本", click: () => shell.openPath(SCRIPTS) }]),
       ],
     },
     {
-      label: "View",
+      label: "视图",
       submenu: [
         { role: "reload" }, { role: "forceReload" }, { role: "toggleDevTools" },
         { type: "separator" },
@@ -704,13 +704,13 @@ function buildMenu() {
     {
       role: "help",
       submenu: [
-        ...(IS_MAC ? [] : [{ label: "Check for Updates…", click: () => checkForUpdate({ manual: true }) }]),
-        { label: "Report a Problem…", click: () => {
+        ...(IS_MAC ? [] : [{ label: "检查更新…", click: () => checkForUpdate({ manual: true }) }]),
+        { label: "报告问题…", click: () => {
           if (win && url && linkPage === win.webContents) win.webContents.send("report:open");
           else shell.openExternal("https://frame-control.pages.dev/feedback/");  // the page isn't up
         } },
-        { label: "Release Notes", click: () => shell.openExternal(updater.RELEASES) },
-        { label: "Project on GitHub", click: () => shell.openExternal("https://github.com/saphid/steam-frame") },
+        { label: "发行说明", click: () => shell.openExternal(updater.RELEASES) },
+        { label: "GitHub 上的项目", click: () => shell.openExternal("https://github.com/saphid/steam-frame") },
       ],
     },
   ];

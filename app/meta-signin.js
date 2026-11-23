@@ -68,7 +68,7 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
   let active = null;  // { win, promise, finish }
   const pending = new Set();  // cancels still to reach the server, from flows already finished
   let signingOut = null;      // the sign-out under way; no sign-in starts while it runs
-  const SIGNING_OUT = "Frame Control is signing out of Meta; try again in a moment.";
+  const SIGNING_OUT = "Frame Control 正在退出 Meta 账号；请稍后再试。";
 
   const openOutside = (target) => {
     if (/^https?:\/\//i.test(String(target))) shell.openExternal(String(target));
@@ -86,7 +86,7 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
     }
     const p = parent();
     const win = new BrowserWindow({
-      width: 520, height: 760, title: "Sign in with Meta – Frame Control", autoHideMenuBar: true,
+      width: 520, height: 760, title: "使用 Meta 登录 – Frame Control", autoHideMenuBar: true,
       ...(p ? { parent: p } : {}),
       webPreferences: { partition: PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true,
                         nodeIntegrationInSubFrames: false, webviewTag: false, safeDialogs: true, devTools: false },
@@ -103,7 +103,7 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
     const onCookie = (_e, cookie, _cause, removed) => {
       if (!removed && cookie && cookie.name === COOKIE && underDomain(cookie.domain, ["oculus.com"])) attempt();
     };
-    const timer = setTimeout(() => finish({ ok: false, error: "Sign-in timed out after 10 minutes. Try again." }), timeout);
+    const timer = setTimeout(() => finish({ ok: false, error: "登录在 10 分钟后超时。请重试。" }), timeout);
     if (timer.unref) timer.unref();
 
     // Stops cookie intake first, then the window (destroy: a page's beforeunload can't
@@ -147,14 +147,14 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
             inflight = connect(c.value, attemptId);
             r = await inflight;
           } catch {
-            lastError = "Frame Control's local server didn't answer.";
+            lastError = "Frame Control 的本地服务器没有响应。";
             continue;
           }
           if (done) return;
           const d = (r && r.data) || {};
           if (r && r.status === 200 && d.connected) {
             finish({ ok: true, connected: true, user: d.user && d.user.name ? { name: scrub(d.user.name, c.value).slice(0, 80) } : null,
-                     message: scrub(d.message || "Connected your Meta account (Experimental)", c.value) });
+                     message: scrub(d.message || "已连接你的 Meta 账户（实验性）", c.value) });
             return;
           }
           lastError = scrub(d.error || `HTTP ${r && r.status}`, c.value);
@@ -176,7 +176,7 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
     const stopped = (to) => {
       let host = "";
       try { host = new URL(String(to)).hostname; } catch { /* not an address */ }
-      blocked = `Meta's sign-in went to ${scrub(host || "an address", null).slice(0, 80)}, which Frame Control doesn't allow.`;
+      blocked = `Meta 登录跳转到了 ${scrub(host || "某个地址", null).slice(0, 80)}，Frame Control 不允许。`;
     };
     wc.on("will-frame-navigate", (e) => {
       if (e.isMainFrame ? allowedUrl(e.url) : allowedSubframeUrl(e.url)) return;
@@ -204,9 +204,9 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
     wc.on("did-navigate", (_e, target) => { blocked = null; if (onOculus(target)) attempt(); });  // it recovered
     wc.on("did-navigate-in-page", (_e, target) => { if (onOculus(target)) attempt(); });
     win.on("closed", () => finish({ ok: false, cancelled: true,
-      error: lastError ? `The sign-in window closed before Frame Control could connect. ${lastError}`
-           : blocked ? `The sign-in window was closed before you signed in. ${blocked}`
-                     : "The sign-in window was closed before you signed in." }));
+      error: lastError ? `登录窗口在 Frame Control 连接前就关闭了。 ${lastError}`
+           : blocked ? `登录窗口在你登录前被关闭了。 ${blocked}`
+                     : "登录窗口在你登录前被关闭了。" }));
 
     active = { win, promise, finish };
     wc.loadURL(LOGIN_URL).catch(() => {});
@@ -225,9 +225,9 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
         for (;;) {
           if (active) {
             const { win, finish } = active;
-            await finish({ ok: false, cancelled: true, error: "Signed out of Meta in Frame Control." });
+            await finish({ ok: false, cancelled: true, error: "已在 Frame Control 中退出 Meta 登录。" });
             // Clear only once nothing can write to the session again.
-            if (!win.isDestroyed()) throw new Error("The Sign in with Meta window didn't close; try again.");
+            if (!win.isDestroyed()) throw new Error("Meta 登录窗口没有关闭，请重试。");
           } else if (pending.size) {
             // A connect under way settles and is cancelled before the caller (Disconnect)
             // deletes the account, so it can't be saved afterwards.

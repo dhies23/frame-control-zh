@@ -1,19 +1,19 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Wired connection doctor · Frame Control</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>有线连接诊断 · Frame Control</title>
 <style>
 :root{color-scheme:dark;--bg:#101820;--card:#1b2838;--text:#e4edf5;--sub:#acbccb;--line:#3a5065;--blue:#66c0f4;--warn:#f0c67a}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,sans-serif}main{max-width:850px;margin:auto;padding:32px 24px 64px}a{color:var(--blue)}h1{font-size:30px;line-height:1.2;margin:20px 0 12px}h2{font-size:18px;margin:0 0 8px}p{margin:8px 0 16px}.sub{color:var(--sub)}.badge{font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--blue)}section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px;margin:18px 0}.row{display:flex;gap:12px;align-items:end;flex-wrap:wrap}label{display:block}input,button{font:inherit;min-height:44px;border:1px solid var(--line);border-radius:5px;padding:9px 14px;background:#263f54;color:var(--text)}input{display:block;min-width:220px;margin-top:6px}button{cursor:pointer;background:#205b81;border-color:var(--blue)}button:disabled{opacity:.5;cursor:default}.status{font-size:12px;font-weight:700;text-transform:uppercase;margin-right:10px;color:var(--blue)}.warning .status{color:var(--warn)}.unknown .status{color:var(--sub)}#message{min-height:24px}:focus-visible{outline:2px solid var(--blue);outline-offset:4px}@media(max-width:540px){main{padding:20px 16px}h1{font-size:25px}section{padding:16px}}
 </style></head><body><main>
-<a id="back" href="/#devices">← Devices &amp; connection</a>
-<header><h1>Wired connection doctor</h1><span class="badge">This computer · Read-only · On demand</span>
-<p>Check whether this computer has the Frame's previously observed USB-C network route, whether SSH answers on it, and whether a strictly checked SSH identity works. This does not change network or headset settings.</p></header>
-<section><div class="row"><label for="alias">Your configured headset SSH alias<input id="alias" value="frame" maxlength="64" autocomplete="off"></label>
-<button id="check">Check cable connection</button></div><p id="message" role="status" aria-live="polite">No checks have run.</p></section>
+<a id="back" href="/#devices">← 设备 &amp; 连接</a>
+<header><h1>有线连接诊断</h1><span class="badge">本机 · 只读 · 按需</span>
+<p>检查本机是否存在之前观测到的 Frame USB-C 网络路由、SSH 是否在该路由上应答，以及经过严格校验的 SSH 身份是否可用。这不会更改网络或头显设置。</p></header>
+<section><div class="row"><label for="alias">你配置的头显 SSH 别名<input id="alias" value="frame" maxlength="64" autocomplete="off"></label>
+<button id="check">检查线缆连接</button></div><p id="message" role="status" aria-live="polite">尚未运行检查。</p></section>
 <div id="results" aria-live="polite"></div>
-<section><h2>SSH works, but the PC stream still fails?</h2>
-<p>The doctor checks Frame Control's SSH route only. If the SteamVR stream stops on USB, Wi-Fi and the Wireless Adapter, the problem may be on the PC. On a Windows or Linux PC, first save your work and close the VR game. Exit SteamVR from Steam on the PC, then start SteamVR again. Frame Control reconnecting to <code>frame.local</code> will not restart PC SteamVR. This is a manual test, not a fix for the cause of repeated drops. Frame Control does not restart PC SteamVR automatically because it cannot safely know which game and session it would stop.</p></section>
-<p class="sub">The observed USB address is 10.86.200.233 on Frame OS tested in 2026. A different OS build may use another subnet. An unknown result does not prove the cable is broken. The doctor never changes IP settings, accepts a new host key, or bypasses SSH warnings.</p>
+<section><h2>SSH 正常，但 PC 串流仍然失败？</h2>
+<p>诊断只检查 Frame Control 的 SSH 路由。如果 SteamVR 串流在有线、Wi-Fi 和无线适配器下都会中断，问题可能在 PC 上。在 Windows 或 Linux PC 上，请先保存工作并关闭 VR 游戏。在 PC 上从 Steam 退出 SteamVR，然后重新启动 SteamVR。Frame Control 重新连接到 <code>frame.local</code> 不会重启 PC 上的 SteamVR。这是一次手动测试，不能解决反复掉线的根本原因。Frame Control 不会自动重启 PC 上的 SteamVR，因为它无法安全判断会中断哪个游戏和会话。</p></section>
+<p class="sub">在 2026 年测试的 Frame OS 上，观测到的 USB 地址是 10.86.200.233。不同的系统版本可能使用其他网段。结果未知并不能证明线缆已损坏。诊断不会更改 IP 设置、接受新的主机密钥，也不会绕过 SSH 警告。</p>
 </main><script>
 'use strict';
 const $ = id => document.getElementById(id);
@@ -23,19 +23,19 @@ const make = (tag, value) => { const node = document.createElement(tag); node.te
 $('check').onclick = async () => {
   $('check').disabled = true;
   $('results').replaceChildren();
-  $('message').textContent = 'Checking this computer…';
+  $('message').textContent = '正在检查本机…';
   try {
     const response = await fetch('/api/host/wired?alias=' + encodeURIComponent($('alias').value.trim()),
       {headers:{'X-Frame-UI':key}});
     const report = await response.json();
-    if (!response.ok) throw new Error(report.error || 'Wired check failed');
+    if (!response.ok) throw new Error(report.error || '有线连接检查失败');
     for (const item of report.checks) {
       const section = make('section', ''); section.className = item.status;
       const title = make('h2', item.title); const status = make('span', item.status + ' · '); status.className = 'status';
       title.prepend(status); section.append(title, make('p', item.detail)); $('results').append(section);
     }
-    $('message').textContent = report.state === 'ready' ? 'The known USB path and pinned SSH identity worked.'
-      : 'Review each check and its limits below.';
+    $('message').textContent = report.state === 'ready' ? '已知的 USB 路径和已固定的 SSH 身份均可正常工作。'
+      : '请查看下面各项检查及其限制。';
   } catch (error) { $('message').textContent = error.message; }
   finally { $('check').disabled = false; }
 };

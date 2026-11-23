@@ -17,8 +17,8 @@ function createObsSource({ prepare, spawn, onState = () => {}, supported = true 
   }
   async function start(alias, port = 15099) {
     if (!supported) return status();
-    if (typeof alias !== 'string' || !ALIAS.test(alias)) throw new Error('Select a valid headset first.');
-    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('OBS port must be a whole number from 1024 to 65535.');
+    if (typeof alias !== 'string' || !ALIAS.test(alias)) throw new Error('请先选择有效的头显。');
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('OBS 端口必须是 1024 到 65535 之间的整数。');
     if (child || state.state === 'starting') return status();
     const id = ++attempt;
     set('starting', alias, port);
@@ -33,12 +33,12 @@ function createObsSource({ prepare, spawn, onState = () => {}, supported = true 
       let output = '';
       proc.stderr.on('data', chunk => {
         output = (output + chunk.toString('utf8')).slice(-2048);
-        if (child === proc && state.state === 'starting' && output.includes('Frame Control OBS stream is ready'))
+        if (child === proc && state.state === 'starting' && output.includes('Frame Control OBS 流已就绪'))
           set('running', alias, port);
       });
       proc.once('error', error => {
         if (child !== proc) return;
-        child = null; set('failed', alias, port, `Could not start OBS source: ${error.message}`);
+        child = null; set('failed', alias, port, `无法启动 OBS 源： ${error.message}`);
       });
       // close follows stderr EOF, so the final failure message is available.
       proc.once('close', (code, signal) => {
@@ -46,7 +46,7 @@ function createObsSource({ prepare, spawn, onState = () => {}, supported = true 
         const stopping = state.state === 'stopping';
         child = null;
         set(stopping ? 'idle' : 'failed', alias, port,
-            stopping ? '' : `OBS source stopped (${signal || code}). ${output.trim().split('\n').pop() || 'Check SteamVR and SSH.'}`);
+            stopping ? '' : `OBS 源已停止（${signal || code}). ${output.trim().split('\n').pop() || '请检查 SteamVR 和 SSH。'}`);
       });
       return status();
     } catch (error) {

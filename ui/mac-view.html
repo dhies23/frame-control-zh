@@ -4,7 +4,7 @@
      on the Frame as its own Chromium app window, which gamescope turns into a
      SteamVR panel. Video arrives over a WebSocket (H.264 Annex B for
      WebCodecs, or JPEG); pointer, wheel and keys go back the same way. -->
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -27,8 +27,8 @@
 </head>
 <body>
 <canvas id="c" width="16" height="9"></canvas>
-<button id="switchWindow" type="button" hidden>Switch window</button>
-<div id="note">Connecting to your computer…</div>
+<button id="switchWindow" type="button" hidden>切换窗口</button>
+<div id="note">正在连接你的电脑…</div>
 <div id="hud" hidden></div>
 <script>
 "use strict";
@@ -42,7 +42,7 @@ const c = document.getElementById("c"), ctx = c.getContext("2d", { alpha: false,
 const note = document.getElementById("note");
 const switchButton = document.getElementById("switchWindow");
 switchButton.hidden = !src.startsWith("display:") || !["mac", "windows"].includes(host);
-if (!switchButton.hidden) switchButton.textContent = host === "mac" ? "Switch Mac app (⌘Tab)" : "Switch PC window (Alt+Tab)";
+if (!switchButton.hidden) switchButton.textContent = host === "mac" ? "切换 Mac 应用（⌘Tab）" : "切换 PC 窗口（Alt+Tab）";
 // Counters for Frame Control's tests (read over DevTools).
 const stats = window.stats = { frames: 0, keyFrames: 0, bytes: 0, dropped: 0, codec: "", errors: [], info: null };
 
@@ -100,7 +100,7 @@ let glInfo = "", rafHz = 0;
 try {
   const gl = document.createElement("canvas").getContext("webgl");
   const ext = gl && gl.getExtension("WEBGL_debug_renderer_info");
-  glInfo = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl ? "webgl" : "no webgl";
+  glInfo = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl ? "webgl" : "无 webgl";
 } catch (e) { glInfo = "?"; }
 (function measureRaf() {
   let n = 0, t0 = 0;
@@ -116,11 +116,15 @@ function showHud(on) { hud.hidden = !on; }
 function ms(o) { return o && o.p50 !== undefined ? `${o.p50}/${o.p95}` : "–"; }
 function onStats(m) {
   if (hud.hidden) return;
-  hud.textContent = `${m.size}  ${m.fps} fps shown (${m.sentFps} sent)  ${m.mbps} Mbit/s` +
+  hud.textContent = `${m.size}  ${m.fps} fps 显示 (${m.sentFps} sent)  ${m.mbps} Mbit/s` +
     (m.bitrate ? ` of ${(m.bitrate / 1e6).toFixed(1)}` : "") + (m.tier !== undefined ? `  tier ${m.tier}` : "") +
-    `\nlatency p50/p95 ms  total ${ms(m.total)}\n  capture ${ms(m.capture)}  queue ${ms(m.queue)}  encode ${ms(m.encode)}` +
-    `\n  network ${ms(m.network)}  decode ${ms(m.decode)}  draw ${ms(m.draw)}` +
-    `\ninput→shown p50 ${m.input ? m.input.p50.toFixed(0) + " ms" : "–"}  rtt ${m.rtt} ms` +
+    `
+延迟 p50/p95 ms  总计 ${ms(m.total)}
+  采集 ${ms(m.capture)}  queue ${ms(m.queue)}  encode ${ms(m.encode)}` +
+    `
+  网络 ${ms(m.network)}  decode ${ms(m.decode)}  draw ${ms(m.draw)}` +
+    `
+输入→显示 p50 ${m.input ? m.input.p50.toFixed(0) + " ms" : "–"}  rtt ${m.rtt} ms` +
     `\nskipped ${m.skipped}/${m.captured}  dropped ${m.dropped}  ${decoderInfo}`;
 }
 showHud(q.get("stats") === "1");
@@ -149,7 +153,7 @@ function windowSwitchEvents(hostName) {
   ];
 }
 switchButton.addEventListener("click", () => {
-  if (!ws || ws.readyState !== 1) return show("Connect to your computer before switching windows.", 4000);
+  if (!ws || ws.readyState !== 1) return show("请先连接到你的电脑，再切换窗口。", 4000);
   const events = windowSwitchEvents(host);
   if (!events.length) return;
   switchButton.disabled = true;
@@ -242,7 +246,7 @@ async function pickCodec() {
     // Whether this browser has a hardware H.264 decoder (for the numbers).
     const hw = await VideoDecoder.isConfigSupported({ codec: "avc1.640028", hardwareAcceleration: "prefer-hardware" })
       .catch(() => ({ supported: false }));
-    decoderInfo = hw.supported ? "h264 hardware" : "h264 software";
+    decoderInfo = hw.supported ? "h264 硬件" : "h264 软件";
     return "h264";
   } catch (e) { return "jpeg"; }
 }
@@ -277,14 +281,14 @@ async function connect() {
     // Refused before ever getting a key: the ticket expired or was revoked,
     // and retrying can't help.
     if (!reconnectKey && ++failedStarts >= 3) {
-      show("This view has expired. Press Show in Frame Control on your computer to open it again.");
+      show("此画面已失效。请在电脑上的 Frame Control 中点击显示，重新打开。");
       return;
     }
     hideNoteOnFrame = true;
     // The Mac may be asleep or the tunnel restarting: keep trying.
     retry = Math.min(retry + 1, 6);
     // Keep the Mac's reason (a missing permission, a closed window) on screen.
-    show(lastError ? `${lastError} Retrying…` : "Lost the computer. Reconnecting…");
+    show(lastError ? `${lastError} 正在重试…` : "与电脑的连接已断开。正在重新连接…");
     setTimeout(connect, 500 * 2 ** retry);
   };
 }
@@ -303,7 +307,7 @@ function control(m) {
     document.title = tag ? `${name} [${tag}]` : name;
     if (!m.input) {
       hideNoteOnFrame = false;  // a warning, not a connection notice: let it stay its 8 s
-      show(m.inputMessage || "Clicks and keys need Accessibility permission on the Mac (Frame Control asks for it).", 8000);
+      show(m.inputMessage || "在 Mac 上，点击和按键需要辅助功能权限（Frame Control 会向你申请）。", 8000);
     }
   } else if (m.t === "error") {
     stats.errors.push(m.message);
@@ -312,7 +316,7 @@ function control(m) {
   } else if (m.t === "close" || m.t === "closed") {
     closing = true;
     if (ws) ws.close();
-    show(m.reason ? `Stopped: ${m.reason}.` : "Stopped.");
+    show(m.reason ? `已停止： ${m.reason}.` : "已停止。");
     window.close();
   }
 }
@@ -445,7 +449,7 @@ addEventListener("keydown", e => onKey(e, true));
 addEventListener("keyup", e => onKey(e, false));
 addEventListener("blur", () => { dropWheelCarry(); send({ t: "release" }); });
 
-show("Connecting to your computer…");
+show("正在连接你的电脑…");
 connect();
 </script>
 </body>

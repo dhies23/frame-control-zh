@@ -13,7 +13,7 @@ function preferenceStore(file) {
     } catch { return {}; }
   }
   function write(key, value) {
-    if (!KEYS.includes(key) || !valid(value)) throw new Error("Invalid preference");
+    if (!KEYS.includes(key) || !valid(value)) throw new Error("无效的首选项");
     const saved = { ...read(), [key]: value };
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = file + ".tmp";

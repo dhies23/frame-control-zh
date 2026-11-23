@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8">
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Frame Control VR [fc-headset]</title>
 <style>
@@ -20,53 +20,53 @@ iframe{display:block;width:100%;height:560px;background:#0d1925;border:1px solid
 #statusScreen .meta{font-size:20px;margin-top:22px;color:#b9c9d6}
 @media(max-width:720px){.cards,#statusScreen .cards{grid-template-columns:1fr}body{padding:18px}.game{display:block}.game button{margin-top:12px}}
 </style></head><body>
-<h1>Frame Control</h1><p>Your Frame, from inside SteamVR. Select this panel again from the dashboard after switching away.</p>
+<h1>Frame Control</h1><p>你的 Frame，从 SteamVR 内部进入。切走后可在仪表盘上再次选择这个面板。</p>
 <div class="cards">
-  <div class="card"><span class="label">Battery</span><span class="value" id="battery">…</span></div>
-  <div class="card"><span class="label">Home storage free</span><span class="value" id="storage">…</span></div>
+  <div class="card"><span class="label">电池</span><span class="value" id="battery">…</span></div>
+  <div class="card"><span class="label">主目录可用空间</span><span class="value" id="storage">…</span></div>
   <div class="card"><span class="label">SteamVR</span><span class="value" id="steamvr">…</span></div>
 </div>
 <p id="message" role="status" aria-live="polite"></p>
-<div class="row"><button id="refresh">Refresh status</button><button id="statusScreenOpen" class="secondary">Large status screen</button><button id="gameMode" class="secondary">Return to Game Mode</button>
-  <button id="screenshot" class="secondary">Save screenshot</button><button id="record" class="secondary">Start recording</button></div>
+<div class="row"><button id="refresh">刷新状态</button><button id="statusScreenOpen" class="secondary">大字状态屏</button><button id="gameMode" class="secondary">返回游戏模式</button>
+  <button id="screenshot" class="secondary">保存截图</button><button id="record" class="secondary">开始录制</button></div>
 <p id="actionStatus" role="status" aria-live="polite"></p>
 <section id="statusScreen" role="dialog" aria-modal="true" aria-labelledby="statusScreenTitle" hidden>
-  <div class="row"><button id="statusScreenClose">Close status screen</button><button id="statusScreenRefresh" class="secondary">Refresh</button></div>
-  <h2 id="statusScreenTitle">Frame status</h2>
+  <div class="row"><button id="statusScreenClose">关闭状态屏</button><button id="statusScreenRefresh" class="secondary">刷新</button></div>
+  <h2 id="statusScreenTitle">Frame 状态</h2>
   <div class="cards">
-    <div class="card"><span class="label">Battery</span><span class="value" id="bigBattery">…</span></div>
+    <div class="card"><span class="label">电池</span><span class="value" id="bigBattery">…</span></div>
     <div class="card"><span class="label">SteamVR</span><span class="value" id="bigSteamvr">…</span></div>
-    <div class="card"><span class="label">Home storage free</span><span class="value" id="bigStorage">…</span></div>
+    <div class="card"><span class="label">主目录可用空间</span><span class="value" id="bigStorage">…</span></div>
     <div class="card"><span class="label">Frame OS</span><span class="value" id="bigOs">…</span></div>
   </div>
-  <p id="bigStatusMessage" class="meta" role="status" aria-live="polite">Read-only status. This view does not diagnose a crash.</p>
+  <p id="bigStatusMessage" class="meta" role="status" aria-live="polite">只读状态。此视图不诊断崩溃。</p>
 </section>
-<h2>Running games</h2><div class="row"><button id="gamesRefresh" class="secondary">Refresh games</button></div>
-<div id="games" class="stack" style="margin-top:12px">Loading…</div>
-<h2>Decky plugins</h2><p>Manage official store plugins here. Decky's Quick Access Menu is absent from this VR shell. Framey can show compatible plugin panels and settings below; Steam library and store page patches are unavailable.</p>
-<div class="row"><button id="deckyRefresh" class="secondary">Refresh plugins</button><button id="deckyStoreLoad" class="secondary">Open official store</button></div>
+<h2>运行中的游戏</h2><div class="row"><button id="gamesRefresh" class="secondary">刷新游戏</button></div>
+<div id="games" class="stack" style="margin-top:12px">正在加载…</div>
+<h2>Decky 插件</h2><p>在这里管理官方商店的插件。Decky 的快捷访问菜单在这个 VR 环境里没有。Framey 可以在下方显示兼容的插件面板和设置；Steam 库和商店页面的补丁不可用。</p>
+<div class="row"><button id="deckyRefresh" class="secondary">刷新插件</button><button id="deckyStoreLoad" class="secondary">打开官方商店</button></div>
 <p id="deckyState" role="status"></p><div id="deckyInstalled" class="stack"></div>
 <div id="deckyJobPanel" class="block" hidden style="margin:14px 0"><strong id="deckyJobTitle"></strong>
   <p id="deckyJobStatus" role="status" aria-live="polite"></p><progress id="deckyJobProgress" max="100"></progress>
-  <div class="row"><button id="deckyJobCheck" class="secondary" hidden>Check result</button></div></div>
-<div id="deckyStorePanel" hidden><div class="row" style="margin:16px 0"><label>Find a plugin <input id="deckySearch" type="search" placeholder="Name, author or description"></label>
-  <label>Show <select id="deckyStoreFilter"><option value="all">All plugins</option><option value="compatible">No known install blocker</option><option value="installed">Installed plugins</option></select></label></div>
+  <div class="row"><button id="deckyJobCheck" class="secondary" hidden>查看结果</button></div></div>
+<div id="deckyStorePanel" hidden><div class="row" style="margin:16px 0"><label>查找插件 <input id="deckySearch" type="search" placeholder="名称、作者或描述"></label>
+  <label>显示 <select id="deckyStoreFilter"><option value="all">全部插件</option><option value="compatible">未发现已知安装障碍</option><option value="installed">已安装插件</option></select></label></div>
   <p id="deckyStoreSummary" role="status" aria-live="polite"></p><div id="deckyStoreList" class="stack"></div>
-  <div class="row" style="margin-top:14px"><button id="deckyStorePrevious" class="secondary">Previous</button><span id="deckyStorePage"></span><button id="deckyStoreNext" class="secondary">Next</button></div></div>
-<div id="frameyPanel" hidden><div class="row" style="margin-top:16px"><strong id="frameyTitle"></strong><button id="frameyClose" class="secondary">Close plugin panel</button>
-  <button id="frameyScrollUp" class="secondary">Scroll plugin up</button><button id="frameyScrollDown" class="secondary">Scroll plugin down</button></div>
-  <p><small>Hold a scroll button to keep moving through plugin content.</small></p>
+  <div class="row" style="margin-top:14px"><button id="deckyStorePrevious" class="secondary">上一页</button><span id="deckyStorePage"></span><button id="deckyStoreNext" class="secondary">下一页</button></div></div>
+<div id="frameyPanel" hidden><div class="row" style="margin-top:16px"><strong id="frameyTitle"></strong><button id="frameyClose" class="secondary">关闭插件面板</button>
+  <button id="frameyScrollUp" class="secondary">向上滚动插件</button><button id="frameyScrollDown" class="secondary">向下滚动插件</button></div>
+  <p><small>按住滚动按钮可连续浏览插件内容。</small></p>
   <p id="frameyCompatibility"></p>
-  <p id="frameyPanelStatus" role="status">Loading plugin panel…</p>
+  <p id="frameyPanelStatus" role="status">正在加载插件面板…</p>
   <div id="frameyCacheWarning" class="block" hidden>
-    <p role="status">Panel settings could not be saved. They are kept for this Frame Control page only; closing or reloading it may restore older settings.</p>
-    <button id="frameyCacheRetry" class="secondary">Retry saving</button></div>
-  <iframe id="frameyFrame" title="Framey Decky plugin panel" sandbox="allow-scripts allow-popups" referrerpolicy="no-referrer"></iframe></div>
-<h2>Extensions</h2><p>Local additions run only when opened in the isolated panel below. They can read status but cannot change headset settings through the extension API.</p>
-<div class="row"><button id="extensionsRefresh" class="secondary">Refresh extensions</button><span id="extensionsFolder"><small></small></span></div>
-<div id="extensions" class="stack" style="margin-top:12px">Loading…</div>
-<div id="extensionPanel" hidden><div class="row" style="margin-top:16px"><strong id="extensionTitle"></strong><button id="extensionClose" class="secondary">Close extension</button></div>
-  <iframe id="extensionFrame" title="Frame Control extension" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe></div>
+    <p role="status">面板设置无法保存。它们只保留在这个 Frame Control 页面里；关闭或重新加载后可能恢复为旧设置。</p>
+    <button id="frameyCacheRetry" class="secondary">重试保存</button></div>
+  <iframe id="frameyFrame" title="Framey Decky 插件面板" sandbox="allow-scripts allow-popups" referrerpolicy="no-referrer"></iframe></div>
+<h2>扩展</h2><p>本地扩展只在下方隔离面板中打开时运行。它们可以读取状态，但无法通过扩展 API 更改头显设置。</p>
+<div class="row"><button id="extensionsRefresh" class="secondary">刷新扩展</button><span id="extensionsFolder"><small></small></span></div>
+<div id="extensions" class="stack" style="margin-top:12px">正在加载…</div>
+<div id="extensionPanel" hidden><div class="row" style="margin-top:16px"><strong id="extensionTitle"></strong><button id="extensionClose" class="secondary">关闭扩展</button></div>
+  <iframe id="extensionFrame" title="Frame Control 扩展" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe></div>
 <script>
 const key=location.hash.slice(1)||(()=>{try{return sessionStorage.getItem('frameHeadsetKey')||'';}catch(_){return '';}})();
 if(key)try{sessionStorage.setItem('frameHeadsetKey',key);}catch(_){}
@@ -75,27 +75,27 @@ const byId=id=>document.getElementById(id);
 let latestStatus=null, activeExtension=null, recordBusy=false;
 async function api(path,body){const response=await fetch(path,{method:body?'POST':'GET',
   headers:{'X-Frame-UI':key,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
-  const data=await response.json();if(!response.ok){const error=Error(data.error||'Frame request failed');
+  const data=await response.json();if(!response.ok){const error=Error(data.error||'Frame 请求失败');
     error.status=response.status;throw error;}return data;}
 async function refresh(){try{const status=latestStatus=await api('/api/status');
-  byId('battery').textContent=status.battery?.percent==null?'Unavailable':`${status.battery.percent}%`;
+  byId('battery').textContent=status.battery?.percent==null?'不可用':`${status.battery.percent}%`;
   const free=status.disk?.home?.free;
-  byId('storage').textContent=Number.isFinite(free)?`${(free/1e9).toFixed(1)} GB`:'Unavailable';
-  byId('steamvr').textContent=status.services?.steamvr?'Running':'Unavailable';
+  byId('storage').textContent=Number.isFinite(free)?`${(free/1e9).toFixed(1)} GB`:'不可用';
+  byId('steamvr').textContent=status.services?.steamvr?'运行中':'不可用';
   byId('message').textContent=`Frame OS ${status.os?.version||'unknown'} · Updated ${new Date().toLocaleTimeString()}`;
   renderLargeStatus(status);
   }catch(error){latestStatus=null;byId('message').textContent=error.message;renderLargeStatus(null,error.message);}}
 function renderLargeStatus(status,error=''){
   const battery=status?.battery?.percent;
-  byId('bigBattery').textContent=Number.isFinite(battery)?`${battery}%`:'Unavailable';
+  byId('bigBattery').textContent=Number.isFinite(battery)?`${battery}%`:'不可用';
   byId('bigBattery').className='value'+(Number.isFinite(battery)&&battery<20?' bad':Number.isFinite(battery)&&battery<40?' warn':'');
-  byId('bigSteamvr').textContent=status?.services?.steamvr?'Running':'Unavailable';
+  byId('bigSteamvr').textContent=status?.services?.steamvr?'运行中':'不可用';
   byId('bigSteamvr').className='value'+(status?.services?.steamvr?'':' bad');
   const free=status?.disk?.home?.free;
-  byId('bigStorage').textContent=Number.isFinite(free)?`${(free/1e9).toFixed(1)} GB`:'Unavailable';
+  byId('bigStorage').textContent=Number.isFinite(free)?`${(free/1e9).toFixed(1)} GB`:'不可用';
   byId('bigStorage').className='value'+(Number.isFinite(free)&&free<5e9?' warn':'');
-  byId('bigOs').textContent=status?.os?.version||'Unknown';
-  byId('bigStatusMessage').textContent=error||`Read-only status · Frame OS build ${status?.os?.build||'unknown'} · Updated ${new Date().toLocaleTimeString()}. This view does not diagnose a crash.`;
+  byId('bigOs').textContent=status?.os?.version||'未知';
+  byId('bigStatusMessage').textContent=error||`只读状态 · Frame OS 构建 ${status?.os?.build||'unknown'} · Updated ${new Date().toLocaleTimeString()}。此视图不诊断崩溃。`;
 }
 async function act(action){const button=byId(action==='game-mode'?'gameMode':'screenshot');button.disabled=true;
   try{const result=await api('/api/headset/quick',{action});byId('actionStatus').textContent=result.message;}
@@ -103,14 +103,14 @@ async function act(action){const button=byId(action==='game-mode'?'gameMode':'sc
 async function refreshGames(){const list=byId('games');try{const data=await api('/api/running');list.replaceChildren();
   for(const game of data.running){const row=document.createElement('div');row.className='block game';
     const name=document.createElement('strong');name.textContent=game.name||`App ${game.appid}`;
-    const quit=document.createElement('button');quit.className='danger';quit.textContent=`Force quit ${name.textContent}`;
-    quit.onclick=async()=>{if(!confirm(`Force quit ${name.textContent}? Unsaved progress may be lost.`))return;
+    const quit=document.createElement('button');quit.className='danger';quit.textContent=`强制退出 ${name.textContent}`;
+    quit.onclick=async()=>{if(!confirm(`强制退出 ${name.textContent}？未保存的进度可能丢失。`))return;
       quit.disabled=true;try{const result=await api('/api/running',{action:'quit',appid:String(game.appid)});
-      byId('actionStatus').textContent=result.message||`Quit ${name.textContent}`;await refreshGames();}
+      byId('actionStatus').textContent=result.message||`退出 ${name.textContent}`;await refreshGames();}
       catch(error){byId('actionStatus').textContent=error.message;quit.disabled=false;}};
-    row.append(name,quit);list.append(row);}if(!data.running.length)list.textContent='No games are running.';
+    row.append(name,quit);list.append(row);}if(!data.running.length)list.textContent='没有正在运行的游戏。';
   }catch(error){list.textContent=error.message;}}
-function compatibilityText(plugin){const c=plugin.compatibility;return c ? `${c.status === 'na' ? 'N/A' : c.status}: ${c.reason}${c.verification?.length ? ' Verified: '+c.verification.join(', ')+'.' : ''}` : 'Unverified on Frame';}
+function compatibilityText(plugin){const c=plugin.compatibility;return c ? `${c.status === 'na' ? 'N/A' : c.status}: ${c.reason}${c.verification?.length ? ' 已验证： '+c.verification.join(', ')+'.' : ''}` : 'Frame 上未验证';}
 // Some Chromium profiles deny sessionStorage. Keep the reserved request ID in
 // memory so this open panel can still reconnect if the POST response is lost.
 let deckyPendingJob=null;
@@ -146,57 +146,57 @@ function renderDeckyInstalled(){
   for(const plugin of deckyState.plugins||[]){const row=document.createElement('div');row.className='block';
     const name=document.createElement('strong');name.textContent=`${plugin.name} ${plugin.version||''}`;row.append(name);
     const note=document.createElement('p');note.textContent=compatibilityText(plugin);row.append(note);
-    if(plugin.storeId){const open=document.createElement('button');open.className='secondary';open.textContent='Open panel';
+    if(plugin.storeId){const open=document.createElement('button');open.className='secondary';open.textContent='打开面板';
       open.disabled=deckyBusy||deckyJobPending()||!deckyState.running;
       open.onclick=()=>openFrameyPanel(plugin.storeId,plugin.name);row.append(open);
-      const button=document.createElement('button');button.className='danger';button.textContent='Remove';
+      const button=document.createElement('button');button.className='danger';button.textContent='移除';
       button.disabled=deckyBusy||deckyJobPending()||!deckyState.managed;button.onclick=()=>deckyChange('remove',
         {id:plugin.storeId,name:plugin.name,installedSha256:plugin.sha256});row.append(button);}
-    list.append(row);}if(!deckyState.plugins?.length)list.textContent='No managed plugins installed.';
+    list.append(row);}if(!deckyState.plugins?.length)list.textContent='没有已安装的受管插件。';
 }
 async function refreshDecky(reviewUnknown=false){const request=++deckyStatusRequest;
   deckyState=null;
-  byId('deckyState').textContent='Checking installed plugins…';
+  byId('deckyState').textContent='正在检查已安装插件…';
   byId('deckyInstalled').replaceChildren();
-  byId('deckyInstalled').textContent='Checking installed plugins…';
+  byId('deckyInstalled').textContent='正在检查已安装插件…';
   showDeckyStore();
   try{const state=await api('/api/decky/panel-status');
   if(request!==deckyStatusRequest)return;
   if(!Array.isArray(state.plugins)||typeof state.managed!=='boolean'||typeof state.running!=='boolean')
-    throw Error('Installed plugin status is incomplete');
+    throw Error('已安装插件状态不完整');
   const reviewedUnknown=reviewUnknown&&deckyUnknownResult;
   if(reviewUnknown)clearDeckyUnknown();
   deckyState=state;
-  if(reviewedUnknown){byId('deckyJobTitle').textContent='Previous plugin change';
-    byId('deckyJobStatus').textContent='Installed plugins refreshed. Review the list before another change.';
+  if(reviewedUnknown){byId('deckyJobTitle').textContent='上一个插件变更';
+    byId('deckyJobStatus').textContent='已安装插件已刷新。再做变更前请先检查列表。';
     byId('deckyJobProgress').hidden=true;}
   const active=(state.plugins||[]).find(p=>p.storeId===activeFrameyId);
   const panelStale=activeFrameyId!==null&&(!state.running||!active||
     active.sha256!==activeFrameyReceipt?.sha256||active.version!==activeFrameyReceipt?.version);
   if(panelStale)closeFrameyPanel();
-  byId('deckyState').textContent=deckyState.running?'Decky loader is running. Backend loading is not a VR menu check.':
-    deckyState.managed?'Decky is stopped. You can remove a managed plugin to recover, then start Decky from Frame Control on your computer.':
-    'Decky is not running. Install it from Frame Control on your computer.';
-  if(panelStale)byId('deckyState').textContent+=' The old plugin panel was closed; reopen it after refreshing.';
-  if(deckyUnknownResult)byId('deckyState').textContent+=' A previous plugin change has an unknown result. Press Refresh plugins to review installed status before another change.';
+  byId('deckyState').textContent=deckyState.running?'Decky 加载器正在运行。后端已加载并不等于 VR 菜单检查通过。':
+    deckyState.managed?'Decky 已停止。你可以移除一个受管插件来恢复，然后在电脑上用 Frame Control 启动 Decky。':
+    'Decky 未运行。请在电脑上用 Frame Control 安装。';
+  if(panelStale)byId('deckyState').textContent+=' 旧的插件面板已关闭；刷新后重新打开。';
+  if(deckyUnknownResult)byId('deckyState').textContent+=' 上一个插件变更结果未知。再做变更前请按刷新插件查看已安装状态。';
   renderDeckyInstalled();
   showDeckyStore();}catch(error){if(request!==deckyStatusRequest)return;
     const panelClosed=activeFrameyId!==null;
     if(panelClosed)closeFrameyPanel();
     deckyState=null;
-    byId('deckyState').textContent=`Installed plugins unavailable: ${error.message}`;
-    if(panelClosed)byId('deckyState').textContent+=' The plugin panel was closed until status can be refreshed.';
+    byId('deckyState').textContent=`已安装插件不可用： ${error.message}`;
+    if(panelClosed)byId('deckyState').textContent+=' 插件面板已关闭，直到状态可以刷新。';
     byId('deckyInstalled').replaceChildren();
-    byId('deckyInstalled').textContent='Refresh to check installed plugins.';
+    byId('deckyInstalled').textContent='刷新以检查已安装插件。';
     showDeckyStore();}}
 async function loadDeckyStore(){const request=++deckyStoreRequest;byId('deckyStorePanel').hidden=false;
-  deckyStoreMessage='Loading official Decky store…';
+  deckyStoreMessage='正在加载官方 Decky 商店…';
   deckyStore=[];deckyStoreIndex=0;showDeckyStore();
   try{const data=await api('/api/decky/store');if(request!==deckyStoreRequest)return;
     deckyStoreMessage='';
     deckyStore=data.plugins;deckyStoreIndex=0;showDeckyStore();}
   catch(error){if(request!==deckyStoreRequest)return;
-    deckyStoreMessage=`Store unavailable: ${error.message}`;
+    deckyStoreMessage=`商店不可用： ${error.message}`;
     deckyStore=[];deckyStoreIndex=0;showDeckyStore();}}
 function showDeckyStore(){const list=byId('deckyStoreList');list.replaceChildren();
   const q=byId('deckySearch').value.trim().toLowerCase();
@@ -206,19 +206,19 @@ function showDeckyStore(){const list=byId('deckyStoreList');list.replaceChildren
   const size=20, pages=Math.max(1,Math.ceil(found.length/size));
   deckyStoreIndex=Math.min(deckyStoreIndex,pages-1);
   byId('deckyStoreSummary').textContent=deckyStoreMessage||`${found.length} plugin${found.length===1?'':'s'} found`;
-  byId('deckyStorePage').textContent=`Page ${deckyStoreIndex+1} of ${pages}`;
+  byId('deckyStorePage').textContent=`第 ${deckyStoreIndex+1} of ${pages}`;
   byId('deckyStorePrevious').disabled=deckyStoreIndex===0;
   byId('deckyStoreNext').disabled=deckyStoreIndex>=pages-1;
-  if(!found.length&&!deckyStoreMessage)list.textContent='No plugins match this search.';
+  if(!found.length&&!deckyStoreMessage)list.textContent='没有插件匹配当前搜索。';
   for(const plugin of found.slice(deckyStoreIndex*size,(deckyStoreIndex+1)*size)){
     const row=document.createElement('div');row.className='block game';
     const label=document.createElement('div');label.textContent=`${plugin.name} ${plugin.version}${plugin.author?' · '+plugin.author:''} · ${plugin.description}`;
-    const button=document.createElement('button');button.textContent='Install';
+    const button=document.createElement('button');button.textContent='安装';
     const installed=(deckyState?.plugins||[]).find(p=>p.storeId===plugin.id);
-    if(installed)button.textContent=installed.version===plugin.version?'Reinstall':'Update';
+    if(installed)button.textContent=installed.version===plugin.version?'重新安装':'更新';
     button.disabled=deckyBusy||deckyJobPending()||!deckyState?.managed||!deckyState?.running||plugin.root||!!plugin.compatibility?.blockInstall;
     const note=document.createElement('p');note.textContent=compatibilityText(plugin);label.append(note);
-    if(plugin.root && !plugin.compatibility?.blockInstall)label.append(' · Needs root; not supported on Frame');
+    if(plugin.root && !plugin.compatibility?.blockInstall)label.append(' · 需要 root；Frame 不支持');
     button.onclick=()=>deckyChange(installed?'update':'install',
       {...plugin,installedSha256:installed?.sha256});row.append(label,button);list.append(row);}}
 function deckyJobView(title,message,percent,failed=false){
@@ -237,42 +237,42 @@ async function followDeckyJob(job,action,name){
       if(/no such job/i.test(error.message)){
         clearDeckyJob();
         markDeckyUnknown();
-        throw Error('The server has no record of this request. It may not have arrived, or the app may have restarted. Refresh installed plugins before trying again.');
+        throw Error('服务器没有这条请求的记录。它可能没有送达，或应用已重启。请先刷新已安装插件，然后重试。');
       }
       throw error;
     }
     if(progress.done){if(progress.error){clearDeckyJob();throw Error(progress.error);}
       deckyJobView(`${action} ${name}`,progress.message||`${action} complete`,100);return;}
-    deckyJobView(`${action} ${name}`,progress.stage||'Waiting for Frame…',progress.percent);
+    deckyJobView(`${action} ${name}`,progress.stage||'正在等待 Frame…',progress.percent);
     await new Promise(resolve=>setTimeout(resolve,1000));
   }
-  throw Error('Still working. Use Check result to reconnect to this job.');
+  throw Error('仍在进行中。用「检查结果」重新连接此任务。');
 }
 async function deckyChange(action,plugin){if(deckyBusy)return;
-  if(deckyUnknownResult){deckyJobView('Unknown plugin change',
-    'Refresh plugins to review installed status before starting another change.',null);return;}
+  if(deckyUnknownResult){deckyJobView('未知的插件变动',
+    '请刷新插件确认安装状态，再开始下一次变动。',null);return;}
   if(deckyJobPending()){
-    deckyJobView('Previous plugin change','Check result before starting another plugin change.',null,true);
+    deckyJobView('上一次插件变动','开始下一次插件变动前请先检查结果。',null,true);
     return;
   }
   if(!deckyState||!deckyState.managed||(action!=='remove'&&(!deckyState.running||plugin.root||plugin.compatibility?.blockInstall)))return;
-  if(!confirm(`${action} ${plugin.name}? Store plugins run code as your Frame user.`))return;
+  if(!confirm(`${action} ${plugin.name}？商店插件会以你的 Frame 用户身份运行代码。`))return;
   deckyBusy=true;byId('deckyJobCheck').disabled=true;renderDeckyInstalled();showDeckyStore();
   // Every store mutation can restart the shared Decky service. Retire even a
   // different plugin's settings view and subscriptions before submitting it.
   const panelClosed=activeFrameyId!==null;
-  const panelNote=panelClosed?(action==='remove'&&activeFrameyId===plugin.id?' Plugin panel closed after removal.':
-    ' Old plugin panel closed; reopen it after refreshing installed plugins.') : '';
+  const panelNote=panelClosed?(action==='remove'&&activeFrameyId===plugin.id?' 移除后插件面板已关闭。':
+    ' 旧插件面板已关闭；刷新已安装插件后重新打开。') : '';
   if(panelClosed)closeFrameyPanel();
   deckyJobView(`${action} ${plugin.name}`,
-    panelClosed?'Starting… Old plugin panel closed until the change finishes.':'Starting…',0);
+    panelClosed?'正在启动… 旧插件面板已关闭，变动完成前不会打开。':'正在启动…',0);
   const requestId=newDeckyRequestId();
   rememberDeckyJob({job:requestId,action,name:plugin.name});
   let accepted=false;
   try{const started=await api('/api/decky/plugin',{action,id:plugin.id,
     sha256:action==='remove'?undefined:plugin.sha256,installedSha256:plugin.installedSha256,
     acknowledged:true,requestId});
-    if(!started.job)throw Error('The server did not return a job ID');
+    if(!started.job)throw Error('服务器没有返回任务 ID');
     accepted=true;
     rememberDeckyJob({job:started.job,action,name:plugin.name});
     await followDeckyJob(started.job,action,plugin.name);
@@ -304,12 +304,12 @@ function openFrameyPanel(id,name){
   showFrameyCacheStatus();
   const session=`${Date.now()}-${Math.random()}`;
   frameySession=session;byId('frameyTitle').textContent=name;
-  byId('frameyPanelStatus').textContent='Loading plugin panel…';
+  byId('frameyPanelStatus').textContent='正在加载插件面板…';
   byId('frameyFrame').src=`/framey/panel/${id}?session=${encodeURIComponent(session)}#${session}`;
   byId('frameyPanel').hidden=false;byId('frameyPanel').scrollIntoView();
   const timer=setTimeout(()=>{if(frameyLoadTimer===timer)frameyLoadTimer=null;
-    if(activeFrameyId===id&&frameySession===session&&byId('frameyPanelStatus').textContent==='Loading plugin panel…')
-      byId('frameyPanelStatus').textContent='No compatible panel loaded. This plugin may need Steam UI features Framey cannot provide.';},12000);
+    if(activeFrameyId===id&&frameySession===session&&byId('frameyPanelStatus').textContent==='正在加载插件面板…')
+      byId('frameyPanelStatus').textContent='没有加载到兼容的面板。此插件可能需要 Framey 无法提供的 Steam 界面功能。';},12000);
   frameyLoadTimer=timer;
 }
 let frameyEventsActive=false,frameyRunningActive=false,frameyDownloadsActive=false;
@@ -384,12 +384,12 @@ function frameyCacheRead(id){
   try{const saved=frameyCacheFallback.get(id)??localStorage.getItem(frameyCacheKey(id));
     if(saved===null)return {};
     const data=JSON.parse(saved);
-    if(!data||typeof data!=='object'||Array.isArray(data))throw Error('Invalid cache');
+    if(!data||typeof data!=='object'||Array.isArray(data))throw Error('缓存无效');
     const pairs=Object.entries(data);
     if(pairs.length<=64&&pairs.every(([key,value])=>key.length<=256&&typeof value==='string'&&value.length<=65536)&&
       JSON.stringify(data).length<=128*1024)return data;
   }catch(_){}
-  throw Error('Could not read saved plugin settings. Reopen the panel after browser storage is available; invalid saved data must be recovered before editing.');
+  throw Error('无法读取已保存的插件设置。浏览器存储可用后请重新打开面板；编辑前必须先恢复无效的已保存数据。');
 }
 function frameyCacheSave(id,entries){
   if(!entries||typeof entries!=='object'||Array.isArray(entries))return;
@@ -411,8 +411,8 @@ window.addEventListener('message',async event=>{
   const req=event.data;if(!req||typeof req!=='object')return;
   if(req.type==='framey:scroll:result'&&req.session===frameySession){
     if(['up','down'].includes(req.direction)&&typeof req.moved==='boolean')
-      byId('frameyPanelStatus').textContent=req.moved?'Scrolled plugin '+req.direction:
-        'No more plugin content in that direction';
+      byId('frameyPanelStatus').textContent=req.moved?'已滚动插件 '+req.direction:
+        '该方向没有更多插件内容';
     if(req.moved===false&&frameyScrollHold?.direction===req.direction)stopFrameyScrollHold();
     return;
   }
@@ -432,16 +432,16 @@ window.addEventListener('message',async event=>{
     const saved=req.method==='save'&&Array.isArray(req.args)&&req.args.length===1
       ? frameyCacheSave(activeFrameyId,req.args[0]) : undefined;
     if(saved!==true)reply.error=saved===false
-      ? 'Plugin settings are only in memory. Use Retry saving before closing or reloading Frame Control.'
-      : 'Invalid plugin settings snapshot';
+      ? '插件设置只在内存中。关闭或重新加载 Frame Control 前请先「重试保存」。'
+      : '插件设置快照无效';
     event.source.postMessage(reply,'*');return;
   }
-  if(req.type==='framey:ready'&&req.session===frameySession){clearFrameyLoadTimer();byId('frameyPanelStatus').textContent='Plugin panel ready';
+  if(req.type==='framey:ready'&&req.session===frameySession){clearFrameyLoadTimer();byId('frameyPanelStatus').textContent='插件面板已就绪';
     api('/api/framey/check',{kind:'panel',pluginId:activeFrameyId}).catch(()=>{});return;}
   if(req.type==='framey:input'&&req.session===frameySession){
     api('/api/framey/check',{kind:'input'}).catch(()=>{});return;}
   if(req.type==='framey:error'&&req.session===frameySession){clearFrameyLoadTimer();
-    byId('frameyPanelStatus').textContent=`Plugin panel unavailable: ${String(req.message).slice(0,200)}`;return;}
+    byId('frameyPanelStatus').textContent=`插件面板不可用： ${String(req.message).slice(0,200)}`;return;}
   if(req.type==='framey:downloads:close'){
     if(req.session===frameySession&&frameyDownloadsActive){
       frameyDownloadsActive=false;
@@ -518,9 +518,9 @@ window.addEventListener('message',async event=>{
 window.addEventListener('pointerup',event=>{if(event.isTrusted)
   api('/api/framey/check',{kind:'input'}).catch(()=>{});},{passive:true});
 async function refreshRecord(){try{const data=await api('/api/record');
-  byId('record').textContent=['recording','starting'].includes(data.state)?'Stop recording':'Start recording';
+  byId('record').textContent=['recording','starting'].includes(data.state)?'停止录制':'开始录制';
   byId('record').disabled=recordBusy||['stopping','saving'].includes(data.state);
-  if(data.state==='recording')byId('actionStatus').textContent=`Recording ${Math.round(data.elapsed||0)} s${data.audio?' with sound':' without sound'}`;
+  if(data.state==='recording')byId('actionStatus').textContent=`录制中 ${Math.round(data.elapsed||0)} s${data.audio?' 带声音':' 无声音'}`;
   else if(data.state==='saved'||data.state==='failed')byId('actionStatus').textContent=data.message||data.error;
   }catch(error){byId('record').disabled=true;byId('actionStatus').textContent=error.message;}}
 async function toggleRecord(){if(recordBusy)return;recordBusy=true;byId('record').disabled=true;
@@ -528,14 +528,14 @@ async function toggleRecord(){if(recordBusy)return;recordBusy=true;byId('record'
     const result=await api('/api/record',{action});byId('actionStatus').textContent=result.message||result.state;}
   catch(error){byId('actionStatus').textContent=error.message;}finally{recordBusy=false;refreshRecord();}}
 async function refreshExtensions(){const list=byId('extensions');try{const data=await api('/api/extensions');
-  byId('extensionsFolder').textContent=`Folder: ${data.folder}`;list.replaceChildren();
+  byId('extensionsFolder').textContent=`文件夹： ${data.folder}`;list.replaceChildren();
   for(const ext of data.extensions){const row=document.createElement('div');row.className='block game';
     const label=document.createElement('span');label.textContent=`${ext.name} · ${ext.description}`;
     const open=document.createElement('button');open.textContent=`Open ${ext.name}`;open.onclick=()=>{
       activeExtension=ext.id;byId('extensionTitle').textContent=ext.name;
       byId('extensionFrame').src=`/extension/${encodeURIComponent(ext.id)}/index.html`;
       byId('extensionPanel').hidden=false;byId('extensionPanel').scrollIntoView();};
-    row.append(label,open);list.append(row);}if(!data.extensions.length)list.textContent='No extensions installed.';
+    row.append(label,open);list.append(row);}if(!data.extensions.length)list.textContent='未安装扩展。';
   if(data.errors.length){const errors=document.createElement('p');errors.textContent=data.errors.map(x=>`${x.folder}: ${x.error}`).join('; ');list.append(errors);}
   }catch(error){list.textContent=error.message;}}
 byId('refresh').onclick=refresh;byId('gameMode').onclick=()=>act('game-mode');byId('screenshot').onclick=()=>act('screenshot');

@@ -9,7 +9,7 @@ const FILE = "com.saphid.frame-control.desktop";
 
 function quoteExec(value) {
   if (typeof value !== "string" || !value || /[\r\n\0]/.test(value)) {
-    throw new Error("Invalid executable path for login item.");
+    throw new Error("登录项的启动程序路径无效。");
   }
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\$/g, "\\$").replace(/`/g, "\\`").replace(/%/g, "%%")}"`;
 }
@@ -34,11 +34,11 @@ function createLoginItem({ platform = process.platform, electronApp, env = proce
     if (platform !== "linux") {
       electronApp.setLoginItemSettings({ openAtLogin: !!enabledNow, openAsHidden: !!enabledNow,
                                         args: enabledNow ? ["--hidden"] : [] });
-      if (enabled() !== !!enabledNow) throw new Error("The operating system did not save the login item.");
+      if (enabled() !== !!enabledNow) throw new Error("操作系统没有保存登录项。");
       return enabled();
     }
     if (enabledNow) {
-      if (filesystem.existsSync(file) && !owned()) throw new Error(`A different autostart entry already exists: ${file}`);
+      if (filesystem.existsSync(file) && !owned()) throw new Error(`已存在另一个自启动项： ${file}`);
       filesystem.mkdirSync(path.dirname(file), { recursive: true });
       const body = MARKER + "[Desktop Entry]\nType=Application\nName=Frame Control\n" +
         `Exec=${quoteExec(command)} --hidden\nTerminal=false\nX-GNOME-Autostart-enabled=true\n`;

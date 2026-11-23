@@ -1,8 +1,8 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Frame Control · Assistant</title>
+<title>Frame Control · 助手</title>
 <style>
 :root { color-scheme:dark; font:20px/1.5 system-ui,sans-serif; background:#171d25; color:#e4e9ef }
 * { box-sizing:border-box } body { max-width:1050px; margin:0 auto; padding:28px }
@@ -14,29 +14,29 @@ button.primary { background:#176b9c } button:disabled { opacity:.5; cursor:wait 
 summary { overflow-wrap:anywhere; cursor:pointer }
 pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; max-height:380px; overflow:auto } [hidden] { display:none!important } #status { min-height:1.5em } small { color:#b8c6d5 }
 </style>
-<header><h1>Frame Control · Assistant</h1><a id="back" href="/" referrerpolicy="no-referrer">Back to Frame Control</a></header>
+<header><h1>Frame Control · 助手</h1><a id="back" href="/" referrerpolicy="no-referrer">返回 Frame Control</a></header>
 <section id="approval" hidden aria-labelledby="approval-title">
-<h2 id="approval-title">An agent wants to change your Frame</h2>
-<p>Review the exact action below. Approve only if you asked for it. Approval expires after five minutes and works once.</p>
-<pre id="action"></pre><button id="approve" class="primary">Approve this action</button><button id="reject">Reject</button>
+<h2 id="approval-title">代理想要更改你的 Frame</h2>
+<p>请先核对下面的具体操作。只有在你确实要求过时才批准。批准五分钟后失效，只能使用一次。</p>
+<pre id="action"></pre><button id="approve" class="primary">批准此操作</button><button id="reject">拒绝</button>
 <p id="approval-status" role="status"></p>
 </section>
 <section aria-labelledby="chat-title">
-<h2 id="chat-title">Ask your chosen model</h2>
-<p>Nothing is sent until you opt in and press Send. Each request sends only the message below and, if selected, a fresh headset screenshot. Replies cannot operate your Frame.</p>
+<h2 id="chat-title">询问你选择的模型</h2>
+<p>在你勾选同意并点击发送之前，不会发送任何内容。每次请求只发送下面的消息，以及（如已勾选）一张最新的头显截图。回复无法操作你的 Frame。</p>
 <form id="chat">
-<details id="settings" open><summary id="settings-label">Endpoint and model settings</summary>
-<label>Chat-completions endpoint<input id="endpoint" type="url" placeholder="http://127.0.0.1:1234/v1/chat/completions" required autocomplete="off"></label>
-<small>Use an OpenAI-compatible endpoint. Loopback means the computer running Frame Control. Remote endpoints require HTTPS.</small>
-<label>Model<input id="model" required placeholder="Model name from your endpoint" autocomplete="off"></label>
-<label>API key (optional)<input id="key" type="password" autocomplete="off"></label>
-<small>Settings, keys and messages stay in this page’s memory. Reload or close to clear them. No analytics, saved chat history or automatic model discovery.</small></details>
-<label><input id="consent" type="checkbox">I allow sending this message to the endpoint shown above.</label>
-<label><input id="screenshot" type="checkbox">Also send one headset screenshot with this message. It may contain private information.</label>
-<label>Message<textarea id="prompt" rows="3" maxlength="32000" required></textarea></label>
-<button id="send" class="primary" type="submit">Send message</button><button id="clear" type="button">Clear everything</button>
+<details id="settings" open><summary id="settings-label">端点与模型设置</summary>
+<label>对话补全端点<input id="endpoint" type="url" placeholder="http://127.0.0.1:1234/v1/chat/completions" required autocomplete="off"></label>
+<small>使用兼容 OpenAI 的端点。回环地址指运行 Frame Control 的这台电脑。远程端点必须使用 HTTPS。</small>
+<label>模型<input id="model" required placeholder="你端点上的模型名称" autocomplete="off"></label>
+<label>API 密钥（可选）<input id="key" type="password" autocomplete="off"></label>
+<small>设置、密钥和消息只保存在此页面的内存中。刷新或关闭即会清除。没有统计、聊天记录保存或自动发现模型。</small></details>
+<label><input id="consent" type="checkbox">我允许把这条消息发送到上面显示的端点。</label>
+<label><input id="screenshot" type="checkbox">同时随这条消息发送一张头显截图。它可能包含隐私信息。</label>
+<label>消息<textarea id="prompt" rows="3" maxlength="32000" required></textarea></label>
+<button id="send" class="primary" type="submit">发送消息</button><button id="clear" type="button">清除全部</button>
 </form>
-<p id="status" role="status" aria-live="polite"></p><pre id="reply" aria-label="Model reply"></pre>
+<p id="status" role="status" aria-live="polite"></p><pre id="reply" aria-label="模型回复"></pre>
 </section>
 <script>
 'use strict';
@@ -50,21 +50,21 @@ async function api(path, body) {
     headers:{'X-Frame-UI':key,'Content-Type':'application/json'},
     body:body === undefined ? undefined : JSON.stringify(body)});
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || 'Request failed');
+  if (!response.ok) throw new Error(data.error || '请求失败');
   return data;
 }
 function revoke() { $('consent').checked = false; $('screenshot').checked = false; }
 $('endpoint').addEventListener('input', revoke);
 $('model').addEventListener('input', revoke);
-$('clear').onclick = () => { generation++; $('chat').reset(); $('settings').open = true; $('settings-label').textContent = 'Endpoint and model settings'; $('reply').textContent = ''; $('status').textContent = 'Cleared. A request already sent cannot be recalled.'; };
+$('clear').onclick = () => { generation++; $('chat').reset(); $('settings').open = true; $('settings-label').textContent = '端点与模型设置'; $('reply').textContent = ''; $('status').textContent = '已清除。已发送的请求无法撤回。'; };
 $('chat').onsubmit = async event => {
   event.preventDefault();
-  if (!$('consent').checked) { $('status').textContent = 'Opt in before sending a message.'; return; }
+  if (!$('consent').checked) { $('status').textContent = '发送消息前请先勾选同意。'; return; }
   const current = ++generation;
   const body = Object.fromEntries(['endpoint','model','key','prompt'].map(id => [id,$(id).value]));
   Object.assign(body, {consent:true,screenshot:$('screenshot').checked});
-  $('settings-label').textContent = body.model + ' at ' + body.endpoint; $('settings').open = false; $('send').disabled = true; $('reply').textContent = ''; $('status').textContent = 'Sending to ' + body.endpoint + '…'; revoke();
-  try { const data = await api('/api/assistant/chat', body); if (current === generation) { $('reply').textContent = data.reply; $('status').textContent = 'Reply received.'; } }
+  $('settings-label').textContent = body.model + ' at ' + body.endpoint; $('settings').open = false; $('send').disabled = true; $('reply').textContent = ''; $('status').textContent = '正在发送至 ' + body.endpoint + '…'; revoke();
+  try { const data = await api('/api/assistant/chat', body); if (current === generation) { $('reply').textContent = data.reply; $('status').textContent = '已收到回复。'; } }
   catch (error) { if (current === generation) $('status').textContent = error.message; }
   finally { $('send').disabled = false; }
 };
@@ -79,14 +79,14 @@ async function loadApproval() {
     const data = await api('/api/agent/approval?confirmation=' + encodeURIComponent(confirmation));
     if (current !== approvalGeneration) return;
     $('action').textContent = JSON.stringify(data.action, null, 2);
-    $('approval-status').textContent = data.approved ? 'Already approved. Ask the agent to retry.' : '';
+    $('approval-status').textContent = data.approved ? '此前已批准。请让代理重试。' : '';
     $('approve').disabled = data.approved; $('reject').disabled = false;
   } catch (error) { if (current === approvalGeneration) { $('action').textContent = ''; $('approval-status').textContent = error.message; } }
 }
 for (const [id, accept] of [['approve',true],['reject',false]]) $(id).onclick = async () => {
   const current = approvalGeneration;
   $('approve').disabled = $('reject').disabled = true;
-  try { const data = await api('/api/agent/approval', {confirmation,accept}); if (current !== approvalGeneration) return; $('approval-status').textContent = data.message + (accept ? '. Ask the agent to retry now.' : '.'); }
+  try { const data = await api('/api/agent/approval', {confirmation,accept}); if (current !== approvalGeneration) return; $('approval-status').textContent = data.message + (accept ? '。请让代理现在重试。' : '.'); }
   catch (error) { if (current === approvalGeneration) $('approval-status').textContent = error.message; }
 };
 window.addEventListener('hashchange', loadApproval); loadApproval();

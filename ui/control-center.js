@@ -6,109 +6,109 @@
 })(typeof window === 'object' ? window : globalThis, function () {
   'use strict';
   const categories = [
-    ['all', 'Everything', 'grid'], ['device', 'Device & audio', 'device'],
-    ['vr', 'VR & comfort', 'eye'], ['apps', 'Apps & files', 'apps'],
-    ['network', 'Connection & remote', 'network'], ['companion', 'Frame Control', 'settings'],
+    ['all', '全部', 'grid'], ['device', '设备与音频', 'device'],
+    ['vr', 'VR 与舒适度', 'eye'], ['apps', '应用与文件', 'apps'],
+    ['network', '连接与远程', 'network'], ['companion', 'Frame Control', 'settings'],
   ];
   // Each destination is an existing workflow, with its own guards and confirmations.
   const catalog = [
-    {id:'audio', category:'device', icon:'audio', title:'Audio', kind:'control', label:'Available here',
-      description:'Set the default headset output volume or mute it. Changes apply only when you choose Apply or Mute.',
-      keywords:'sound speakers headphones loud quiet', special:'audio'},
-    {id:'health', category:'device', icon:'pulse', title:'Battery & thermal health', kind:'read', label:'Read-only metrics',
-      description:'Inspect charge, signed battery power, charger readings, battery temperature, health and optional capacity / cycle readings. Heat warnings use the kernel’s own hot and critical trip points.',
-      keywords:'battery charging charger charge time estimate remaining power watts usb health cycles capacity wear heat temperature thermal sensor', special:'health', links:[['#comfort','Configure battery & heat alerts']]},
-    {id:'storage', category:'device', icon:'files', title:'Storage & memory', kind:'read', label:'Read-only metrics',
-      description:'Check free user and system storage plus available RAM. Manage installed apps in their existing libraries, or use SFTP for files.',
-      keywords:'disk space root home free total ram memory capacity cleanup usage storage', special:'storage', links:[['#library','Installed games'],['#linuxApps','Linux apps'],['#power','SFTP & remote tools']]},
-    {id:'microphone', category:'device', icon:'audio', title:'Microphone & audio routing', kind:'headset', label:'In the headset',
-      description:'Frame Control controls the default output volume only. Microphone mute, input gain, output selection, balance and per-app mixers have no verified API here.',
-      keywords:'mic input microphone audio sink output device gain mute eq equalizer spatial audio balance headphones',
-      guidance:'Check the headset’s audio controls or the app’s own audio settings for these adjustments.'},
-    {id:'power', category:'device', icon:'power', title:'Power & sleep', kind:'flow', label:'Existing controls',
-      description:'Sleep, restart or shut down with confirmation and your Developer Mode password. A sleeping Frame must be woken on the device.',
-      keywords:'battery suspend reboot off awake idle timeout keep awake inhibitor', links:[['#power','Power controls']],
-      guidance:'Set automatic sleep in the headset: Steam Settings → Power → Sleep after inactivity. Keep-awake is available through the existing script/MCP tools; there is no switch here.'},
-    {id:'system', category:'device', icon:'device', title:'SteamOS & hardware', kind:'headset', label:'In the headset',
-      description:'Check your current OS build above. Manage system updates, Developer Mode and hardware settings in Steam Settings on the Frame.',
-      keywords:'firmware update beta stable channel developer password bluetooth controller battery pairing calibration brightness refresh rate display IPD lenses passthrough camera eye hand tracking foveation recovery factory reset',
-      guidance:'Brightness, refresh rate, optics, controllers, Bluetooth and passthrough have no verified remote controls here. Check the headset’s own controls. Recovery and factory reset are manual procedures.'},
-    {id:'performance', category:'vr', icon:'pulse', title:'Performance monitor', kind:'read', label:'Read-only metrics',
-      description:'CPU, GPU clock, app and compositor timings come from the Frame. Unavailable timings stay empty, including when SteamVR is in standby.',
-      keywords:'fps frame rate gpu cpu heat temperature thermal sensor render memory', special:'performance', links:[['#vrTools','HUD & performance tools']]},
-    {id:'view', category:'vr', icon:'eye', title:'Headset view & casting', kind:'flow', label:'Existing controls',
-      description:'Capture the lenses or desktop, stream live video, and control a focused panel. Casting can reveal private content.',
-      keywords:'screenshot camera video capture live stream desktop mirror control eye', links:[['#view','Open headset view'],['#shots','Screenshots']]},
-    {id:'comfort', category:'vr', icon:'clock', title:'Family & comfort', kind:'flow', label:'Existing controls',
-      description:'Set a session limit, breaks and check-ins, with battery and heat alerts. Headset reminders continue if your companion disconnects.',
-      keywords:'parent child timer minutes notifications health break low battery', links:[['#comfort','Configure a session']],
-      guidance:'A reminder, not a parental lock. Save and pause before the session returns to Steam Home.'},
-    {id:'playspace', category:'vr', icon:'space', title:'Playspace & movement', kind:'headset', label:'In the headset',
-      description:'Use SteamVR’s recenter and room setup. Choose seated play, snap-turn, teleport and vignettes in each game’s own settings.',
-      keywords:'boundary guardian tracking origin floor standing seated motion sickness locomotion turn recenter room',
-      guidance:'No verified universal locomotion switch or remote tracking-origin control is available.'},
-    {id:'panels', category:'vr', icon:'grid', title:'Panels & workspace', kind:'flow', label:'Existing controls',
-      description:'Find an open panel and bring it forward, or open the panel switcher in the headset. Move, size and dock panels with SteamVR’s dashboard.',
-      keywords:'overlay window layout float world curvature docking theatre multitasking', links:[['#panels','Open panel switcher']],
-      guidance:'Saved spatial layouts are not available. Panel placement stays in SteamVR.'},
-    {id:'steam', category:'apps', icon:'game', title:'Steam library', kind:'flow', label:'Existing controls',
-      description:'Browse owned games and Frame ratings, install with progress, or launch an installed game. Purchases and license prompts use Steam.',
-      keywords:'games download install store owned compatibility rating verified proton', links:[['#library','Installed games'],['#getgames','Library & store']]},
-    {id:'forcequit', category:'apps', icon:'power', title:'Force quit a game', kind:'control', label:'Available here',
-      description:'See what’s running on the Frame and quit a game or app that has stopped responding. Steam is asked first; if the game stays open, its own processes are stopped. Unsaved progress is lost.',
-      keywords:'hang hung frozen freeze crash stuck kill close stop end task running not responding exit', special:'forcequit'},
-    {id:'android', category:'apps', icon:'apps', title:'Android apps', kind:'flow', label:'Existing controls',
-      description:'Discover apps, manage Lepton instances, and launch, stop, test or remove installed apps. View compatibility reports before installing.',
-      keywords:'apk fdroid lepton application sideload sources repository reports', links:[['#appStore','Discover apps'],['#androidLibrary','Manage installed apps']]},
-    {id:'sources', category:'apps', icon:'shield', title:'App sources & compatibility', kind:'flow', label:'Existing controls',
-      description:'Choose catalogue sources or add a signed F-Droid repository from Sources. Review install availability and compatibility reports for the exact app.',
-      keywords:'fdroid f-droid repository source fingerprint trust signature compatibility report apk sidequest data backup restore', links:[['#appStore','Catalogue & sources'],['#androidLibrary','Apps & reports']],
-      guidance:'Android data backup and restore are script-only. This interface does not provide an app-data recovery workflow.'},
-    {id:'display', category:'apps', icon:'display', title:'Android display & text', kind:'flow', label:'Existing controls',
-      description:'Choose a running Android instance, then set resolution, UI density and text size, or reset to its defaults.',
-      keywords:'dpi scaling font scale sharp native 1920 1080 2560 1440 resolution screen text accessibility', links:[['#display','Configure app display']],
-      guidance:'Applies to that Lepton instance, not the headset’s lenses. Persistence after relaunch is unverified.'},
-    {id:'sideload', category:'apps', icon:'game', title:'Sideloaded games', kind:'flow', label:'Existing controls',
-      description:'Send a game folder, ZIP or executable. Frame Control selects Proton or the Linux runtime and adds a Steam library entry.',
-      keywords:'windows exe zip linux devkit runtime shortcuts launch remove', links:[['#sideloaded','Manage titles'],['#transfer','Send a game']]},
-    {id:'files', category:'apps', icon:'files', title:'Send files', kind:'flow', label:'Existing controls',
-      description:'Send files to ~/Downloads, or a game to the Steam library. Clipboard text, both ways, is in Type on the headset.',
-      keywords:'upload transfer downloads sftp storage', links:[['#transfer','Send files'],['#pad','Clipboard']]},
-    {id:'media', category:'apps', icon:'play', title:'Video & stereo photos', kind:'flow', label:'Preview feature',
-      description:'Send and play H.264/H.265 video, SBS/OU photos or small splats with the built-in player. Choose a layout and theatre surround.',
-      keywords:'movie photo sbs ou 3d splat gaussian theatre media player', links:[['#media','Open media player']],
-      guidance:'Seeking, subtitles, native HEIC/MPO and large splat scenes are not supported yet.'},
-    {id:'flatpak', category:'apps', icon:'apps', title:'Linux desktop apps', kind:'flow', label:'Existing controls',
-      description:'Install user Flatpaks by Flathub ID, choose quick picks like VLC and Moonlight, and manage installed apps.',
-      keywords:'flatpak firefox vlc remmina moonlight flathub install remove', links:[['#linuxApps','Manage Linux apps']]},
-    {id:'connection', category:'network', icon:'network', title:'Headsets & addresses', kind:'flow', label:'Existing controls',
-      description:'Manage headsets, LAN, USB-C, mDNS and Tailscale addresses. Inspect connection attempts and choose the device you want to control.',
-      keywords:'wifi wi-fi network ip ssh pairing keys discovery alias tailscale usb offline reconnect', links:[['#devices','Manage headsets','desktop'],['#connection','Connection details']],
-      guidance:'Join Wi-Fi networks on the headset. Frame Control manages connection addresses; it does not change Wi-Fi credentials.'},
-    {id:'remote', category:'network', icon:'display', title:'Remote access', kind:'flow', label:'Existing controls',
-      description:'Open SSH, SFTP, Steam Link or remote desktop using the host’s existing tools. Developer Mode enables headset SSH and xrdp.',
-      keywords:'terminal shell remote desktop rdp xrdp streaming steam link sftp', links:[['#power','Open remote tools']]},
-    {id:'input', category:'network', icon:'keyboard', title:'Type on the headset', kind:'flow', label:'Existing controls',
-      description:'Type and point in the Frame’s apps with this computer’s keyboard and mouse, and copy text both ways between the clipboards. Press T anywhere to open it.',
-      keywords:'mouse pointer keyboard trackpad touch click kde connect input type typing text clipboard copy paste send',
-      links:[['#pad','Type on the headset'],['#view','Panel control']],
-      guidance:'The keyboard sets up KDE Connect on the Frame the first time. The clipboard needs the desktop panel open in the headset.'},
-    {id:'mac', category:'network', icon:'display', title:'Mac in the headset', kind:'flow', label:'macOS only', platform:'mac',
-      description:'Stream Mac screens or individual windows into headset panels. Choose quality and give each window its own display.',
-      keywords:'macos mac window screen sharing stream quality sharp balanced light permissions', links:[['#macview','Configure Mac streaming']],
-      guidance:'Requires Frame Control running on a Mac. It is unavailable when the server runs on Windows, Linux or the headset.'},
-    {id:'privacy', category:'companion', icon:'shield', title:'Privacy & sharing', kind:'flow', label:'Companion settings',
-      description:'Choose anonymous usage statistics, compatibility sharing and error details separately. Inspect what was sent and manage your optional contact email.',
-      keywords:'telemetry analytics diagnostics consent data tracking email contact opt out', links:[['#privacy','Privacy settings']]},
-    {id:'artwork', category:'companion', icon:'image', title:'Library artwork', kind:'flow', label:'Companion settings',
-      description:'Configure an optional SteamGridDB key or refresh artwork. Without a key, source images and generated art remain available.',
-      keywords:'cover image steamgriddb api key library art refresh', links:[['#artworkSettings','Artwork settings']]},
-    {id:'assistant', category:'companion', icon:'spark', title:'Assistant & agents', kind:'flow', label:'Opt-in tools',
-      description:'Use your own model endpoint and review proposed actions. Nothing goes to a model until you opt in; protected actions need approval.',
-      keywords:'ai mcp model endpoint agent approvals chat assistant', links:[['/assistant','Open assistant']]},
-    {id:'support', category:'companion', icon:'help', title:'Updates & diagnostics', kind:'flow', label:'Companion settings',
-      description:'Check Frame Control updates in the desktop app or prepare a private problem report. Review the diagnostic preview before sending.',
-      keywords:'app version bug feedback support update log error report licenses', links:[['#privacy','Updates & problem reports']]},
+    {id:'audio', category:'device', icon:'audio', title:'音频', kind:'control', label:'可在此操作',
+      description:'设置头显默认输出音量，或将其静音。只有选择应用或静音后才会生效。',
+      keywords:'声音 扬声器 耳机 响亮 安静', special:'audio'},
+    {id:'health', category:'device', icon:'pulse', title:'电池与散热状况', kind:'read', label:'只读指标',
+      description:'查看电量、带符号的电池功率、充电器读数、电池温度、健康度以及可选的容量/循环读数。过热警告使用内核自身的过热与临界阈值。',
+      keywords:'电池 充电 充电器 剩余时间 功率 瓦 usb 健康度 循环 容量 磨损 发热 温度 热 传感器', special:'health', links:[['#comfort','配置电池与过热提醒']]},
+    {id:'storage', category:'device', icon:'files', title:'存储与内存', kind:'read', label:'只读指标',
+      description:'查看用户与系统可用存储空间以及可用内存。在现有库中管理已安装应用，或使用 SFTP 传输文件。',
+      keywords:'磁盘 空间 根目录 主目录 可用 总量 内存 容量 清理 占用 存储', special:'storage', links:[['#library','已安装游戏'],['#linuxApps','Linux 应用'],['#power','SFTP 与远程工具']]},
+    {id:'microphone', category:'device', icon:'audio', title:'麦克风与音频路由', kind:'headset', label:'在头显中',
+      description:'Frame Control 只能控制默认输出音量。麦克风静音、输入增益、输出选择、声道平衡和按应用混音在这里没有经过验证的 API。',
+      keywords:'麦克风 输入 音频 输出 设备 增益 静音 均衡器 空间音频 平衡 耳机',
+      guidance:'这些调整请在头显的音频控制或应用自身的音频设置中完成。'},
+    {id:'power', category:'device', icon:'power', title:'电源与休眠', kind:'flow', label:'现有控制',
+      description:'休眠、重启或关机需要确认并输入开发者模式密码。休眠中的 Frame 必须在设备上唤醒。',
+      keywords:'电池 挂起 重启 关机 唤醒 空闲 超时 保持唤醒 抑制', links:[['#power','电源控制']],
+      guidance:'在头显中设置自动休眠：Steam 设置 → 电源 → 空闲后休眠。保持唤醒可通过现有的脚本/MCP 工具实现，这里没有开关。'},
+    {id:'system', category:'device', icon:'device', title:'SteamOS 与硬件', kind:'headset', label:'在头显中',
+      description:'在上方查看当前系统版本。系统更新、开发者模式和硬件设置请在 Frame 的 Steam 设置中管理。',
+      keywords:'固件 更新 测试版 稳定版 通道 开发者 密码 蓝牙 手柄 电池 配对 校准 亮度 刷新率 显示 IPD 镜片 透视 相机 眼动 手部追踪 注视点渲染 恢复 恢复出厂设置',
+      guidance:'亮度、刷新率、光学、手柄、蓝牙和透视在这里没有经过验证的远程控制。请在头显自带的控制中调整。系统恢复和恢复出厂设置属于手动操作。'},
+    {id:'performance', category:'vr', icon:'pulse', title:'性能监视器', kind:'read', label:'只读指标',
+      description:'CPU、GPU 频率以及应用与合成器的耗时数据来自 Frame。不可用的耗时保持空白，包括 SteamVR 处于待机时。',
+      keywords:'fps 帧率 gpu cpu 发热 温度 热 传感器 渲染 内存', special:'performance', links:[['#vrTools','HUD 与性能工具']]},
+    {id:'view', category:'vr', icon:'eye', title:'头显画面与投屏', kind:'flow', label:'现有控制',
+      description:'截取镜片画面或桌面、串流实时视频，并控制聚焦的面板。投屏可能暴露隐私内容。',
+      keywords:'截图 相机 视频 采集 实时 串流 桌面 镜像 控制 眼睛', links:[['#view','打开头显画面'],['#shots','截图']]},
+    {id:'comfort', category:'vr', icon:'clock', title:'家庭与舒适', kind:'flow', label:'现有控制',
+      description:'设置会话时限、休息和确认提醒，并带电池与过热提醒。即使伴侣端断开连接，头显内的提醒仍会继续。',
+      keywords:'家长 儿童 计时 分钟 通知 健康 休息 低电量', links:[['#comfort','配置会话']],
+      guidance:'这是提醒，不是家长锁。请在会话结束返回 Steam 主界面前保存并暂停。'},
+    {id:'playspace', category:'vr', icon:'space', title:'游玩空间与移动', kind:'headset', label:'在头显中',
+      description:'使用 SteamVR 的重置视角和房间设置。坐姿游玩、快速转身、传送和暗角请在各游戏自己的设置中选择。',
+      keywords:'边界 防护墙 追踪 原点 地面 站立 坐姿 晕动 移动 转身 重置 房间',
+      guidance:'没有经过验证的通用移动开关，也没有远程追踪原点控制。'},
+    {id:'panels', category:'vr', icon:'grid', title:'面板与工作区', kind:'flow', label:'现有控制',
+      description:'找到已打开的面板并把它移到前面，或在头显中打开面板切换器。面板的移动、缩放和停靠请用 SteamVR 仪表盘。',
+      keywords:'叠加 窗口 布局 浮动 世界 曲面 停靠 影院 多任务', links:[['#panels','打开面板切换器']],
+      guidance:'不支持保存的空间布局。面板摆放仍由 SteamVR 管理。'},
+    {id:'steam', category:'apps', icon:'game', title:'Steam 库', kind:'flow', label:'现有控制',
+      description:'浏览已拥有的游戏和 Frame 评级、查看安装进度，或启动已安装的游戏。购买和许可提示由 Steam 处理。',
+      keywords:'游戏 下载 安装 商店 已拥有 兼容性 评级 已验证 proton', links:[['#library','已安装游戏'],['#getgames','库与商店']]},
+    {id:'forcequit', category:'apps', icon:'power', title:'强制退出游戏', kind:'control', label:'可在此操作',
+      description:'查看 Frame 上正在运行的内容，并退出已无响应的游戏或应用。会先请求 Steam 处理；如果游戏仍未关闭，就停止它自己的进程。未保存的进度会丢失。',
+      keywords:'卡死 无响应 冻结 崩溃 卡住 结束 关闭 停止 结束任务 运行中 退出', special:'forcequit'},
+    {id:'android', category:'apps', icon:'apps', title:'Android 应用', kind:'flow', label:'现有控制',
+      description:'发现应用、管理 Lepton 实例，并启动、停止、测试或移除已安装应用。安装前可查看兼容性报告。',
+      keywords:'apk fdroid lepton 应用 侧载 来源 仓库 报告', links:[['#appStore','发现应用'],['#androidLibrary','管理已安装应用']]},
+    {id:'sources', category:'apps', icon:'shield', title:'应用来源与兼容性', kind:'flow', label:'现有控制',
+      description:'在来源中选择目录源，或添加带签名的 F-Droid 仓库。查看具体应用的安装可用性和兼容性报告。',
+      keywords:'fdroid f-droid 仓库 来源 指纹 信任 签名 兼容性 报告 apk sidequest 数据 备份 还原', links:[['#appStore','目录与来源'],['#androidLibrary','应用与报告']],
+      guidance:'Android 数据备份和还原只能通过脚本完成。此界面不提供应用数据恢复流程。'},
+    {id:'display', category:'apps', icon:'display', title:'Android 显示与文字', kind:'flow', label:'现有控制',
+      description:'选择一个运行中的 Android 实例，然后设置分辨率、界面密度和文字大小，或恢复其默认值。',
+      keywords:'dpi 缩放 字体 缩放 清晰 原生 1920 1080 2560 1440 分辨率 屏幕 文字 无障碍', links:[['#display','配置应用显示']],
+      guidance:'只对该 Lepton 实例生效，不影响头显镜片。重新启动后是否保留尚未验证。'},
+    {id:'sideload', category:'apps', icon:'game', title:'侧载游戏', kind:'flow', label:'现有控制',
+      description:'发送游戏文件夹、ZIP 或可执行文件。Frame Control 会选择 Proton 或 Linux 运行时，并添加 Steam 库条目。',
+      keywords:'windows exe zip linux devkit 运行时 快捷方式 启动 移除', links:[['#sideloaded','管理游戏'],['#transfer','发送游戏']]},
+    {id:'files', category:'apps', icon:'files', title:'发送文件', kind:'flow', label:'现有控制',
+      description:'把文件发送到 ~/Downloads，或把游戏发送到 Steam 库。双向剪贴板文字见头显输入。',
+      keywords:'上传 传输 下载 sftp 存储', links:[['#transfer','发送文件'],['#pad','剪贴板']]},
+    {id:'media', category:'apps', icon:'play', title:'视频与立体照片', kind:'flow', label:'预览功能',
+      description:'发送并用内置播放器播放 H.264/H.265 视频、SBS/OU 照片或小型 splat 场景。可选择布局和影院环绕。',
+      keywords:'电影 照片 sbs ou 3d splat 高斯 影院 媒体 播放器', links:[['#media','打开媒体播放器']],
+      guidance:'尚不支持拖动进度、字幕、原生 HEIC/MPO 和大型 splat 场景。'},
+    {id:'flatpak', category:'apps', icon:'apps', title:'Linux 桌面应用', kind:'flow', label:'现有控制',
+      description:'按 Flathub ID 安装用户 Flatpak，选择 VLC、Moonlight 等快捷项，并管理已安装应用。',
+      keywords:'flatpak firefox vlc remmina moonlight flathub 安装 移除', links:[['#linuxApps','管理 Linux 应用']]},
+    {id:'connection', category:'network', icon:'network', title:'头显与地址', kind:'flow', label:'现有控制',
+      description:'管理头显、局域网、USB-C、mDNS 和 Tailscale 地址。查看连接尝试记录，选择要控制的设备。',
+      keywords:'wifi wi-fi 网络 ip ssh 配对 密钥 发现 别名 tailscale usb 离线 重新连接', links:[['#devices','管理头显','desktop'],['#connection','连接详情']],
+      guidance:'在头显上加入 Wi-Fi 网络。Frame Control 管理连接地址，不会修改 Wi-Fi 凭据。'},
+    {id:'remote', category:'network', icon:'display', title:'远程访问', kind:'flow', label:'现有控制',
+      description:'使用主机现有的工具打开 SSH、SFTP、Steam Link 或远程桌面。开发者模式会启用头显的 SSH 和 xrdp。',
+      keywords:'终端 shell 远程桌面 rdp xrdp 串流 steam link sftp', links:[['#power','打开远程工具']]},
+    {id:'input', category:'network', icon:'keyboard', title:'头显输入', kind:'flow', label:'现有控制',
+      description:'用这台电脑的键盘和鼠标在 Frame 的应用中输入和指点，并在两侧剪贴板之间双向复制文字。在任何界面按 T 即可打开。',
+      keywords:'鼠标 指针 键盘 触控板 触摸 点击 kde connect 输入 打字 文字 剪贴板 复制 粘贴 发送',
+      links:[['#pad','头显输入'],['#view','面板控制']],
+      guidance:'首次使用时会在 Frame 上配置 KDE Connect。剪贴板功能需要头显中打开桌面面板。'},
+    {id:'mac', category:'network', icon:'display', title:'头显中的 Mac', kind:'flow', label:'仅 macOS', platform:'mac',
+      description:'把 Mac 屏幕或单个窗口串流到头显面板。可选择画质，并让每个窗口各自拥有独立显示。',
+      keywords:'macos mac 窗口 屏幕 共享 串流 画质 清晰 均衡 轻量 权限', links:[['#macview','配置 Mac 串流']],
+      guidance:'需要在 Mac 上运行 Frame Control。服务器运行在 Windows、Linux 或头显上时不可用。'},
+    {id:'privacy', category:'companion', icon:'shield', title:'隐私与共享', kind:'flow', label:'伴侣端设置',
+      description:'分别选择匿名使用统计、兼容性共享和错误详情。可查看已发送的内容，并管理可选的联络邮箱。',
+      keywords:'遥测 分析 诊断 同意 数据 跟踪 邮箱 联络 退出', links:[['#privacy','隐私设置']]},
+    {id:'artwork', category:'companion', icon:'image', title:'库封面图', kind:'flow', label:'伴侣端设置',
+      description:'配置可选的 SteamGridDB 密钥或刷新封面图。没有密钥时，源图片和生成的图片仍可用。',
+      keywords:'cover image artwork 封面 图片 steamgriddb api key 密钥 library 库 art 图 refresh 刷新', links:[['#artworkSettings','封面图设置']]},
+    {id:'assistant', category:'companion', icon:'spark', title:'助手与智能体', kind:'flow', label:'可选工具',
+      description:'使用你自己的模型端点，审阅建议的操作。在你选择启用前，不会向模型发送任何内容；受保护的操作需要批准。',
+      keywords:'ai mcp 模型 端点 智能体 批准 聊天 助手', links:[['/assistant','打开助手']]},
+    {id:'support', category:'companion', icon:'help', title:'更新与诊断', kind:'flow', label:'配套设置',
+      description:'在桌面应用中检查 Frame Control 更新，或生成私密的问题报告。发送前请先查看诊断预览。',
+      keywords:'应用 版本 问题 反馈 支持 更新 日志 错误 报告 许可', links:[['#privacy','更新与问题报告']]},
   ];
   const paths = {
     grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
@@ -135,36 +135,36 @@
     return (category === 'all' || item.category === category) && query.toLowerCase().trim().split(/\s+/).every(word => text.includes(word));
   }
   const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
-  const KINDS = {steam:'Steam game', devkit:'Sideloaded game', shortcut:'Non-Steam shortcut', android:'Android app'};
-  const number = (value, suffix = '', digits = 0) => Number.isFinite(value) ? value.toLocaleString(undefined, {maximumFractionDigits:digits}) + suffix : 'Unavailable';
-  const gib = value => Number.isFinite(value) ? number(value / 1073741824, ' GiB', 1) : 'Unavailable';
-  const duration = seconds => Number.isFinite(seconds) && seconds >= 0 ? seconds < 3600 ? `${Math.floor(seconds / 60)} min` : `${Math.floor(seconds / 3600)} h ${Math.floor(seconds % 3600 / 60)} min` : 'Unavailable';
+  const KINDS = {steam:'Steam 游戏', devkit:'侧载游戏', shortcut:'非 Steam 快捷方式', android:'Android 应用'};
+  const number = (value, suffix = '', digits = 0) => Number.isFinite(value) ? value.toLocaleString(undefined, {maximumFractionDigits:digits}) + suffix : '不可用';
+  const gib = value => Number.isFinite(value) ? number(value / 1073741824, ' GiB', 1) : '不可用';
+  const duration = seconds => Number.isFinite(seconds) && seconds >= 0 ? seconds < 3600 ? `${Math.floor(seconds / 60)} min` : `${Math.floor(seconds / 3600)} h ${Math.floor(seconds % 3600 / 60)} min` : '不可用';
   function metrics(sample) {
     const s = sample || {}, b = s.battery || {}, p = s.performance || {}, h = s.disk?.home, m = s.memory;
     const capacity = b.percent;
     const idle = !!s.power && Number.isFinite(b.watts) && Math.abs(b.watts) < .5;
-    const charging = b.status === 'Charging';
-    const full = b.status === 'Full';
-    const batteryState = !sample ? 'Connect to read charge and power' : !s.battery ? 'Battery sensor unavailable' :
-      full ? 'Fully charged' : charging ? 'Charging' : b.status === 'Not charging' || idle ? (s.power ? 'Plugged in · not charging' : 'Not charging') : b.status === 'Discharging' ? (s.power ? 'Plugged in · on battery' : 'On battery') : 'Charging state unavailable';
+    const charging = b.status === '充电中';
+    const full = b.status === '已充满';
+    const batteryState = !sample ? '连接后可读取电量和功率' : !s.battery ? '电池传感器不可用' :
+      full ? '已充满' : charging ? '充电中' : b.status === '未充电' || idle ? (s.power ? '已插电 · 未充电' : '未充电') : b.status === '放电中' ? (s.power ? '已插电 · 电池供电' : '电池供电') : '充电状态不可用';
     return {
       battery:number(capacity, '%'), batteryDetail:batteryState,
-      storage:h ? gib(h.free) : 'Unavailable', storageDetail:h ? `${gib(h.total)} total · user storage` : 'User storage unavailable',
-      memory:m && Number.isFinite(m.total) && Number.isFinite(m.available) ? gib(m.total - m.available) : 'Unavailable',
-      memoryDetail:m ? `${gib(m.total)} total · system memory used` : 'Memory sensor unavailable',
+      storage:h ? gib(h.free) : '不可用', storageDetail:h ? `${gib(h.total)} 总容量 · 用户存储` : '用户存储不可用',
+      memory:m && Number.isFinite(m.total) && Number.isFinite(m.available) ? gib(m.total - m.available) : '不可用',
+      memoryDetail:m ? `${gib(m.total)} 总容量 · 系统内存已用` : '内存传感器不可用',
       rootFree:gib(s.disk?.root?.free), rootTotal:gib(s.disk?.root?.total), memoryAvailable:gib(m?.available),
-      fps:number(p.compositorFps, '', 1), fpsDetail:'Compositor FPS · not game FPS',
-      power:number(b.watts, ' W', 1), charger:s.power ? `${s.power.type || 'Connected'} · ${number(s.power.watts, ' W', 1)}` : sample ? 'No charger reported' : 'Unavailable',
-      batteryTemp:number(b.tempC, ' °C', 1), batteryHealth:b.health && b.health !== 'Unknown' ? b.health : 'Unavailable',
-      batterySource:b.source || 'Unavailable', cycles:number(b.cycleCount),
+      fps:number(p.compositorFps, '', 1), fpsDetail:'合成器 FPS · 非游戏 FPS',
+      power:number(b.watts, ' W', 1), charger:s.power ? `${s.power.type || '已连接'} · ${number(s.power.watts, ' W', 1)}` : sample ? '未报告充电器' : '不可用',
+      batteryTemp:number(b.tempC, ' °C', 1), batteryHealth:b.health && b.health !== '未知' ? b.health : '不可用',
+      batterySource:b.source || '不可用', cycles:number(b.cycleCount),
       fullCapacity:number(b.fullMah, ' mAh', 1), designCapacity:number(b.designMah, ' mAh', 1),
       capacityHealth:number(b.capacityHealthPercent, '%', 1),
-      estimate:charging ? (b.timeToFull > 0 ? `${duration(b.timeToFull)} to full` : 'Unavailable') : b.status === 'Discharging' && !idle && b.timeToEmpty > 0 && b.timeToEmpty < 86400 ? `${duration(b.timeToEmpty)} remaining` : 'Unavailable',
-      wifi:s.wifi?.ssid || 'Unavailable', signal:number(s.wifi?.signal, '%'), ip:s.ip || 'Unavailable',
-      uptime:duration(s.uptime), os:s.os?.version || 'Unavailable', build:s.os?.build || 'Unavailable',
+      estimate:charging ? (b.timeToFull > 0 ? `${duration(b.timeToFull)} 后充满` : '不可用') : b.status === '放电中' && !idle && b.timeToEmpty > 0 && b.timeToEmpty < 86400 ? `${duration(b.timeToEmpty)} remaining` : '不可用',
+      wifi:s.wifi?.ssid || '不可用', signal:number(s.wifi?.signal, '%'), ip:s.ip || '不可用',
+      uptime:duration(s.uptime), os:s.os?.version || '不可用', build:s.os?.build || '不可用',
       temperature:number(s.temp, ' °C', 1), cpu:number(p.cpuPercent, '%', 1), gpu:number(p.gpuMHz, ' MHz', 1),
       appFps:number(p.appFps, '', 1), frame:number(p.frameMs, ' ms', 2), render:number(p.gpuMs, ' ms', 2), compositorCpu:number(p.compositorCpuMs, ' ms', 2),
-      thermal:!Array.isArray(s.thermalAlerts) ? 'Trip data unavailable' : s.thermalAlerts.length ? s.thermalAlerts.map(a => `${a.zone || 'Sensor'} ${number(a.tempC, ' °C')} ≥ ${number(a.limitC, ' °C')}`).join('; ') : 'No hot / critical trip reported',
+      thermal:!Array.isArray(s.thermalAlerts) ? '过温保护数据不可用' : s.thermalAlerts.length ? s.thermalAlerts.map(a => `${a.zone || '传感器'} ${number(a.tempC, ' °C')} ≥ ${number(a.limitC, ' °C')}`).join('; ') : '未报告过热或危险温度保护',
     };
   }
   // Strict validation and captured device identity apply even if a stale enabled
@@ -180,14 +180,14 @@
       get busy() { return busy; },
       get quitting() { return quitting; },
       async running() {
-        const context = connected('Connect to the Frame to see what’s running.');
+        const context = connected('连接 Frame 后可查看正在运行的内容。');
         const result = await api('/api/running', undefined, context.device);
         return getContext().generation === context.generation ? result : null;
       },
       async forceQuit(app) {
-        if (quitting) throw new Error('A force quit is still in progress.');
-        if (!/^\d{1,10}$/.test(String(app?.appid))) throw new Error('Choose a running game to quit.');
-        const context = connected('Connect to the Frame before quitting a game.');
+        if (quitting) throw new Error('正在强制退出，请稍候。');
+        if (!/^\d{1,10}$/.test(String(app?.appid))) throw new Error('请选择要退出的运行中游戏。');
+        const context = connected('退出游戏前请先连接 Frame。');
         quitting = true;
         try {
           const result = await api('/api/running', {action:'quit', appid:String(app.appid)}, context.device);
@@ -195,13 +195,13 @@
         } finally { quitting = false; }
       },
       async audio(change) {
-        if (busy) throw new Error('An audio change is still in progress.');
+        if (busy) throw new Error('音频修改正在进行中。');
         const context = getContext();
-        if (context.online !== true || !context.fresh || !context.sample?.volume) throw new Error('Connect and refresh the Frame before changing audio.');
+        if (context.online !== true || !context.fresh || !context.sample?.volume) throw new Error('修改音频前请先连接并刷新 Frame。');
         const keys = Object.keys(change);
         if (!keys.length || keys.some(k => !['level','muted'].includes(k)) ||
             ('level' in change && (typeof change.level !== 'number' || !Number.isFinite(change.level) || change.level < 0 || change.level > 1)) ||
-            ('muted' in change && typeof change.muted !== 'boolean')) throw new Error('Use a volume from 0 to 100% and a valid mute state.');
+            ('muted' in change && typeof change.muted !== 'boolean')) throw new Error('音量需在 0 到 100% 之间，静音状态需有效。');
         busy = true;
         try {
           const result = await api('/api/volume', change, context.device);
@@ -214,13 +214,13 @@
   function mount({document, api, refresh, refreshAudio = refresh, getContext, openConnection, platform, confirm = text => globalThis.confirm(text)}) {
     const get = id => document.getElementById(id), page = get('controlCenter');
     let category = 'all', sample = null, receivedAt = null, available = false, error = '', dirty = false, sampleGeneration = null, audioPending = false;
-    const metric = (id, label) => `<div><dt>${label}</dt><dd data-cc-metric="${id}">Unavailable</dd></div>`;
-    const perf = `<dl class="cc-readings">${[['appFps','Application FPS'],['frame','Compositor period'],['render','Render GPU time'],['compositorCpu','Compositor CPU'],['cpu','System CPU'],['gpu','GPU clock'],['temperature','Hottest sensor']].map(([id,label])=>metric(id,label)).join('')}</dl><p class="cc-note">GPU time is render time, not utilisation. The hottest sensor is not necessarily CPU temperature.</p><p class="cc-note" data-cc-metric="thermal">Trip data unavailable</p>`;
-    const audio = `<div class="cc-audio"><label for="ccVolume">Output volume <output id="ccVolumeValue" for="ccVolume">—</output></label><input id="ccVolume" type="range" min="0" max="100" step="1" value="0" disabled><div class="cc-audio-actions"><button class="action small" id="ccApplyVolume" disabled>Apply volume</button><button class="small" id="ccMute" disabled>Mute</button><span id="ccAudioReadback" class="cc-note">Waiting for an audio reading</span></div><p class="cc-note" id="ccAudioResult" role="status"></p></div>`;
-    const batteryNote = 'Read-only. Unavailable means not reported, unreadable or invalid. Health is the driver’s status; full / design capacity is a fuel-gauge estimate, not a diagnosis. Charge limits are unsupported on Frame.';
-    const health = `<dl class="cc-readings">${[['battery','Charge'],['batteryDetail','Charging state'],['power','Battery power · signed'],['charger','Charger'],['estimate','Battery estimate'],['batteryTemp','Battery temperature'],['batteryHealth','Battery health'],['cycles','Charge cycles'],['fullCapacity','Full charge capacity'],['designCapacity','Design capacity'],['capacityHealth','Full / design capacity'],['batterySource','Battery source']].map(([id,label])=>metric(id,label)).join('')}</dl><p class="cc-note">${batteryNote}</p>`;
-    const forcequit = `<div class="cc-quit"><div class="cc-audio-actions"><button class="small" type="button" id="ccRunningCheck">Check what’s running</button></div><ul class="cc-running" id="ccRunningList"></ul><p class="cc-note" id="ccRunningResult" role="status"></p></div>`;
-    const storage = `<dl class="cc-readings">${[['storage','User storage free'],['rootFree','System storage free'],['rootTotal','System storage total'],['memoryAvailable','Memory available']].map(([id,label])=>metric(id,label)).join('')}</dl>`;
+    const metric = (id, label) => `<div><dt>${label}</dt><dd data-cc-metric="${id}">不可用</dd></div>`;
+    const perf = `<dl class="cc-readings">${[['appFps','应用 FPS'],['frame','合成器周期'],['render','渲染 GPU 时间'],['compositorCpu','合成器 CPU'],['cpu','系统 CPU'],['gpu','GPU 频率'],['temperature','最热传感器']].map(([id,label])=>metric(id,label)).join('')}</dl><p class="cc-note">GPU 时间指渲染耗时，不是占用率。最热的传感器未必是 CPU 温度。</p><p class="cc-note" data-cc-metric="thermal">过温保护数据不可用</p>`;
+    const audio = `<div class="cc-audio"><label for="ccVolume">输出音量 <output id="ccVolumeValue" for="ccVolume">—</output></label><input id="ccVolume" type="range" min="0" max="100" step="1" value="0" disabled><div class="cc-audio-actions"><button class="action small" id="ccApplyVolume" disabled>应用音量</button><button class="small" id="ccMute" disabled>静音</button><span id="ccAudioReadback" class="cc-note">等待音频读数</span></div><p class="cc-note" id="ccAudioResult" role="status"></p></div>`;
+    const batteryNote = '只读。不可用表示未上报、无法读取或数值无效。健康度是驱动给出的状态；满电容量 / 设计容量是电量计的估算值，不是诊断结论。Frame 不支持充电上限。';
+    const health = `<dl class="cc-readings">${[['battery','电量'],['batteryDetail','充电状态'],['power','电池功率 · 带符号'],['charger','充电器'],['estimate','电池估算'],['batteryTemp','电池温度'],['batteryHealth','电池健康度'],['cycles','充电次数'],['fullCapacity','满电容量'],['designCapacity','设计容量'],['capacityHealth','满电 / 设计容量'],['batterySource','电池来源']].map(([id,label])=>metric(id,label)).join('')}</dl><p class="cc-note">${batteryNote}</p>`;
+    const forcequit = `<div class="cc-quit"><div class="cc-audio-actions"><button class="small" type="button" id="ccRunningCheck">查看运行中内容</button></div><ul class="cc-running" id="ccRunningList"></ul><p class="cc-note" id="ccRunningResult" role="status"></p></div>`;
+    const storage = `<dl class="cc-readings">${[['storage','用户存储可用'],['rootFree','系统存储可用'],['rootTotal','系统存储总量'],['memoryAvailable','可用内存']].map(([id,label])=>metric(id,label)).join('')}</dl>`;
     get('ccCategories').innerHTML = categories.map(([id,label,symbol])=>`<button type="button" data-cc-category="${id}" aria-pressed="${id === 'all'}">${icon(symbol)}<span>${label}</span><span class="cc-category-count"></span></button>`).join('');
     const specials = {audio, performance:perf, health, storage, forcequit};
     get('ccCards').innerHTML = catalog.map(item=>`<section class="cc-card" data-cc-card="${item.id}"><div class="cc-card-head"><span class="cc-icon">${icon(item.icon)}</span><span class="cc-kind cc-kind-${item.kind}">${item.label}</span></div><h2>${item.title}</h2><p>${item.description}</p>${specials[item.special] || ''}${item.guidance ? `<div class="cc-guidance">${item.guidance}</div>` : ''}${item.links ? `<div class="cc-links">${item.links.map(([href,label,desktop])=>`<a href="${href}"${desktop ? ' class="desk-only"' : ''}${item.platform === 'mac' ? ' data-cc-mac-link' : ''}>${label}<span aria-hidden="true">↗</span></a>`).join('')}</div>` : ''}</section>`).join('');
@@ -269,24 +269,24 @@
       page.querySelectorAll('[data-cc-metric]').forEach(el=>{el.textContent = values[el.dataset.ccMetric];});
       get('ccDeviceName').textContent = isFresh() ? sample.hostname || 'Steam Frame' : 'Steam Frame';
       const sampledAt = Number.isFinite(sample?.time) && sample.time > 0 && sample.time * 1000 <= 8640000000000000 ? new Date(sample.time * 1000) : null;
-      get('ccSampleState').textContent = isFresh() ? `${sampledAt ? 'Sampled ' + sampledAt.toLocaleTimeString() : 'Received ' + new Date(receivedAt).toLocaleTimeString()} · updates every 30 seconds` :
-        error || (receivedAt !== null ? 'Sample expired · refresh to read current metrics' : 'Connect your Frame to read live metrics');
+      get('ccSampleState').textContent = isFresh() ? `${sampledAt ? '采样于 ' + sampledAt.toLocaleTimeString() : '接收于 ' + new Date(receivedAt).toLocaleTimeString()} · 每 30 秒更新一次` :
+        error || (receivedAt !== null ? '采样已过期 · 刷新以读取当前指标' : '连接 Frame 以读取实时指标');
       get('ccSampleState').classList.toggle('cc-offline', !isFresh());
-      get('ccStatusLabel').textContent = isFresh() ? 'Connected' : 'No live sample';
+      get('ccStatusLabel').textContent = isFresh() ? '已连接' : '无实时采样';
       get('ccStatusDot').classList.toggle('on', isFresh());
-      get('ccStatusNote').textContent = isFresh() ? 'Read-only status over SSH. Browse freely; controls run only when you use them.' :
-        'Settings guides and companion tools remain available. Wake the Frame on the device, then reconnect.';
-      get('ccBuild').textContent = isFresh() ? `SteamOS ${values.os} · build ${values.build}` : 'System information unavailable';
+      get('ccStatusNote').textContent = isFresh() ? '通过 SSH 的状态为只读。可随意浏览；控制项仅在操作时执行。' :
+        '设置指南和配套工具仍可使用。请先在设备上唤醒 Frame，然后重新连接。';
+      get('ccBuild').textContent = isFresh() ? `SteamOS ${values.os} · build ${values.build}` : '系统信息不可用';
       const services = isFresh() ? sample.services || {} : {};
-      get('ccServices').innerHTML = [['steamvr','SteamVR'],['desktop','Desktop'],['lepton','Lepton · port 5555'],['rdp','RDP process']].map(([key,label])=>`<span><i class="dot ${services[key] === true ? 'on' : ''}"></i>${label}<b>${typeof services[key] === 'boolean' ? services[key] ? 'Running' : 'Not detected' : 'Unavailable'}</b></span>`).join('');
+      get('ccServices').innerHTML = [['steamvr','SteamVR'],['desktop','桌面'],['lepton','Lepton · 端口 5555'],['rdp','RDP 进程']].map(([key,label])=>`<span><i class="dot ${services[key] === true ? 'on' : ''}"></i>${label}<b>${typeof services[key] === 'boolean' ? services[key] ? '运行中' : '未检测到' : '不可用'}</b></span>`).join('');
       if (sample?.volume && isFresh()) {
         const pct = Math.round(sample.volume.level * 100);
         if (!dirty && !controller.busy && !audioPending) get('ccVolume').value = Math.min(100,Math.max(0,pct));
         get('ccVolumeValue').textContent = `${get('ccVolume').value}%`;
-        get('ccAudioReadback').textContent = `Reported ${pct}% · ${sample.volume.muted ? 'muted' : 'unmuted'}`;
-        get('ccMute').textContent = sample.volume.muted ? 'Unmute' : 'Mute';
+        get('ccAudioReadback').textContent = `已上报 ${pct}% · ${sample.volume.muted ? 'muted' : 'unmuted'}`;
+        get('ccMute').textContent = sample.volume.muted ? '取消静音' : '静音';
       } else {
-        get('ccAudioReadback').textContent = isFresh() ? 'Audio reading unavailable' : 'Waiting for an audio reading';
+        get('ccAudioReadback').textContent = isFresh() ? '音频读数不可用' : '等待音频读数';
         get('ccVolumeValue').textContent = '—';
       }
       audioAvailability();
@@ -295,64 +295,64 @@
       if (audioPending) return;
       const generation = getContext().generation;
       audioPending = true;
-      get('ccAudioResult').textContent = 'Applying…';
+      get('ccAudioResult').textContent = '正在应用…';
       try {
         const pending = controller.audio(change);
         audioAvailability();
         const result = await pending;
         if (!result || generation !== getContext().generation) return;
         if ('level' in change) dirty = false;
-        get('ccAudioResult').textContent = `${result.message || 'Audio updated'}. Refreshing the reading…`;
+        get('ccAudioResult').textContent = `${result.message || '音频已更新'}. 正在刷新读数…`;
         await refreshAudio();
         if (generation !== getContext().generation) return;
         if (!isFresh() || !sample?.volume) {
-          get('ccAudioResult').textContent = 'Audio command sent; current output could not be confirmed. Reconnect and refresh.';
+          get('ccAudioResult').textContent = '音频命令已发送；但无法确认当前输出。请重新连接并刷新。';
         } else {
           const reported = sample.volume;
           const matched = (!('level' in change) || Math.round(reported.level * 100) === Math.round(change.level * 100)) &&
             (!('muted' in change) || reported.muted === change.muted);
-          get('ccAudioResult').textContent = `${matched ? 'Confirmed' : 'Command sent · reported output differs'}: ${Math.round(reported.level * 100)}%, ${reported.muted ? 'muted' : 'unmuted'}.${matched ? '' : ' Refresh to check again.'}`;
+          get('ccAudioResult').textContent = `${matched ? '已确认' : '命令已发送 · 与上报输出不一致'}: ${Math.round(reported.level * 100)}%, ${reported.muted ? 'muted' : 'unmuted'}.${matched ? '' : ' 刷新以再次检查。'}`;
         }
       } catch (e) {
         if (generation !== getContext().generation) return;
-        get('ccAudioResult').textContent = `Couldn’t apply audio: ${e.message}`;
+        get('ccAudioResult').textContent = `无法应用音频： ${e.message}`;
       } finally { audioPending = false; renderSample(); }
     }
     // Force quit: an explicit check, then a confirmation for each game. A headset
     // switch drops the list, so a stale entry can't quit the other Frame's game.
     let runningApps = [];
     function renderRunning(message) {
-      get('ccRunningList').innerHTML = runningApps.map(app=>`<li><span>${esc(app.name)}<small>${KINDS[app.kind] || 'Running'}</small></span><button class="small danger" type="button" data-cc-quit="${esc(app.appid)}"${controller.quitting ? ' disabled' : ''}>Force quit…</button></li>`).join('');
+      get('ccRunningList').innerHTML = runningApps.map(app=>`<li><span>${esc(app.name)}<small>${KINDS[app.kind] || '运行中'}</small></span><button class="small danger" type="button" data-cc-quit="${esc(app.appid)}"${controller.quitting ? ' disabled' : ''}>强制退出…</button></li>`).join('');
       if (message !== undefined) get('ccRunningResult').textContent = message;
     }
     async function checkRunning() {
       const generation = getContext().generation;
       get('ccRunningCheck').disabled = true;
-      get('ccRunningResult').textContent = 'Checking…';
+      get('ccRunningResult').textContent = '正在检查…';
       try {
         const result = await controller.running();
         if (!result || generation !== getContext().generation) return;
         runningApps = Array.isArray(result.running) ? result.running : [];
-        renderRunning(runningApps.length ? `${runningApps.length} running. Force quit only a game that has stopped responding.` : 'Nothing is running on the Frame.');
+        renderRunning(runningApps.length ? `${runningApps.length} 个正在运行。仅在游戏无响应时才强制退出。` : 'Frame 上没有正在运行的内容。');
       } catch (e) {
         if (generation !== getContext().generation) return;
-        runningApps = []; renderRunning(`Couldn’t check what’s running: ${e.message}`);
+        runningApps = []; renderRunning(`无法检查运行中的内容： ${e.message}`);
       } finally { get('ccRunningCheck').disabled = false; }
     }
     async function forceQuit(appid) {
       const app = runningApps.find(item=>String(item.appid) === String(appid));
       if (!app || controller.quitting) return;
-      if (!confirm(`Force quit ${app.name}? Unsaved progress will be lost.`)) return;
+      if (!confirm(`强制退出 ${app.name}？未保存的进度将丢失。`)) return;
       const generation = getContext().generation, pending = controller.forceQuit(app);
-      renderRunning(`Quitting ${app.name}…`);
+      renderRunning(`正在退出 ${app.name}…`);
       try {
         const result = await pending;
         if (!result || generation !== getContext().generation) return;
         runningApps = runningApps.filter(item=>item !== app);
-        renderRunning(result.message || `Quit ${app.name}`);
+        renderRunning(result.message || `已退出 ${app.name}`);
       } catch (e) {
         if (generation !== getContext().generation) return;
-        renderRunning(`Couldn’t force quit ${app.name}: ${e.message}`);
+        renderRunning(`无法强制退出 ${app.name}: ${e.message}`);
       } finally { if (generation === getContext().generation) renderRunning(); }
     }
     get('ccRunningCheck').onclick = checkRunning;
@@ -379,11 +379,11 @@
         receivedAt = replay ? (Number.isFinite(receivedAt) && Number.isFinite(receipt) ? Math.min(receivedAt, receipt) : receivedAt) : receipt;
         sample = value;
         if (!read.valid) {
-          available = false; error = `No live sample${read.error?.message ? ' · ' + read.error.message : ''}`;
+          available = false; error = `无实时采样${read.error?.message ? ' · ' + read.error.message : ''}`;
         } else if (!replay) { available = true; error = ''; }
         sampleGeneration = getContext().generation; renderSample();
       },
-      unavailable(reason) { if (reason?.stale) return; available = false; error = `No live sample${reason?.message ? ' · ' + reason.message : ''}`; renderSample(); },
+      unavailable(reason) { if (reason?.stale) return; available = false; error = `无实时采样${reason?.message ? ' · ' + reason.message : ''}`; renderSample(); },
       connection(ok) { if (!ok) { available = false; renderSample(); } else audioAvailability(); },
       reset() { sample = null; receivedAt = null; available = false; error = ''; dirty = false; get('ccVolume').value = 0; get('ccAudioResult').textContent = ''; runningApps = []; renderRunning(''); renderSample(); },
       destroy() { clearInterval(timer); },
