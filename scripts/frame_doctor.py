@@ -23,7 +23,8 @@ SECTIONS = ('Boot and crash history', 'Wi-Fi', 'Displays and SteamVR',
 
 def run(args, timeout=4, **kwargs):
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=timeout, **kwargs)
+        return subprocess.run(args, capture_output=True, text=True, encoding='utf-8', errors='replace',
+                              timeout=timeout, **kwargs)
     except (OSError, UnicodeError, subprocess.TimeoutExpired):
         return None
 
@@ -46,9 +47,10 @@ def snapshot():
     for unit in ('steam', 'steamvr'):
         s = command('systemctl', '--user', 'show', unit + '.service',
                     '-p', 'NRestarts', '--value')
-        if s is None or not s.strip().isdigit():
+        raw = s.strip() if isinstance(s, str) else ''
+        if not (raw.isascii() and raw.isdigit()):
             return None
-        values.append(int(s.strip()))
+        values.append(int(raw))
         p = Path('/run/user') / str(os.getuid()) / (unit + '-short-session-tracker')
         try:
             values.append(p.stat().st_size)
@@ -190,12 +192,13 @@ def port_open(host, port):
 
 
 def report(data):
-    state = data.get('guard')
+    state = data.get('guard') if isinstance(data, dict) else None
     if state != 'stable':
         status = 'BROKEN' if state == 'loop' else 'WARN' if state == 'risk' else 'UNKNOWN'
         message = {'loop': 'Counters are rising. Stop diagnostics; use the runbook health-check recovery procedure.',
                    'risk': 'Health-check trackers contain failures. Deeper checks skipped; review the runbook before recovery.'}
-        print(status + ' Restart safety: ' + message.get(state, 'Cannot verify restart counters; deeper checks skipped for safety.'))
+        detail = message.get(state) if isinstance(state, str) else None
+        print(status + ' Restart safety: ' + (detail or 'Cannot verify restart counters; deeper checks skipped for safety.'))
         for i, label in enumerate(SECTIONS, 1):
             print(f'UNKNOWN {i}. {label}: Skipped until restart safety is verified.')
         return 1
@@ -282,7 +285,7 @@ def load_baseline(path):
     if len(raw) > 65536:
         raise ValueError()
     saved = json.loads(raw)
-    if (not isinstance(saved, dict) or saved.get('version') != 1
+    if (not isinstance(saved, dict) or type(saved.get('version')) is not int or saved['version'] != 1
             or not isinstance(saved.get('target'), str)
             or not re.fullmatch('[a-f0-9]{64}', saved['target'])
             or not valid_data(saved.get('diagnostics'))):
@@ -331,7 +334,7 @@ def main(argv=None):
     if baseline is not None and baseline['target'] != target:
         print('UNKNOWN Baseline: SSH target configuration differs; comparison refused.')
         return 2
-    source = Path(__file__).read_text()
+    source = Path(__file__).read_text(encoding='utf-8')
     routes = [('configured alias (Tailscale if configured)', None)]
     if args.lan:
         routes.append(('LAN', args.lan))
@@ -357,7 +360,7 @@ def main(argv=None):
                 try:
                     # Exclusive create prevents clobbering a baseline or following a symlink.
                     fd = os.open(args.save_report, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                    with os.fdopen(fd, 'w') as stream:
+                    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
                         json.dump({'version': 1, 'target': target, 'diagnostics': data}, stream)
                         stream.write('\n')
                     print('OK Report: Local baseline created; review it before sharing.')
@@ -386,7 +389,7 @@ def main(argv=None):
 # has no dynamic diagnostic messages. AST stays stdlib and runs only locally.
 def messages():
     import ast
-    tree = ast.parse(Path(__file__).read_text())
+    tree = ast.parse(Path(__file__).read_text(encoding='utf-8'))
     allowed = set()
     for function in tree.body:
         if not isinstance(function, ast.FunctionDef) or function.name not in ('probe', 'storage', 'signal_check'):
