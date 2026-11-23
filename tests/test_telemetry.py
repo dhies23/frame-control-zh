@@ -1141,6 +1141,48 @@ class Hardening(Base):
         self.assertIn("expected|frame_unreachable", tm._seen_errors)
         self.assertLess(len(tm._seen_errors), 10)
 
+    def test_post_wraps_http_exception_and_flush_handles_unhashable_uuid(self):
+        import http.client
+        for exc in (http.client.BadStatusLine("bad"), http.client.HTTPException("protocol error")):
+            with mock.patch.object(tm.urllib.request, "urlopen", side_effect=exc):
+                with self.assertRaises(tm.SendError):
+                    tm.post([{"event": "app_opened", "properties": {}}])
+
+        tm.update_settings({"noticeShown": True, "usage": True})
+        rows = [
+            {"event": "app_opened", "uuid": ["unhashable"], "properties": {"level": "usage"}},
+            {"event": "app_opened", "uuid": "u-ok", "properties": {"level": "usage"}},
+        ]
+        tm._write_lines(tm.OUTBOX, rows)
+        with mock.patch.object(tm, "post") as post_mock:
+            sent = tm.flush()
+        self.assertEqual(sent, 2)
+        post_mock.assert_called_once()
+        self.assertNotIn("u-ok", [e.get("uuid") for e in self.queued()])
+
+    def test_page_event_frame_seen_compat_report_and_start_guard_inputs_and_thread_failure(self):
+        with self.assertRaises(ValueError):
+            tm.page_event({"event": ["tab_viewed"]})
+
+        tm.frame_seen("20260925.1", "0.4.1", saved=True)
+        connected = [e for e in self.queued() if e["event"] == "frame_connected"]
+        self.assertEqual(len(connected), 1)
+        self.assertNotIn("headsets_saved", connected[0]["properties"])
+
+        tm.update_settings({"compat": True})
+        self.assertFalse(tm.compat_report("not-a-dict"))
+        self.assertFalse(tm.compat_report(None))
+
+        saved_flusher = tm._flusher
+        tm._flusher = None
+        try:
+            with mock.patch.object(tm.threading.Thread, "start", side_effect=RuntimeError("no threads")):
+                with self.assertRaises(RuntimeError):
+                    tm.start()
+            self.assertIsNone(tm._flusher)
+        finally:
+            tm._flusher = saved_flusher
+
 
 if __name__ == "__main__":
     unittest.main()
