@@ -22,20 +22,29 @@ import json, os, pathlib, platform, subprocess
 home = pathlib.Path.home()
 base = home / '.local/share/frame-control/headset'
 unit = home / '.config/systemd/user/frame-control-headset.service'
-try: receipt = json.loads((base/'receipt.json').read_text())
+try:
+    receipt = json.loads((base/'receipt.json').read_text(encoding='utf-8', errors='replace'))
+    if not isinstance(receipt, dict): receipt = {}
 except (OSError, ValueError): receipt = {}
-try: state = json.loads((base/'state.json').read_text())
+try:
+    state = json.loads((base/'state.json').read_text(encoding='utf-8', errors='replace'))
+    if not isinstance(state, dict): state = {}
 except (OSError, ValueError): state = {}
 release = {}
-for line in pathlib.Path('/etc/os-release').read_text().splitlines():
-    if '=' in line:
-        k, v = line.split('=', 1); release[k] = v.strip('"')
-active = subprocess.run(['systemctl','--user','is-active','frame-control-headset.service'],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+try:
+    for line in pathlib.Path('/etc/os-release').read_text(encoding='utf-8', errors='replace').splitlines():
+        if '=' in line:
+            k, v = line.split('=', 1); release[k] = v.strip('"')
+except OSError:
+    pass
+try:
+    active = subprocess.run(['systemctl','--user','is-active','frame-control-headset.service'],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+except (OSError, subprocess.TimeoutExpired): active = False
 overlay = 'valve.steam.desktopgame.2001947813'
 try:
     p = subprocess.run(['/opt/steamvr/bin/linuxarm64/vrcmd','--overlays'],
-                       capture_output=True, text=True, timeout=5)
+                       capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
     registered = p.returncode == 0 and ("'"+overlay+"'") in p.stdout
 except (OSError, subprocess.TimeoutExpired): registered = False
 print(json.dumps({'arch':platform.machine(),'variant':release.get('VARIANT_ID'),
@@ -60,18 +69,27 @@ stage = base / ('stage-' + token)
 old = base / ('old-' + token)
 overlay = 'valve.steam.desktopgame.2001947813'
 def systemd(*args):
-    p = subprocess.run(['systemctl','--user',*args], capture_output=True, text=True, timeout=55)
-    if p.returncode: raise RuntimeError((p.stderr or p.stdout).strip()[-400:] or 'user service failed')
+    try:
+        p = subprocess.run(['systemctl','--user',*args], capture_output=True, text=True,
+                           encoding='utf-8', errors='replace', timeout=55)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError('user service failed: ' + str(e)) from e
+    if p.returncode: raise RuntimeError((p.stderr or p.stdout or '').strip()[-400:] or 'user service failed')
 def managed():
-    try: return unit.is_file() and json.loads(receipt.read_text()).get('managedBy') == 'Frame Control'
+    try:
+        data = json.loads(receipt.read_text(encoding='utf-8', errors='replace'))
+        return unit.is_file() and isinstance(data, dict) and data.get('managedBy') == 'Frame Control'
     except (OSError, ValueError): return False
 def show():
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
         if (base/'state.json').is_file():
-            p = subprocess.run(['/opt/steamvr/bin/linuxarm64/vrcmd','--showdashboard',overlay],
-                               capture_output=True, text=True, timeout=10)
-            if p.returncode: raise RuntimeError((p.stderr or p.stdout).strip()[-400:] or 'dashboard rejected panel')
+            try:
+                p = subprocess.run(['/opt/steamvr/bin/linuxarm64/vrcmd','--showdashboard',overlay],
+                                   capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                raise RuntimeError('dashboard rejected panel: ' + str(e)) from e
+            if p.returncode: raise RuntimeError((p.stderr or p.stdout or '').strip()[-400:] or 'dashboard rejected panel')
             return {'message':'Asked SteamVR to show Frame Control. Select its panel in the dashboard if it is hidden.',
                     'overlay':overlay}
         time.sleep(.25)
@@ -198,15 +216,25 @@ def bundle():
     return data
 
 
+def _parse_reply(raw, label):
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f'Invalid {label}') from e
+    if not isinstance(data, dict):
+        raise ValueError(f'Invalid {label}')
+    return data
+
+
 def status(ssh):
-    return json.loads(ssh('python3 -', stdin=PROBE, timeout=15))
+    return _parse_reply(ssh('python3 -', stdin=PROBE, timeout=15), 'headset status response')
 
 
 def change(ssh, action):
-    if action not in ('install', 'update', 'open', 'close', 'remove'):
+    if not isinstance(action, str) or action not in ('install', 'update', 'open', 'close', 'remove'):
         raise ValueError('Invalid headset panel action')
     current = status(ssh)
-    if action in ('install', 'update', 'open') and (current['arch'] != 'aarch64' or current['variant'] != 'vr'):
+    if action in ('install', 'update', 'open') and (current.get('arch') != 'aarch64' or current.get('variant') != 'vr'):
         raise ValueError('This feature needs a Steam Frame running Frame OS')
     data = bundle() if action in ('install', 'update') else None
     digest = hashlib.sha256(data or b'').hexdigest()
@@ -215,7 +243,8 @@ def change(ssh, action):
     try:
         if data is not None:
             ssh('umask 077; cat > ' + remote, stdin=data, text=False, timeout=120)
-        return json.loads(ssh(f'python3 - {action} {token} {digest}', stdin=APPLY, timeout=100))
+        return _parse_reply(ssh(f'python3 - {action} {token} {digest}', stdin=APPLY, timeout=100),
+                            'headset panel response')
     finally:
         if data is not None:
             try: ssh('rm -f ' + remote, timeout=10)

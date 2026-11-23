@@ -827,5 +827,42 @@ class Hardening(unittest.TestCase):
         clips._close(None)
 
 
+class ClipsHardening(unittest.TestCase):
+    def test_ascii_only_recording_clip_and_segment_regexes(self):
+        with self.assertRaises(ValueError):
+            clips.record_command("rec-٢٠٢٦١٠٢٠-٢٠١٩٥٠", False)
+        with self.assertRaises(ValueError):
+            clips.parse_id("١٢٣/video/bg_620_20261020_201950")
+        self.assertIsNone(clips.INIT.fullmatch("init-stream٠.m4s"))
+        self.assertIsNone(clips.CHUNK.fullmatch("chunk-stream0-٠٠٠٠١.m4s"))
+        self.assertIsNone(clips.STAMP.search("bg_٦٢٠_٢٠٢٦١٠٢٠_٢٠١٩٥٠"))
+        self.assertIsNone(clips.mpd_duration('mediaPresentationDuration="PT١M٢S"'))
+
+    def test_work_path_rejects_shell_metacharacters_and_traversal(self):
+        for bad in ('bad"; id #', '../outside', '$(id)', '/abs/path', 'a\\b', ''):
+            with self.subTest(work=bad):
+                with self.assertRaises(ValueError):
+                    clips.probe_command(bad)
+                with self.assertRaises(ValueError):
+                    clips.record_command("rec-20261020-201950", False, work=bad)
+                with self.assertRaises(ValueError):
+                    clips.finish_command("rec-20261020-201950", work=bad)
+                with self.assertRaises(ValueError):
+                    clips.cleanup_command("rec-20261020-201950", work=bad)
+
+    def test_end_tolerates_process_exiting_before_terminate_or_kill(self):
+        proc = mock.Mock()
+        proc.wait.side_effect = subprocess.TimeoutExpired(["ssh"], 10)
+        proc.terminate.side_effect = ProcessLookupError("gone")
+        clips._end(proc)
+        proc.stdin.close.assert_called_once()
+        proc.stdout.close.assert_called_once()
+
+    def test_recorder_status_clamps_negative_elapsed_on_clock_step(self):
+        rec = clips.Recorder(mock.Mock(), mock.Mock(), mock.Mock(), mock.Mock())
+        rec._state = {"state": "recording", "name": "rec-20261020-201950", "started": time.time() + 60}
+        self.assertGreaterEqual(rec.status()["elapsed"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

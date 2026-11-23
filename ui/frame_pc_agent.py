@@ -53,14 +53,15 @@ class Grants:
             key = secrets.token_urlsafe(24)
             self.keys[key] = src
             return key
-        entry = self.tickets.get(q.get('t'))
+        ticket = q.get('t')
+        entry = self.tickets.get(ticket) if isinstance(ticket, str) else None
         if entry and entry[0] == src and entry[1] > time.monotonic():
             key = entry[2] or secrets.token_urlsafe(24)
-            self.tickets[q['t']] = (src, entry[1], key)
+            self.tickets[ticket] = (src, entry[1], key)
             self.keys[key] = src
             return key
         key = q.get('r')
-        return key if key and self.keys.get(key) == src else None
+        return key if isinstance(key, str) and key and self.keys.get(key) == src else None
 
     def ack(self, key):
         self.tickets = {k: v for k, v in self.tickets.items() if v[2] != key}
@@ -166,7 +167,7 @@ class Session:
                     self.controller.call('capture', arrived)
                 now = self.native.now()
                 state = self.controller.state()
-                if len(self.pending) >= 3 or now-self.last_submit < 1000000/state['fps'] or not self.controller.call('gate', now, int(stage == 0)):
+                if len(self.pending) >= 3 or now-self.last_submit < 1000000/max(1, state['fps']) or not self.controller.call('gate', now, int(stage == 0)):
                     if stage == 0:
                         self.stats.skipped += 1
                     return 0
@@ -407,9 +408,11 @@ class Agent:
         return [{k: v for k, v in s.items() if k not in ('portal', 'fd', 'node')} for s in self.sources.values()], []
 
     def source(self, src):
+        if not isinstance(src, str) or not src:
+            raise ValueError('Choose a window or screen on this computer first')
         if src == 'test':
             return dict(src='test', title='Test pattern', w=1280, h=720)
-        if self.window_capture_reason and isinstance(src, str) and src.startswith('window:'):
+        if self.window_capture_reason and src.startswith('window:'):
             raise ValueError(self.window_capture_reason)
         self.lists()
         if src not in self.sources:
@@ -553,7 +556,10 @@ class Handler(BaseHTTPRequestHandler):
                             m = {k: v for k, v in q.items() if k not in ('k', 'src')}
                             for k in ('x', 'y', 'interval'):
                                 if k in m:
-                                    m[k] = float(m[k])
+                                    val = float(m[k])
+                                    if not math.isfinite(val):
+                                        raise ValueError('Invalid benchmark parameter')
+                                    m[k] = val
                             s.ws.send(dict(m, t='bench'))
                             data['sent'] += 1
                 else:
@@ -567,6 +573,7 @@ class Handler(BaseHTTPRequestHandler):
     def stream(self, query):
         agent = self.server.agent
         ident = None
+        session = None
         try:
             with agent.lock:
                 key = agent.grants.redeem(query.get('src'), query)
@@ -595,7 +602,6 @@ class Handler(BaseHTTPRequestHandler):
                         if old.writer:
                             old.writer.join(6)
                             if old.writer.is_alive():
-                                session.controller.close()
                                 raise ValueError('The previous capture is still stopping; retry shortly')
                 ident = agent.next_id
                 agent.next_id += 1
@@ -622,6 +628,8 @@ class Handler(BaseHTTPRequestHandler):
                 with agent.lock:
                     agent.sessions.pop(ident, None)
                 self.close_connection = True
+            elif session is not None:
+                session.controller.close()
 
 
 def main():

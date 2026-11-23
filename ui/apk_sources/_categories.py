@@ -91,7 +91,8 @@ def classify(entry):
     if entry.get('vr') is True:
         return {'category': 'vr', 'phone_only': False}
     name, summary = str(entry.get('name') or ''), str(entry.get('summary') or '')
-    names = [c for c in entry.get('categories') or () if isinstance(c, str)]
+    raw_cats = entry.get('categories')
+    names = [c for c in raw_cats if isinstance(c, str)] if isinstance(raw_cats, (list, tuple, set)) else []
     fine = {FINE_TARGET[c] for c in names if c in FINE_TARGET}
     broad = {BROAD[c] for c in names if BROAD.get(c)}
     category = next((c for c in PRIORITY if c in fine), None) or next((c for c in PRIORITY if c in broad), None)

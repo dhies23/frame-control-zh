@@ -169,12 +169,16 @@ def game_name(appid):
     return _manifest_field(text, 'name')
 
 
+def _ascii_digits(value):
+    return isinstance(value, str) and value.isascii() and value.isdigit()
+
+
 def accounts():
     rel = STEAM + '/userdata'
     if not _backup_dir(rel):
         return []
     try:
-        return sorted(p.name for p in (HOME / rel).iterdir() if p.name.isdigit() and
+        return sorted(p.name for p in (HOME / rel).iterdir() if _ascii_digits(p.name) and
                       p.name != '0' and _backup_dir(rel + '/' + p.name))
     except OSError:
         return []
@@ -185,7 +189,7 @@ def _prefixes():
         return []
     try:
         return sorted((p.name for p in (HOME / COMPAT).iterdir()
-                       if p.name.isdigit() and _backup_dir(COMPAT + '/' + p.name + '/' + PREFIX_USER)), key=int)
+                       if _ascii_digits(p.name) and _backup_dir(COMPAT + '/' + p.name + '/' + PREFIX_USER)), key=int)
     except OSError:
         return []
 
@@ -194,7 +198,7 @@ def part_roots(part):
     """(roots to save, roots that a restore may write) for a part id, or None if unknown."""
     if not isinstance(part, str):
         return None
-    if part.startswith('saves:') and part[6:].isdigit():
+    if part.startswith('saves:') and _ascii_digits(part[6:]):
         user = '%s/%s/%s' % (COMPAT, part[6:], PREFIX_USER)
         roots = tuple(user + '/' + d for d in SAVE_DIRS)
         return roots, roots
@@ -215,7 +219,7 @@ def part_roots(part):
 def restore_roots(part, rel):
     """The restore roots for rel within part; the Steam ones don't depend on today's accounts."""
     if part == 'settings:steam':
-        m = re.match(r'^(?:%s/userdata/(\d+)/|%s/(\d+)/)' % (re.escape(STEAM), re.escape(STEAM_CONTROLLER)), rel)
+        m = re.match(r'^(?:%s/userdata/(\d+)/|%s/(\d+)/)' % (re.escape(STEAM), re.escape(STEAM_CONTROLLER)), rel, re.ASCII)
         acct = m and (m.group(1) or m.group(2))
         if not acct:
             return ()
@@ -263,7 +267,7 @@ def plan():
             continue
         parts.append({'id': part, 'kind': part.split(':')[0], 'label': part_label(part),
                       'files': len(files), 'bytes': sum(s for _, s in files), 'skipped': skipped,
-                      'appid': part[6:] if part[6:].isdigit() else None,
+                      'appid': part[6:] if _ascii_digits(part[6:]) else None,
                       'restorable': sum(1 for rel, _ in files
                                         if any(_under(rel, r) for r in restore_roots(part, rel)))})
     return {'build': os_release().get('BUILD_ID'), 'version': os_release().get('VERSION_ID'),
@@ -318,7 +322,7 @@ def target_status(part, rel):
         if not (HOME / COMPAT / appid / PREFIX_USER).is_dir():
             return 'no_prefix'
     if part == 'settings:steam':
-        acct = re.search(r'/(\d+)/', rel[len(STEAM):])
+        acct = re.search(r'/(\d+)/', rel[len(STEAM):], re.ASCII)
         if not acct or not (HOME / STEAM / 'userdata' / acct.group(1)).is_dir():
             return 'no_account'
     # A link anywhere on the way could send the write somewhere else.
@@ -371,7 +375,7 @@ def _sha256(path):
 def restore(part, stamp, source):
     if part_roots(part) is None:
         raise ValueError('unknown backup part %r' % part)
-    if not isinstance(stamp, str) or not re.fullmatch(r'\d{8}-\d{6}', stamp):
+    if not isinstance(stamp, str) or not re.fullmatch(r'\d{8}-\d{6}', stamp, re.ASCII):
         raise ValueError('bad restore stamp')
     # Spool first: everything is checked before anything is written.
     spool_dir = HOME / '.cache/frame-control'
@@ -379,8 +383,16 @@ def restore(part, stamp, source):
     written, replaced, held = [], [], {}
     with tempfile.TemporaryDirectory(prefix='restore-', dir=str(spool_dir)) as tmp:
         spool = Path(tmp) / 'part.tar.gz'
+        spooled = 0
         with open(str(spool), 'wb') as dst:
-            shutil.copyfileobj(source, dst, 1024 * 1024)
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                spooled += len(chunk)
+                if spooled > MAX_PART:
+                    raise ValueError('backup part is too big')
+                dst.write(chunk)
         todo, names, total = [], set(), 0
         with tarfile.open(str(spool), 'r:gz') as archive:
             for member in archive:
@@ -414,7 +426,10 @@ def restore(part, stamp, source):
                     with extracted as src, open(str(part_file), 'wb') as dst:
                         shutil.copyfileobj(src, dst, 1024 * 1024)
                     os.chmod(str(part_file), (member.mode & 0o755) | 0o600)
-                    os.utime(str(part_file), (member.mtime, member.mtime))
+                    try:
+                        os.utime(str(part_file), (member.mtime, member.mtime))
+                    except (OSError, OverflowError, ValueError):
+                        pass
                     if target.exists():
                         if _sha256(target) == _sha256(part_file):
                             held['same'] = held.get('same', 0) + 1
@@ -476,8 +491,8 @@ def _running(name, full=False):
                if full else name)
     try:
         return subprocess.call(['pgrep', '-f' if full else '-x', pattern], stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL) == 0
-    except OSError:
+                               stderr=subprocess.DEVNULL, timeout=5) == 0
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 

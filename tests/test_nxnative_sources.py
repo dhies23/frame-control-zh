@@ -315,6 +315,87 @@ class SourcesTests(unittest.TestCase):
                 nx._stage(TITLE, [], {'instance': 123}, lambda *a: None)
         send.assert_not_called()
 
+    def test_http_exceptions_and_bad_content_length_raise_nxnative_error(self):
+        import http.client
+        class BrokenRead:
+            headers = {'Content-Length': 'not-a-number'}
+            def read(self, n=-1):
+                raise http.client.IncompleteRead(b'part', 10)
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                pass
+        with patch.object(nx.urllib.request, 'build_opener') as opener:
+            opener.return_value.open.side_effect = http.client.BadStatusLine('bad')
+            with self.assertRaises(nx.NxNativeError):
+                nx._open('https://example.invalid/catalog.json')
+        with patch.object(nx, '_open', return_value=BrokenRead()):
+            with self.assertRaises(nx.NxNativeError):
+                nx._read_index('https://example.invalid/catalog.json')
+            with self.assertRaises(nx.NxNativeError):
+                nx._fetch({'_location': 'https://example.invalid/game.nxnative.zip', '_sha256': 'a' * 64},
+                          lambda *a: None)
+
+    def test_text_and_portable_reject_del_and_superscript_windows_devices(self):
+        with self.assertRaises(nx.NxNativeError):
+            nx._text('game\x7fname', 'game name')
+        for bad in ('game\x7f.apk', 'COM\u00b9.apk', 'data/dm/LPT\u00b2.txt'):
+            with self.subTest(bad=bad), self.assertRaises(nx.NxNativeError):
+                nx._portable(bad)
+
+    def test_location_and_reference_wrap_resolve_runtime_errors(self):
+        with patch.object(Path, 'resolve', side_effect=RuntimeError('symlink loop')):
+            with self.assertRaises(nx.NxNativeError):
+                nx._location(str(self.root))
+            with self.assertRaises(nx.NxNativeError):
+                nx._reference(str(self.root / 'catalog.json'), 'game.nxnative.zip')
+
+    def test_unpack_bounds_inflated_manifest_and_install_wraps_corrupt_zip_errors(self):
+        import io
+        import struct
+        import zlib
+        bundle = self.bundle()
+        real_infolist = zipfile.ZipFile.infolist
+        def lying_infolist(archive):
+            members = real_infolist(archive)
+            for m in members:
+                if m.filename == 'nxnative.json':
+                    m.file_size = 10
+            return members
+        with patch.object(nx, 'MAX_INDEX', 16), \
+                patch.object(zipfile.ZipFile, 'infolist', lying_infolist), \
+                patch.object(zipfile.ZipFile, 'open', return_value=io.BytesIO(b'x' * 64)):
+            dest = self.root / 'bounded'
+            dest.mkdir()
+            with self.assertRaisesRegex(nx.NxNativeError, 'oversized'):
+                nx._unpack(bundle, dest)
+        result = nx.add_source(str(self.catalog([{'bundle': str(bundle)}])))
+        entry = result['games'][0]
+        for exc in (EOFError('short'), struct.error('bad'), zlib.error('corrupt')):
+            with self.subTest(exc=type(exc).__name__), \
+                    patch.object(nx, '_unpack', side_effect=exc), \
+                    patch.object(nx.frame_android, 'install') as install:
+                with self.assertRaisesRegex(nx.NxNativeError, 'Could not unpack'):
+                    nx.install(entry['source_id'], entry['id'])
+                install.assert_not_called()
+
+    def test_stage_rejects_missing_bool_and_non_int_instance(self):
+        with patch.object(nx.frame_android, 'stop') as stop, \
+                patch.object(nx.frame_android, 'launch') as launch:
+            for bad in (None, {}, {'instance': True}, {'instance': 'abc'}, {'instance': -1}):
+                with self.subTest(bad=bad), self.assertRaisesRegex(nx.NxNativeError, 'instance'):
+                    nx._stage(TITLE, [], bad, lambda *a: None)
+        stop.assert_not_called()
+        launch.assert_not_called()
+
+    def test_read_state_rejects_corrupt_source_entries(self):
+        nx._settings().parent.mkdir(parents=True, exist_ok=True)
+        for payload in ({'sources': ['bad']}, {'sources': [{'id': 'x'}]}):
+            with self.subTest(payload=payload):
+                nx._settings().write_text(json.dumps(payload), encoding='utf-8')
+                with self.assertRaisesRegex(nx.NxNativeError, 'invalid'):
+                    nx._read_state()
+
 
 if __name__ == '__main__':
     unittest.main()

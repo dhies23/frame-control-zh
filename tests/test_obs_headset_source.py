@@ -292,6 +292,80 @@ class ObsSourceTests(unittest.TestCase):
                         obs.main(['--frame', 'fake-frame'])
                 self.assertTrue(stopped.exists(), 'SSH survived the relay timeout')
 
+    def test_hardening_stop_child_signal_stop_frame_validation_and_wait_timeout(self):
+        # 1. stop_child tolerates PermissionError on terminate and OSError/TimeoutExpired on kill/wait
+        proc_perm = mock.Mock()
+        proc_perm.poll.return_value = None
+        proc_perm.terminate.side_effect = PermissionError('already exited on Windows')
+        obs.stop_child(proc_perm)
+
+        proc_hang = mock.Mock()
+        proc_hang.poll.return_value = None
+        proc_hang.wait.side_effect = [
+            subprocess.TimeoutExpired('ssh', 5),
+            subprocess.TimeoutExpired('ssh', 5),
+        ]
+        obs.stop_child(proc_hang)
+        proc_hang.kill.assert_called_once()
+        # Second wait must have a bounded timeout
+        self.assertIsNotNone(proc_hang.wait.call_args_list[1].kwargs.get('timeout'))
+
+        # 2. SignalStop.__enter__ closes descriptors if signal.set_wakeup_fd fails
+        closed = []
+        if os.name == 'nt':
+            r_sock, w_sock = mock.Mock(), mock.Mock()
+            r_sock.close.side_effect = lambda: closed.append('r')
+            w_sock.close.side_effect = lambda: closed.append('w')
+            w_sock.fileno.return_value = 99
+            with mock.patch.object(obs.socket, 'socketpair', return_value=(r_sock, w_sock)), \
+                 mock.patch.object(obs.signal, 'set_wakeup_fd', side_effect=ValueError('non-main thread')):
+                with self.assertRaises(ValueError):
+                    with obs.SignalStop():
+                        pass
+            self.assertEqual(sorted(closed), ['r', 'w'])
+        else:
+            with mock.patch.object(obs.os, 'pipe', return_value=(101, 102)), \
+                 mock.patch.object(obs.os, 'set_blocking'), \
+                 mock.patch.object(obs.os, 'close', side_effect=lambda fd: closed.append(fd)), \
+                 mock.patch.object(obs.signal, 'set_wakeup_fd', side_effect=ValueError('non-main thread')):
+                with self.assertRaises(ValueError):
+                    with obs.SignalStop():
+                        pass
+            self.assertEqual(sorted(closed), [101, 102])
+
+        # 3. SignalStop.requested() tolerates OSError from closed wakeup descriptor
+        stop = obs.SignalStop()
+        stop.stopped = False
+        stop.read = mock.Mock(side_effect=OSError('bad fd'))
+        self.assertFalse(stop.requested())
+
+        # 4. --frame rejects control characters (e.g. NUL or ESC)
+        with self.assertRaises(SystemExit) as cm:
+            obs.main(['--frame', 'frame\x00evil'])
+        self.assertEqual(cm.exception.code, 2)
+
+        # 5. proc.wait(timeout=10) TimeoutExpired raises RuntimeError (caught by __main__)
+        proc_wait = mock.Mock()
+        proc_wait.stdout = io.BytesIO(b'G' * obs.DATAGRAM)
+        proc_wait.stdout.close = mock.Mock(side_effect=OSError('already closed'))
+        proc_wait.poll.return_value = 0
+        proc_wait.wait.side_effect = subprocess.TimeoutExpired('ssh', 10)
+        with mock.patch.object(obs.subprocess, 'Popen', return_value=proc_wait), \
+             mock.patch.object(obs._Sender, 'send'):
+            with self.assertRaisesRegex(RuntimeError, 'timed out|did not exit'):
+                obs.main(['--frame', 'fake-frame'])
+
+        # 6. relay drains multiple datagrams when a source returns > DATAGRAM bytes
+        class BigSource:
+            def __init__(self):
+                self.chunks = [b'G' * (obs.DATAGRAM * 2)]
+            def read(self, _n):
+                return self.chunks.pop(0) if self.chunks else b''
+        receiver = Receiver()
+        total = obs.relay(BigSource(), receiver)
+        self.assertEqual(total, obs.DATAGRAM * 2)
+        self.assertEqual(len(receiver.chunks), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

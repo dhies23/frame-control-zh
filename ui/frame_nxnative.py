@@ -5,6 +5,7 @@ only prepared Android/Vulkan builds can be installed by this adapter.
 """
 import argparse
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
@@ -13,6 +14,7 @@ import re
 import shlex
 import shutil
 import stat
+import struct
 import tempfile
 import threading
 import time
@@ -21,6 +23,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 
 import frame_android
 import frame_host
@@ -59,7 +62,9 @@ def _read_state():
         return {'sources': []}
     except (OSError, ValueError) as e:
         raise NxNativeError('Could not read your NxNative source settings') from e
-    if not isinstance(value, dict) or not isinstance(value.get('sources'), list):
+    if (not isinstance(value, dict) or not isinstance(value.get('sources'), list) or
+            any(not isinstance(s, dict) or not isinstance(s.get('id'), str) or not isinstance(s.get('location'), str)
+                for s in value['sources'])):
         raise NxNativeError('Your NxNative source settings are invalid')
     return value
 
@@ -78,7 +83,8 @@ def _save_state(value):
 
 
 def _text(value, label, maximum=512):
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum or any(ord(c) < 32 for c in value):
+    if (not isinstance(value, str) or not value.strip() or len(value) > maximum or
+            any(ord(c) < 32 or ord(c) == 127 for c in value)):
         raise NxNativeError('Invalid ' + label)
     return value.strip()
 
@@ -111,8 +117,12 @@ def _location(value):
         if p.netloc not in ('', 'localhost'):
             raise NxNativeError('Mount the network share and add its local path')
         value = urllib.request.url2pathname(p.path)
-    path = Path(value).expanduser().resolve()
-    if not path.exists():
+    try:
+        path = Path(value).expanduser().resolve()
+        exists = path.exists()
+    except (OSError, RuntimeError) as e:
+        raise NxNativeError('That folder or catalog file is not available on this computer') from e
+    if not exists:
         raise NxNativeError('That folder or catalog file is not available on this computer')
     return str(path)
 
@@ -129,7 +139,7 @@ def _open(url):
     try:
         return urllib.request.build_opener(_Redirect()).open(urllib.request.Request(
             _url(url), headers={'User-Agent': 'FrameControl-NxNative/1'}), timeout=60)
-    except (OSError, urllib.error.URLError, ValueError) as e:
+    except (OSError, urllib.error.URLError, http.client.HTTPException, ValueError) as e:
         if isinstance(e, NxNativeError):
             raise
         raise NxNativeError('Could not read this source; check its address, access and network connection') from e
@@ -137,8 +147,11 @@ def _open(url):
 
 def _read_index(location):
     if _remote(location):
-        with _open(location) as f:
-            data = f.read(MAX_INDEX + 1)
+        try:
+            with _open(location) as f:
+                data = f.read(MAX_INDEX + 1)
+        except (OSError, http.client.HTTPException) as e:
+            raise NxNativeError('Could not read this source; check its address, access and network connection') from e
     else:
         with Path(location).open('rb') as f:
             data = f.read(MAX_INDEX + 1)
@@ -158,10 +171,13 @@ def _reference(base, value):
         return _url(urllib.parse.urljoin(base, value))
     if _remote(value):
         return _url(value)
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        path = Path(base).parent / path
-    return str(path.resolve())
+    try:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = Path(base).parent / path
+        return str(path.resolve())
+    except (OSError, RuntimeError) as e:
+        raise NxNativeError('Invalid game location') from e
 
 
 def _sha(value, required=False):
@@ -325,7 +341,7 @@ def refresh(source_id=None):
             location = source['location']
             entries = _folder(location, source['id']) if not _remote(location) and Path(location).is_dir() else _catalog(location, source['id'])
             source.update(games=entries, error=None, refreshed=int(time.time()))
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, RuntimeError) as e:
             # A bad source must not hide healthy ones or keep its stale Install buttons active.
             source.update(games=[], error=str(e) if isinstance(e, NxNativeError) else 'This source is unavailable; check its folder or network connection')
         with _lock:
@@ -384,8 +400,8 @@ def _portable(name):
     parts = p.parts
     if (not parts or len(name) > 1024 or name != p.as_posix() or p.is_absolute() or '\\' in name or
             any(s in ('.', '..') or ':' in s or s.rstrip(' .') != s or '\0' in s or
-                re.fullmatch(r'(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?', s, re.I) or
-                any(ord(c) < 32 for c in s) for s in parts)):
+                re.fullmatch(r'(CON|PRN|AUX|NUL|COM[1-9\u00b9\u00b2\u00b3]|LPT[1-9\u00b9\u00b2\u00b3])(?:\..*)?', s, re.I) or
+                any(ord(c) < 32 or ord(c) == 127 for c in s) for s in parts)):
         raise NxNativeError('Unsafe filename in NxNative bundle')
     return parts
 
@@ -413,17 +429,21 @@ def _fetch(entry, report):
     fd, temp = tempfile.mkstemp(prefix='.download-', dir=_cache())
     try:
         h, total = hashlib.sha256(), 0
-        with os.fdopen(fd, 'wb') as out, _open(location) as src:
-            size = int(src.headers.get('Content-Length') or 0)
-            if size > MAX_BYTES or size > shutil.disk_usage(_cache()).free - RESERVE:
-                raise NxNativeError('Not enough space to download this prepared build')
-            for block in iter(lambda: src.read(4 * 1024**2), b''):
-                total += len(block)
-                if total > MAX_BYTES or shutil.disk_usage(_cache()).free < len(block) + RESERVE:
+        try:
+            with os.fdopen(fd, 'wb') as out, _open(location) as src:
+                raw_size = str(src.headers.get('Content-Length') or '').strip() if src.headers else ''
+                size = int(raw_size) if raw_size.isascii() and raw_size.isdigit() else 0
+                if size > MAX_BYTES or size > shutil.disk_usage(_cache()).free - RESERVE:
                     raise NxNativeError('Not enough space to download this prepared build')
-                out.write(block)
-                h.update(block)
-                report('Downloading your prepared build', round(total / size * 100) if size else None)
+                for block in iter(lambda: src.read(4 * 1024**2), b''):
+                    total += len(block)
+                    if total > MAX_BYTES or shutil.disk_usage(_cache()).free < len(block) + RESERVE:
+                        raise NxNativeError('Not enough space to download this prepared build')
+                    out.write(block)
+                    h.update(block)
+                    report('Downloading your prepared build', round(total / size * 100) if size else None)
+        except (OSError, http.client.HTTPException) as e:
+            raise NxNativeError('Could not download this prepared build; check your network connection') from e
         if h.hexdigest() != expected:
             raise NxNativeError('The prepared build checksum does not match; nothing was installed')
         os.replace(temp, path)
@@ -453,8 +473,12 @@ def _unpack(path, destination):
         manifest = seen.get('nxnative.json')
         if manifest is None or manifest.filename != 'nxnative.json' or manifest.file_size > MAX_INDEX:
             raise NxNativeError('Missing or oversized nxnative.json bundle manifest')
+        with archive.open(manifest) as mf:
+            raw_manifest = mf.read(MAX_INDEX + 1)
+        if len(raw_manifest) > MAX_INDEX:
+            raise NxNativeError('Missing or oversized nxnative.json bundle manifest')
         try:
-            meta = json.loads(archive.read(manifest))
+            meta = json.loads(raw_manifest)
         except (ValueError, UnicodeError) as e:
             raise NxNativeError('Invalid NxNative bundle manifest') from e
         if not isinstance(meta, dict) or meta.get('format') != BUNDLE_FORMAT:
@@ -501,10 +525,23 @@ def _unpack(path, destination):
         return meta, destination / 'game.apk', sorted(files)
 
 
+def _instance_id(meta):
+    raw = meta.get('instance') if isinstance(meta, dict) else None
+    if isinstance(raw, bool) or raw is None:
+        raise NxNativeError('Invalid Android instance id')
+    try:
+        inst = int(raw)
+    except (TypeError, ValueError) as e:
+        raise NxNativeError('Invalid Android instance id') from e
+    if inst < 0:
+        raise NxNativeError('Invalid Android instance id')
+    return inst
+
+
 def _stage(title, files, meta, report):
     helper = _helper()
     package = 'com.nxnative.t' + title.lower()
-    container = 'lepton-steamlaunch-' + str(int(meta['instance']))
+    container = 'lepton-steamlaunch-' + str(_instance_id(meta))
     report('Opening the game’s persistent Android instance', None)
     # Updating host app.apk requires a fresh instance so Android installs the new APK.
     frame_android.stop(package)
@@ -566,7 +603,7 @@ def install(source_id, game_id, report=None):
             report('Verifying your prepared build', None)
             try:
                 meta, apk, files = _unpack(path, Path(temp))
-            except (zipfile.BadZipFile, RuntimeError, OSError) as e:
+            except (zipfile.BadZipFile, RuntimeError, OSError, EOFError, struct.error, zlib.error) as e:
                 raise NxNativeError('Could not unpack this prepared build; nothing was installed') from e
             info = frame_android.apk_info(str(apk))
         title = _title(meta['title_id'])

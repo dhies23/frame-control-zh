@@ -7,11 +7,13 @@ import hmac
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import secrets
 import signal
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -239,36 +241,81 @@ def serve():
             if browser is not None and browser.poll() is None:
                 try:
                     os.killpg(browser.pid, signal.SIGTERM)
-                except ProcessLookupError:
+                except OSError:
                     pass
                 try:
                     browser.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     try:
                         os.killpg(browser.pid, signal.SIGKILL)
-                    except ProcessLookupError:
+                    except OSError:
                         pass
-                    browser.wait()
+                    try:
+                        browser.wait(timeout=5)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
 
 
-def open_switcher():
+def _reap_child(proc):
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
+
+def open_switcher(timeout=35):
     # This command runs from an installed path, never from the SSH stdin copy.
     proc = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--serve'],
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             text=True, encoding='utf-8', errors='replace', start_new_session=True)
+    lines = queue.Queue(maxsize=1)
+
+    def read_line():
+        try:
+            lines.put(proc.stdout.readline())
+        except Exception:
+            lines.put('')
+
+    line = ''
     try:
-        line = proc.stdout.readline()
+        threading.Thread(target=read_line, daemon=True).start()
+        try:
+            line = lines.get(timeout=timeout)
+        except queue.Empty:
+            raise PanelError('The headset switcher timed out while starting.')
+    except BaseException:
+        _reap_child(proc)
+        raise
     finally:
-        proc.stdout.close()
+        try:
+            proc.stdout.close()
+        except OSError:
+            pass
     if not line:
+        _reap_child(proc)
         raise PanelError('The headset switcher could not start.')
     try:
         result = json.loads(line)
     except ValueError:
+        _reap_child(proc)
         raise PanelError('The headset switcher could not start.')
     if not isinstance(result, dict):
+        _reap_child(proc)
         raise PanelError('The headset switcher could not start.')
     if 'error' in result:
+        _reap_child(proc)
         raise PanelError(result['error'])
     return result
 

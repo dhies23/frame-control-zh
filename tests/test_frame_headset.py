@@ -114,6 +114,103 @@ class HeadsetWindow(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_status_and_change_reject_non_dict_or_incomplete_remote_json(self):
+        for raw in ('[]', 'null', 'not-json'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                frame_headset.status(lambda *a, **k: raw)
+        with self.assertRaisesRegex(ValueError, 'Steam Frame'):
+            frame_headset.change(lambda *a, **k: '{}', 'install')
+        with self.assertRaisesRegex(ValueError, 'Invalid headset panel action'):
+            frame_headset.change(lambda *a, **k: '{}', ['install'])
+        replies = iter([json.dumps({'arch': 'aarch64', 'variant': 'vr'}), '[]'])
+        with self.assertRaises(ValueError):
+            frame_headset.change(lambda *a, **k: next(replies), 'close')
+
+    @unittest.skipIf(os.name == 'nt', 'remote script runs on Linux')
+    def test_probe_and_apply_guard_non_dict_receipt_and_state_json(self):
+        with tempfile.TemporaryDirectory() as home:
+            base = Path(home) / '.local/share/frame-control/headset'
+            base.mkdir(parents=True)
+            (base / 'receipt.json').write_text('[]', encoding='utf-8')
+            (base / 'state.json').write_text('null', encoding='utf-8')
+            unit = Path(home) / '.config/systemd/user/frame-control-headset.service'
+            unit.parent.mkdir(parents=True)
+            unit.write_text('[Unit]\n', encoding='utf-8')
+            env = {**os.environ, 'HOME': home}
+            probe = subprocess.run([sys.executable, '-'], input=frame_headset.PROBE,
+                                   text=True, capture_output=True, env=env, timeout=10)
+            self.assertEqual(probe.returncode, 0, probe.stderr)
+            parsed = json.loads(probe.stdout)
+            self.assertFalse(parsed['managed'])
+            self.assertIsNone(parsed['version'])
+            self.assertIsNone(parsed['window'])
+            apply = subprocess.run([sys.executable, '-', 'remove', secrets.token_hex(12), 'none'],
+                                   input=frame_headset.APPLY, text=True, capture_output=True, env=env, timeout=10)
+            self.assertNotEqual(apply.returncode, 0)
+            self.assertIn('No Frame Control managed', apply.stderr)
+
+    def test_browser_command_wraps_missing_flatpak(self):
+        with patch.object(Path, 'is_file', return_value=False), \
+                patch.object(frame_headset_runtime.subprocess, 'run', side_effect=FileNotFoundError('no flatpak')):
+            with self.assertRaisesRegex(frame_headset_runtime.RuntimeError_, 'Chromium'):
+                frame_headset_runtime.browser_command()
+
+    def test_command_uses_utf8_and_wraps_oserror_and_timeout(self):
+        ok = unittest.mock.Mock(returncode=0, stdout='ok\n', stderr='')
+        with patch.object(frame_headset_runtime.subprocess, 'run', return_value=ok) as run:
+            self.assertEqual(frame_headset_runtime.command('xprop'), 'ok\n')
+        self.assertEqual(run.call_args.kwargs.get('encoding'), 'utf-8')
+        self.assertEqual(run.call_args.kwargs.get('errors'), 'replace')
+        for exc in (FileNotFoundError('no xprop'), subprocess.TimeoutExpired('xprop', 5)):
+            with self.subTest(exc=type(exc).__name__), \
+                    patch.object(frame_headset_runtime.subprocess, 'run', side_effect=exc):
+                with self.assertRaises(frame_headset_runtime.RuntimeError_):
+                    frame_headset_runtime.command('xprop')
+
+    def test_wait_for_server_retries_http_exception(self):
+        import http.client
+
+        class FakeResp:
+            status = 200
+            def read(self, n=-1):
+                return b'[fc-headset]'
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                pass
+
+        proc = unittest.mock.Mock()
+        proc.poll.return_value = None
+        responses = [http.client.BadStatusLine('bad'), FakeResp()]
+        def fake_open(*a, **k):
+            item = responses.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+        with patch.object(frame_headset_runtime.urllib.request, 'urlopen', side_effect=fake_open), \
+                patch.object(frame_headset_runtime.time, 'sleep'):
+            frame_headset_runtime.wait_for_server(proc)
+        self.assertEqual(responses, [])
+
+    @unittest.skipIf(os.name == 'nt', 'os.killpg is POSIX only')
+    def test_terminate_owned_ignores_process_lookup_race_and_bounds_kill_wait(self):
+        proc = unittest.mock.Mock()
+        proc.pid = 999999
+        proc.poll.return_value = None
+        with patch.object(frame_headset_runtime.os, 'killpg', side_effect=ProcessLookupError):
+            frame_headset_runtime.terminate_owned(proc)
+        waits = []
+        def fake_wait(timeout=None):
+            waits.append(timeout)
+            if len(waits) == 1:
+                raise subprocess.TimeoutExpired('proc', timeout)
+            return 0
+        proc.wait.side_effect = fake_wait
+        with patch.object(frame_headset_runtime.os, 'killpg'):
+            frame_headset_runtime.terminate_owned(proc, timeout=5)
+        self.assertEqual(len(waits), 2)
+        self.assertIsNotNone(waits[1])
+
 
 if __name__ == '__main__':
     unittest.main()

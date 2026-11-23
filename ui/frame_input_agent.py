@@ -85,13 +85,15 @@ def install(folder, packages):
     shutil.rmtree(stage, ignore_errors=True)
     stage.mkdir(parents=True)
     for name, sha in packages:
+        if not isinstance(name, str) or not name or "/" in name or "\\" in name or name in (".", "..") or "\x00" in name:
+            raise RuntimeError(f"Invalid package name: {name!r}")
         path = Path(folder) / name
         if not path.is_file():
             raise RuntimeError(f"{name} didn't reach the Frame")
         if sha256(path) != sha:
             raise RuntimeError(f"{name} arrived damaged (its SHA-256 doesn't match)")
-        if subprocess.run(["tar", "--zstd", "-xf", str(path), "-C", str(stage)], capture_output=True).returncode:
-            subprocess.run(["bsdtar", "-xf", str(path), "-C", str(stage)], check=True, capture_output=True)
+        if subprocess.run(["tar", "--zstd", "-xf", str(path), "-C", str(stage)], capture_output=True, timeout=120).returncode:
+            subprocess.run(["bsdtar", "-xf", str(path), "-C", str(stage)], check=True, capture_output=True, timeout=120)
     (stage / STAMP).write_text(stamp(packages))
     stop_daemon()  # an older copy may still be running from ROOT
     shutil.rmtree(ROOT, ignore_errors=True)
@@ -174,10 +176,10 @@ def ensure_daemon(folder, packages):
     BASE.mkdir(parents=True, exist_ok=True)
     daemon = SYSTEM_DAEMON if system else ROOT / "usr/lib/kdeconnectd"
     say("starting", message="Starting KDE Connect on the Frame")
-    log = open(BASE / "kdeconnectd.log", "ab")
-    # Its own session, so it outlives this connection and serves the next one.
-    subprocess.Popen([str(daemon)], env=daemon_env(daemon), cwd=str(Path.home()), stdin=subprocess.DEVNULL,
-                     stdout=log, stderr=log, start_new_session=True)
+    with open(BASE / "kdeconnectd.log", "ab") as log:
+        # Its own session, so it outlives this connection and serves the next one.
+        subprocess.Popen([str(daemon)], env=daemon_env(daemon), cwd=str(Path.home()), stdin=subprocess.DEVNULL,
+                         stdout=log, stderr=log, start_new_session=True)
     for _ in range(40):
         if listening():
             return
@@ -225,15 +227,21 @@ class Link:
     def __init__(self, device, cert, key, port=PORT, name="Frame Control"):
         self.device, self.buf, self.keyboard = device, b"", None
         raw = socket.create_connection(("127.0.0.1", port), 5)
-        raw.sendall(packet("kdeconnect.identity", {
-            "deviceId": device, "deviceName": name, "deviceType": "phone", "protocolVersion": 7,
-            "incomingCapabilities": [], "outgoingCapabilities": [MOUSEPAD], "tcpPort": port}))
-        # KDE Connect's rule: whoever opened the TCP connection is the TLS server.
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(str(cert), str(key))
-        ctx.verify_mode = ssl.CERT_NONE  # both sides are on this machine
-        self.sock = ctx.wrap_socket(raw, server_side=True)
-        self.sock.setblocking(False)
+        sock = raw
+        try:
+            raw.sendall(packet("kdeconnect.identity", {
+                "deviceId": device, "deviceName": name, "deviceType": "phone", "protocolVersion": 7,
+                "incomingCapabilities": [], "outgoingCapabilities": [MOUSEPAD], "tcpPort": port}))
+            # KDE Connect's rule: whoever opened the TCP connection is the TLS server.
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(str(cert), str(key))
+            ctx.verify_mode = ssl.CERT_NONE  # both sides are on this machine
+            sock = ctx.wrap_socket(raw, server_side=True)
+            sock.setblocking(False)
+            self.sock = sock
+        except BaseException:
+            sock.close()
+            raise
 
     def send(self, body):
         # Bounded: if KDE Connect stops reading, fail (and be restarted) rather than hang.
@@ -266,9 +274,11 @@ class Link:
         """Packets waiting from kdeconnectd; None once it has closed the connection."""
         if wait:
             sel = selectors.DefaultSelector()
-            sel.register(self.sock, selectors.EVENT_READ)
-            sel.select(wait)
-            sel.close()
+            try:
+                sel.register(self.sock, selectors.EVENT_READ)
+                sel.select(wait)
+            finally:
+                sel.close()
         try:
             while True:
                 chunk = self.sock.recv(65536)
@@ -281,9 +291,15 @@ class Link:
         while b"\n" in self.buf:
             line, self.buf = self.buf.split(b"\n", 1)
             if line.strip():
-                p = json.loads(line)
+                try:
+                    p = json.loads(line)
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if not isinstance(p, dict):
+                    continue
                 if p.get("type") == "kdeconnect.mousepad.keyboardstate":
-                    self.keyboard = bool(p.get("body", {}).get("state"))
+                    body = p.get("body")
+                    self.keyboard = bool(body.get("state")) if isinstance(body, dict) else False
                 out.append(p)
         return out
 
@@ -299,8 +315,12 @@ def events(line):
 
 def connect(device, cert, key, name):
     link = Link(device, cert, key, name=name)
-    link.pair(lambda: qdbus(device, "isPaired") == "true", lambda: qdbus(device, "acceptPairing"))
-    link.read(0.5)  # its hello, including whether it can type
+    try:
+        link.pair(lambda: qdbus(device, "isPaired") == "true", lambda: qdbus(device, "acceptPairing"))
+        link.read(0.5)  # its hello, including whether it can type
+    except BaseException:
+        link.sock.close()
+        raise
     return link
 
 
@@ -312,7 +332,12 @@ def client_args():
     name = (sys.argv[2] if len(sys.argv) > 2 else "")[:60].strip()
     folder = os.path.expanduser(sys.argv[3]) if len(sys.argv) > 3 else ""
     try:
-        packages = [(str(f), str(h)) for f, h in json.loads(sys.argv[4])] if len(sys.argv) > 4 else []
+        raw_packages = json.loads(sys.argv[4]) if len(sys.argv) > 4 else []
+        packages = [
+            (item[0], item[1]) for item in raw_packages
+            if isinstance(item, list) and len(item) == 2
+            and isinstance(item[0], str) and isinstance(item[1], str)
+        ] if isinstance(raw_packages, list) else []
     except (ValueError, TypeError):
         packages = []
     return client, f"Frame Control ({name})" if name else "Frame Control", folder, packages
@@ -329,21 +354,38 @@ def main():
     # exclusively and stops KDE Connect, so it runs, and shows up on the network,
     # only while something is using the keyboard and trackpad.
     clients = open(BASE / "clients.lock", "w")
-    fcntl.flock(clients, fcntl.LOCK_SH)
     try:
-        return run(client, name, folder, packages)
-    finally:
-        # Finish the clean-up even if a second hang-up or TERM arrives meanwhile.
-        for sig in (signal.SIGHUP, signal.SIGTERM):
-            signal.signal(sig, signal.SIG_IGN)
-        fcntl.flock(clients, fcntl.LOCK_UN)
+        fcntl.flock(clients, fcntl.LOCK_SH)
         try:
-            fcntl.flock(clients, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            pass  # another device is still using it
-        else:
-            with daemon_lock():
-                stop_daemon()
+            return run(client, name, folder, packages)
+        finally:
+            # Finish the clean-up even if a second hang-up or TERM arrives meanwhile.
+            for sig in (signal.SIGHUP, signal.SIGTERM):
+                signal.signal(sig, signal.SIG_IGN)
+            fcntl.flock(clients, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(clients, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                pass  # another device is still using it
+            else:
+                with daemon_lock():
+                    stop_daemon()
+    finally:
+        clients.close()
+
+
+def _incoming_child(folder):
+    if not folder:
+        return None
+    try:
+        incoming = (BASE / "incoming").resolve()
+        raw = Path(folder)
+        if raw.is_symlink():
+            return None
+        target = raw.resolve()
+    except OSError:
+        return None
+    return target if incoming in target.parents else None
 
 
 def tidy_incoming(folder):
@@ -353,8 +395,9 @@ def tidy_incoming(folder):
     hour old (so not one a server is still copying, before its agent starts).
     """
     incoming = BASE / "incoming"
-    if folder.startswith(str(incoming) + "/"):
-        shutil.rmtree(folder, ignore_errors=True)
+    target = _incoming_child(folder)
+    if target is not None:
+        shutil.rmtree(target, ignore_errors=True)
     try:
         others = list(incoming.iterdir())
     except OSError:
@@ -376,13 +419,17 @@ def tidy_incoming(folder):
 
 def hold_incoming(folder):
     """Mark this start's copy as in use (tidy_incoming leaves it alone); the lock lasts as long as the file."""
-    if not folder.startswith(str(BASE / "incoming") + "/"):
+    target = _incoming_child(folder)
+    if target is None:
         return None
+    lock = None
     try:
-        lock = open(Path(folder) / ".in-use", "a")
+        lock = open(target / ".in-use", "a")
         fcntl.flock(lock, fcntl.LOCK_SH)
         return lock
     except OSError:
+        if lock is not None:
+            lock.close()
         return None
 
 
@@ -439,30 +486,42 @@ def serve(client, name, folder, packages):
     say("ready", keyboard=link.keyboard is not False)
     stdin, pending = sys.stdin.fileno(), b""
     sel = selectors.DefaultSelector()
-    sel.register(stdin, selectors.EVENT_READ)
-    sel.register(link.sock, selectors.EVENT_READ)
-    while True:
-        for key_, _ in sel.select(30):
-            if key_.fileobj == stdin:
-                chunk = os.read(stdin, 65536)  # raw reads: a buffered readline could strand lines select can't see
-                if not chunk:  # the server went away
-                    return 0
-                *lines, pending = (pending + chunk).split(b"\n")
-                try:
-                    for line in lines:
-                        for body in events(line):
-                            link.send(body)
-                except OSError as e:
-                    say("error", message=f"Lost KDE Connect: {e}")
-                    return 1
-            else:
-                packets = link.read()
-                if packets is None:
-                    say("error", message="KDE Connect closed the connection")
-                    return 1
-                if any(p.get("type") == "kdeconnect.pair" and not p.get("body", {}).get("pair") for p in packets):
-                    say("error", message="KDE Connect unpaired Frame Control")
-                    return 1
+    try:
+        sel.register(stdin, selectors.EVENT_READ)
+        sel.register(link.sock, selectors.EVENT_READ)
+        while True:
+            for key_, _ in sel.select(30):
+                if key_.fileobj == stdin:
+                    chunk = os.read(stdin, 65536)  # raw reads: a buffered readline could strand lines select can't see
+                    if not chunk:  # the server went away
+                        return 0
+                    *lines, pending = (pending + chunk).split(b"\n")
+                    try:
+                        for line in lines:
+                            for body in events(line):
+                                link.send(body)
+                    except OSError as e:
+                        say("error", message=f"Lost KDE Connect: {e}")
+                        return 1
+                else:
+                    try:
+                        packets = link.read()
+                    except OSError as e:
+                        say("error", message=f"Lost KDE Connect: {e}")
+                        return 1
+                    if packets is None:
+                        say("error", message="KDE Connect closed the connection")
+                        return 1
+                    if any(
+                        p.get("type") == "kdeconnect.pair"
+                        and not (p.get("body") if isinstance(p.get("body"), dict) else {}).get("pair")
+                        for p in packets
+                    ):
+                        say("error", message="KDE Connect unpaired Frame Control")
+                        return 1
+    finally:
+        sel.close()
+        link.sock.close()
 
 
 if __name__ == "__main__":

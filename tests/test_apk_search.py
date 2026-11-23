@@ -405,3 +405,78 @@ class EndpointTests(SettingsTest):
                 return job
             time.sleep(.01)
         self.fail('job did not finish')
+
+
+class SourcesHardeningTests(unittest.TestCase):
+    def test_web_checked_url_rejects_control_chars_and_apk_wraps_corrupt_zip_errors(self):
+        import io, struct
+        from apk_sources import _web
+        for bad in ('https://example.com/a\r\nb', 'https://example.com/a\x00b', 'https://example.com/a\x7fb'):
+            with self.subTest(url=bad), self.assertRaises(SourceError):
+                _web.checked_url(bad, ('example.com',))
+        with self.assertRaises(SourceError):
+            _web.read(123, ('example.com',))
+        for exc in (EOFError('eof'), struct.error('unpack'), RuntimeError('bad zip')):
+            with self.subTest(exc=type(exc).__name__), \
+                    patch.object(_web, 'open_url', return_value=io.BytesIO(b'PK\x03\x04')), \
+                    patch.object(_web.zipfile, 'ZipFile', side_effect=exc):
+                with self.assertRaises(SourceError):
+                    _web.apk('https://example.com/app.apk', ('example.com',))
+
+    def test_fdroid_validation_corrupt_cache_and_unhashable_lookups(self):
+        import struct, tempfile
+        from pathlib import Path
+        from apk_sources import fdroid
+        with self.assertRaises(SourceError):
+            fdroid._fingerprint(123)
+        for bad in ('https://repo.example/a\r\nb', 'https://repo.example:bad/repo', None, 123):
+            with self.subTest(url=bad), self.assertRaises(SourceError):
+                fdroid._url(bad)
+        with self.assertRaises(SourceError):
+            fdroid._split_login(None)
+        for exc in (EOFError('eof'), struct.error('bad')):
+            with self.subTest(exc=type(exc).__name__), patch.object(fdroid.zipfile, 'ZipFile', side_effect=exc):
+                with self.assertRaises(SourceError):
+                    fdroid._jar('fake.jar', 'entry.json', None)
+        source = {'id': 'test-repo', 'url': 'https://repo.example/', 'fingerprint': 'ab' * 32, 'enabled': True}
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / 'cache.json'
+            for payload in ('[]', json.dumps({'version': fdroid.CACHE_VERSION, 'url': source['url'],
+                                              'fingerprint': source['fingerprint'], 'apps': []})):
+                cache.write_text(payload, encoding='utf-8')
+                self.assertIsNone(fdroid._cached(source, cache))
+        with patch.object(fdroid, '_cached', return_value=({'org.ok': {'id': 'org.ok'}}, 'ab' * 32, False)):
+            self.assertEqual(fdroid.lookup(source, [['unhashable'], 'org.ok']), {'org.ok': {'id': 'org.ok'}})
+        with patch.object(fdroid, '_load', return_value=({'org.ok': {'id': 'org.ok', 'name': 'Ok', 'summary': ''}}, 'ab' * 32)):
+            with self.assertRaises(SourceError):
+                fdroid.details(source, ['unhashable'])
+            self.assertEqual(len(fdroid.search(source, None)), 1)
+
+    def test_search_report_cache_thread_start_failure_and_unhashable_inputs(self):
+        called = []
+        cache = search.ReportCache(lambda: called.append(1) or [], lambda rows: None, ttl=60)
+        with patch.object(search.threading.Thread, 'start', side_effect=RuntimeError('no thread')):
+            self.assertEqual(cache.read(), {})
+        self.assertFalse(cache._running)
+        with patch.object(search, 'registry', return_value=([(fake('one'), {'id': 'one', 'name': 'One', 'enabled': True})], [])):
+            with self.assertRaises(SourceError):
+                search.set_enabled('one', 'yes')
+            with self.assertRaises(SourceError):
+                search.search(category=['bad'])
+            res = search.search(query=None, source='one')
+            self.assertIn('apps', res)
+        self.assertEqual(search.normalise(123), '')
+        grouped = search.group([{'source': 'one', 'id': 'x', 'package': ['bad'], 'name': 123, 'free': True}], query='x')
+        self.assertEqual(len(grouped), 1)
+        with self.assertRaises(SourceError):
+            search.add_game_data(['bad'])
+
+    def test_images_and_categories_hardening(self):
+        from apk_sources import _categories, _images
+        with self.assertRaises(SourceError):
+            _images.image(['unhashable'])
+        art = _images.artwork({'images': {'screenshots': ['https://example.com/1.png', 'https://example.com/2.png']}}, shots=-1)
+        self.assertEqual(art['screenshots'], [])
+        res = _categories.classify({'categories': 123, 'name': 'Test App'})
+        self.assertIn('category', res)
+        self.assertIn('phone_only', res)

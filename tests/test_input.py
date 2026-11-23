@@ -1057,3 +1057,79 @@ assert not s._kde_queue
                 self.assertEqual(self.s._input.send.call_count, attempts + 1)
                 self.assertEqual(self.s._input.send.call_args.args[0], [{"key": "ü"}])
                 self.assertEqual(self.s._kde_queue, [])
+
+
+@unittest.skipIf(sys.platform == "win32", "the agent runs on the Frame (Linux)")
+class InputAgentHardening(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import frame_input_agent
+        cls.agent = frame_input_agent
+
+    def test_link_init_closes_raw_socket_on_tls_error(self):
+        fake_raw = mock.MagicMock()
+        with mock.patch.object(self.agent.socket, "create_connection", return_value=fake_raw), \
+                mock.patch.object(self.agent.ssl.SSLContext, "load_cert_chain", side_effect=OSError("bad cert")):
+            with self.assertRaises(OSError):
+                self.agent.Link("dev1", "/missing/cert", "/missing/key")
+        fake_raw.close.assert_called_once()
+
+    def test_link_read_ignores_malformed_json_and_non_dict_body(self):
+        link = self.agent.Link.__new__(self.agent.Link)
+        link.device, link.keyboard = "dev1", None
+        link.buf = b'not-json\n[]\n{"type":"kdeconnect.mousepad.keyboardstate","body":null}\n{"type":"kdeconnect.pair","body":{"pair":true}}\n'
+        link.sock = mock.MagicMock()
+        link.sock.recv.side_effect = BlockingIOError()
+        packets = link.read()
+        self.assertEqual(len(packets), 2)
+        self.assertFalse(link.keyboard)
+
+    def test_tidy_and_hold_incoming_refuse_dotdot_traversal_outside_incoming(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            incoming = base / "incoming"
+            incoming.mkdir()
+            victim = base / "keep-me"
+            victim.mkdir()
+            (victim / "important.txt").write_text("safe", encoding="utf-8")
+            traversal = str(incoming) + "/../keep-me"
+            with mock.patch.object(self.agent, "BASE", base):
+                self.assertIsNone(self.agent.hold_incoming(traversal))
+                self.agent.tidy_incoming(traversal)
+            self.assertTrue((victim / "important.txt").is_file())
+
+    def test_install_rejects_traversal_package_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            folder = base / "in"
+            folder.mkdir()
+            with mock.patch.object(self.agent, "BASE", base), \
+                    mock.patch.object(self.agent, "say"):
+                for bad in ("../evil.tar.zst", "sub/pkg.tar.zst", "/etc/passwd"):
+                    with self.subTest(bad=bad), self.assertRaisesRegex(RuntimeError, "Invalid package name"):
+                        self.agent.install(str(folder), [(bad, "0" * 64)])
+
+    def test_client_args_rejects_string_elements_in_packages_json(self):
+        with mock.patch.object(sys, "argv", ["agent.py", "c1", "Name", "/tmp", json.dumps(["ab", ["ok.zst", "0" * 64]])]):
+            _, _, _, packages = self.agent.client_args()
+        self.assertEqual(packages, [("ok.zst", "0" * 64)])
+
+    def test_serve_handles_oserror_from_link_read_and_closes_resources(self):
+        fake_link = mock.MagicMock()
+        fake_link.keyboard = True
+        fake_link.read.side_effect = OSError("tls broken")
+        fake_sel = mock.MagicMock()
+        fake_sel.select.return_value = [(mock.Mock(fileobj=fake_link.sock), 1)]
+        messages = []
+        with mock.patch.object(self.agent, "daemon_lock"), \
+                mock.patch.object(self.agent, "ensure_daemon"), \
+                mock.patch.object(self.agent, "identity", return_value=("dev", Path("c"), Path("k"))), \
+                mock.patch.object(self.agent, "our_daemons", return_value=[]), \
+                mock.patch.object(self.agent, "connect", return_value=fake_link), \
+                mock.patch.object(self.agent.selectors, "DefaultSelector", return_value=fake_sel), \
+                mock.patch.object(self.agent, "say", side_effect=lambda s, **kw: messages.append((s, kw))):
+            rc = self.agent.serve("c1", "FC", "", [])
+        self.assertEqual(rc, 1)
+        self.assertTrue(any(s == "error" for s, _ in messages))
+        fake_sel.close.assert_called_once()
+        fake_link.sock.close.assert_called_once()

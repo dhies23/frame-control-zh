@@ -3,6 +3,7 @@
 This process owns only its loopback server and Chromium profile. Steam, SteamVR,
 gamescope, other browser profiles, and the user's extensions are never stopped.
 """
+import http.client
 import json
 import os
 from pathlib import Path
@@ -33,17 +34,23 @@ def browser_command():
         return [str(chrome)]
     if Path('/usr/bin/chromium').is_file():
         return ['/usr/bin/chromium']
-    if subprocess.run(['flatpak', 'info', 'org.chromium.Chromium'],
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode == 0:
-        return ['flatpak', 'run', 'org.chromium.Chromium']
+    try:
+        if subprocess.run(['flatpak', 'info', 'org.chromium.Chromium'],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode == 0:
+            return ['flatpak', 'run', 'org.chromium.Chromium']
+    except (OSError, subprocess.TimeoutExpired):
+        pass
     raise RuntimeError_('Chromium is needed on the Frame to show the headset panel')
 
 
 def command(*args):
-    result = subprocess.run(args, capture_output=True, text=True, timeout=5,
-                            env={**os.environ, 'DISPLAY': ':0', 'LC_ALL': 'C.UTF-8'})
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+                                env={**os.environ, 'DISPLAY': ':0', 'LC_ALL': 'C.UTF-8'})
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError_(f'{args[0]} failed: {e}') from e
     if result.returncode:
-        raise RuntimeError_((result.stderr or result.stdout).strip()[-400:] or f'{args[0]} failed')
+        raise RuntimeError_((result.stderr or result.stdout or '').strip()[-400:] or f'{args[0]} failed')
     return result.stdout
 
 
@@ -62,7 +69,7 @@ def wait_for_server(proc):
             with urllib.request.urlopen(f'http://127.0.0.1:{PORT}/headset', timeout=.5) as response:
                 if response.status == 200 and TITLE.encode() in response.read(200_000):
                     return
-        except (OSError, urllib.error.URLError):
+        except (OSError, urllib.error.URLError, http.client.HTTPException):
             pass
         time.sleep(.2)
     raise RuntimeError_('The headset loopback server did not start')
@@ -70,12 +77,21 @@ def wait_for_server(proc):
 
 def terminate_owned(proc, timeout=5):
     if proc and proc.poll() is None:
-        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            return
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-            proc.wait()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
 
 
 def serve():

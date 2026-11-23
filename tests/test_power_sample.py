@@ -207,3 +207,71 @@ class Sampler(unittest.TestCase):
                  contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
                 self.assertNotEqual(power.main([]), 0)
             self.assertEqual(output.getvalue(), '')
+
+    def test_power_sample_hardening_utf8_summarize_and_stream_report_guards(self):
+        samples = [
+            {'readings': {
+                'flag': {'value': True, 'unit': 'state', 'source': '/sys/x'},
+                'nan_val': {'value': float('nan'), 'unit': 'W', 'source': '/sys/y'},
+            }},
+        ]
+        summary = power.summarize(samples)
+        self.assertNotIn('mean', summary['flag'])
+        self.assertNotIn('mean', summary['nan_val'])
+
+        seen_popen = {}
+
+        class FakeProc:
+            def __init__(self, lines):
+                self.stdin = io.StringIO()
+                self.stdout = io.StringIO(''.join(lines))
+                self.returncode = 0
+                self.terminated = False
+
+            def poll(self):
+                return None if not self.terminated else 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.terminated = True
+
+        for bad_lines in (['[]\n'], ['{"finished": "bad"}\n']):
+            proc = FakeProc(bad_lines)
+
+            def fake_popen(cmd, **kw):
+                seen_popen.update(kw)
+                return proc
+
+            with mock.patch.object(power.subprocess, 'Popen', side_effect=fake_popen):
+                rep = power.stream_report(['ssh'], 'payload', 1, 1)
+            self.assertEqual(seen_popen.get('encoding'), 'utf-8')
+            self.assertEqual(seen_popen.get('errors'), 'replace')
+            self.assertTrue(rep['stopped'])
+
+        proc2 = FakeProc([])
+        with mock.patch.object(power.subprocess, 'Popen', return_value=proc2), \
+                mock.patch.object(power.threading.Thread, 'start', side_effect=RuntimeError('no thread')):
+            with self.assertRaises(RuntimeError):
+                power.stream_report(['ssh'], 'payload', 1, 1)
+        self.assertTrue(proc2.terminated)
+        self.assertTrue(proc2.stdout.closed)
+
+        seen_run = {}
+
+        def fake_run(cmd, **kw):
+            seen_run.update(kw)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({
+                'schemaVersion': 1, 'requestedSamples': 1, 'intervalSeconds': 1,
+                'stopped': None, 'samples': [], 'summary': {},
+            }), '')
+
+        with mock.patch.object(power.subprocess, 'run', side_effect=fake_run), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(power.main(['--count', '1', '--interval', '1']), 0)
+        self.assertEqual(seen_run.get('encoding'), 'utf-8')
+        self.assertEqual(seen_run.get('errors'), 'replace')
