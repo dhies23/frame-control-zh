@@ -48,6 +48,29 @@ class PCView(MacView):
         result.update(host=self.host, experimental=True, enabled=self.enabled)
         return result
 
+    @staticmethod
+    def _stop_agent(agent):
+        if not (agent and agent.poll() is None):
+            return
+        # EOF gives the host a chance to release held input and portal
+        # sessions, including on Windows where terminate is uncatchable.
+        if agent.stdin:
+            try:
+                agent.stdin.close()
+            except OSError:
+                pass
+        try:
+            agent.wait(10)
+        except subprocess.TimeoutExpired:
+            try:
+                agent.kill()
+            except OSError:
+                pass
+            try:
+                agent.wait(5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
     def set_enabled(self, on):
         """Turning it off ends every stream and the helper; nothing restarts
         it until it's turned on again (ensure_agent asks unavailable())."""
@@ -63,16 +86,7 @@ class PCView(MacView):
             self.enabled = False
             self._drop_tunnel()
             agent, self.agent = self.agent, None
-        if agent and agent.poll() is None:
-            # EOF gives the host a chance to release held input, including on
-            # Windows where terminate is uncatchable.
-            if agent.stdin:
-                agent.stdin.close()
-            try:
-                agent.wait(10)
-            except subprocess.TimeoutExpired:
-                agent.kill()
-                agent.wait(5)
+        self._stop_agent(agent)
         return self.state()
 
     def build(self):
@@ -106,20 +120,14 @@ class PCView(MacView):
         except MacViewError:
             pass
         if self.tunnel and self.tunnel.poll() is None:
-            self.tunnel.terminate()
-        if self.agent and self.agent.poll() is None:
-            # EOF gives the host a chance to release held input and portal
-            # sessions, including on Windows where terminate is uncatchable.
-            if self.agent.stdin:
-                self.agent.stdin.close()
             try:
-                self.agent.wait(10)
-            except subprocess.TimeoutExpired:
-                self.agent.kill()
-                self.agent.wait(5)
+                self.tunnel.terminate()
+            except OSError:
+                pass
+        self._stop_agent(self.agent)
 
     def _show(self, src, quality, width, height):
-        if src.startswith('separate:'):
+        if isinstance(src, str) and src.startswith('separate:'):
             raise MacViewError('Separate virtual displays are a Mac-only feature. Choose a window or screen.')
         return super()._show(src, quality, width, height)
 

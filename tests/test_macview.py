@@ -663,5 +663,36 @@ class Agent(unittest.TestCase):
         ws.close()
 
 
+class PCViewHardening(unittest.TestCase):
+    def test_pcview_show_guards_non_string_src_and_shutdown_tolerates_process_errors(self):
+        import frame_pcview
+        view = frame_pcview.PCView(["ssh"], lambda *a, **kw: "", "frame")
+        for bad in (None, 123, ["window:1"]):
+            with self.subTest(src=bad), self.assertRaises(frame_macview.MacViewError):
+                view.show(bad)
+
+        def make_proc():
+            proc = mock.Mock()
+            proc.poll.return_value = None
+            proc.stdin.close.side_effect = OSError("broken pipe")
+            proc.wait.side_effect = subprocess.TimeoutExpired(["agent"], 10)
+            proc.kill.side_effect = ProcessLookupError("gone")
+            proc.terminate.side_effect = ProcessLookupError("gone")
+            return proc
+
+        view.enabled = True
+        view.agent = make_proc()
+        view.tunnel = make_proc()
+        view.stop = mock.Mock()
+        view.set_enabled(False)
+        self.assertFalse(view.enabled)
+        self.assertIsNone(view.agent)
+
+        view.agent = make_proc()
+        view.tunnel = make_proc()
+        view.shutdown()
+        self.assertTrue(view.closing)
+
+
 if __name__ == "__main__":
     unittest.main()

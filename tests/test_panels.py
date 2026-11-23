@@ -157,3 +157,18 @@ class HeadsetHTTP(unittest.TestCase):
         status, body = self.request('/panels', headers={'X-Panel-Key': 'test-key'})
         self.assertEqual(status, 502)
         self.assertEqual(json.loads(body), {'error': 'offline'})
+
+
+class OpenSwitcherHardening(unittest.TestCase):
+    def test_open_switcher_times_out_and_reaps_stalled_child(self):
+        import threading
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        fake_proc = unittest.mock.MagicMock()
+        fake_proc.poll.return_value = None
+        fake_proc.stdout.readline.side_effect = lambda: gate.wait(5) and ''
+        with patch.object(panels.subprocess, 'Popen', return_value=fake_proc):
+            with self.assertRaises(panels.PanelError):
+                panels.open_switcher(timeout=0.05)
+        fake_proc.terminate.assert_called_once()
+        fake_proc.stdout.close.assert_called()

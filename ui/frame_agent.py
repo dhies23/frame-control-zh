@@ -138,9 +138,12 @@ def _call(server, body):
         import tempfile
         with tempfile.TemporaryDirectory(prefix=f'{TMP_PREFIX}{os.getpid()}-') as tmp:
             source = Path(action['arguments']['path'])
-            with source.open('rb') as stream:
-                data = stream.read(16 * 1024**2 + 1)
-            if hashlib.sha256(data).hexdigest() != action['sha256']:
+            try:
+                with source.open('rb') as stream:
+                    data = stream.read(16 * 1024**2 + 1)
+            except OSError:
+                raise ValueError('File could not be read after approval') from None
+            if len(data) > 16 * 1024**2 or hashlib.sha256(data).hexdigest() != action['sha256']:
                 raise ValueError('File changed after approval')
             staged = Path(tmp) / source.name
             staged.write_bytes(data)
