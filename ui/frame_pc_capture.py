@@ -4,6 +4,7 @@ The packaged native library contains our adapter and the shared rate controller;
 GStreamer supplies WGC/Media Foundation and PipeWire/VA-API/x264 libraries.
 """
 import ctypes as C
+import math
 import os
 from pathlib import Path
 import re
@@ -125,17 +126,35 @@ class Controller:
                 self.ptr = None
 
 
+def _finite_float(value):
+    if isinstance(value, bool):
+        raise ValueError('Invalid numeric input')
+    num = float(value)
+    if not math.isfinite(num):
+        raise ValueError('Non-finite numeric input')
+    return num
+
+
 def dimensions(w, h, maximum):
+    w, h, maximum = (_finite_float(v) for v in (w, h, maximum))
+    if w <= 0 or h <= 0 or maximum <= 0:
+        raise ValueError('Invalid capture dimensions')
     scale = min(1, maximum / max(w, h))
     return max(2, int(w * scale) // 2 * 2), max(2, int(h * scale) // 2 * 2)
 
 
 def pipeline(source, platform, encoder, w, h, fps, bitrate, codec='h264'):
     """Only locally constructed numeric source IDs enter the pipeline parser."""
-    if source['src'] == 'test':
+    src = source.get('src')
+    if src == 'test':
         capture = 'videotestsrc name=source is-live=true pattern=ball'
     elif platform == 'win32':
-        kind, ident = source['src'].split(':')
+        if not isinstance(src, str):
+            raise ValueError('Invalid Windows capture source')
+        parts = src.split(':')
+        if len(parts) != 2:
+            raise ValueError('Invalid Windows capture source')
+        kind, ident = parts
         if kind not in ('window', 'display') or not re.fullmatch(r'[0-9]+', ident):
             raise ValueError('Invalid Windows capture source')
         api = source.get('capture_api', 'wgc')
@@ -159,6 +178,8 @@ def pipeline(source, platform, encoder, w, h, fps, bitrate, codec='h264'):
             'vah264enc': 'vah264enc name=enc b-frames=0 key-int-max=60',
             'x264enc': 'x264enc name=enc tune=zerolatency speed-preset=ultrafast bframes=0 key-int-max=60',
         }
+        if not isinstance(encoder, str) or encoder not in choices:
+            raise ValueError(f'Unsupported encoder: {encoder!r}')
         enc = choices[encoder] + ' bitrate=%d' % max(1, bitrate // 1000)
         raw += ',format=NV12' if encoder != 'x264enc' else ',format=I420'
         parse = ' ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au'
@@ -199,16 +220,17 @@ class PortalInput:
         if t == 'release':
             return self.release()
         if t in ('m', 'wheel'):
-            x, y = (max(0, min(1, float(m.get(k, 0)))) for k in ('x', 'y'))
+            x, y = (max(0, min(1, _finite_float(m.get(k, 0)))) for k in ('x', 'y'))
             self.emit(0, x * (self.source['w'] - 1), y * (self.source['h'] - 1))
         if t == 'm' and m.get('e') in ('up', 'down'):
-            b = {0: 0x110, 1: 0x112, 2: 0x111}.get(m.get('b', 0))
+            raw_b = m.get('b', 0)
+            b = {0: 0x110, 1: 0x112, 2: 0x111}.get(raw_b) if type(raw_b) is int else None
             if b is not None:
                 down = m['e'] == 'down'
                 self.emit(1, code=b, down=down)
                 (self.buttons.add if down else self.buttons.discard)(b)
         elif t == 'wheel':
-            self.emit(2, max(-4096, min(4096, float(m.get('dx', 0)))), max(-4096, min(4096, float(m.get('dy', 0)))))
+            self.emit(2, max(-4096, min(4096, _finite_float(m.get('dx', 0)))), max(-4096, min(4096, _finite_float(m.get('dy', 0)))))
         elif t == 'k':
             key = str(m.get('key', ''))
             k = KEYSYMS.get(key) or (ord(key) if len(key) == 1 and ord(key) < 256 else
@@ -343,6 +365,7 @@ class WindowsInput:
         if t == 'release':
             return self.release()
         if t in ('m', 'wheel'):
+            nx, ny = (max(0, min(1, _finite_float(m.get(k, 0)))) for k in ('x', 'y'))
             source = self.source
             if source['src'].startswith('window:'):
                 hwnd = int(source['src'].split(':')[1])
@@ -351,19 +374,19 @@ class WindowsInput:
                     self.focus()
             else:
                 x, y, w, h = (source[k] for k in ('x', 'y', 'w', 'h'))
-            x += max(0, min(1, float(m.get('x', 0)))) * (w - 1)
-            y += max(0, min(1, float(m.get('y', 0)))) * (h - 1)
+            x += nx * (w - 1)
+            y += ny * (h - 1)
             left, top, width, height = (u.GetSystemMetrics(i) for i in (76, 77, 78, 79))
             self.host.send(mouse=(round((x-left)*65535/max(1,width-1)), round((y-top)*65535/max(1,height-1)), 0, 0xc001))
         if t == 'm' and m.get('e') in ('up', 'down'):
             b = m.get('b', 0)
-            if b in (0, 1, 2):
+            if type(b) is int and b in (0, 1, 2):
                 down = m['e'] == 'down'
                 self.host.send(mouse=(0, 0, 0, {0: 2, 1: 0x20, 2: 8}[b] * (1 if down else 2)))
                 (self.buttons.add if down else self.buttons.discard)(b)
         elif t == 'wheel':
             for name, flag, direction in (('dy', 0x800, -1), ('dx', 0x1000, 1)):
-                delta = int(max(-4096, min(4096, float(m.get(name, 0))))) * direction
+                delta = int(max(-4096, min(4096, _finite_float(m.get(name, 0))))) * direction
                 if delta:
                     self.host.send(mouse=(0, 0, delta & 0xffffffff, flag))
         elif t == 'k':
