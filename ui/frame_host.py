@@ -248,7 +248,10 @@ def reveal_path(path):
     if MAC:
         cmd = ["open", "-R", str(path)]
     elif WINDOWS:
-        cmd = f'explorer /select,"{path}"'  # as one string: Explorer wants the quotes after the comma
+        raw = str(path)
+        if any(c in raw for c in '"\r\n\0'):
+            raise HostError("Can't reveal a path with quotes or control characters")
+        cmd = f'explorer /select,"{raw}"'  # as one string: Explorer wants the quotes after the comma
     else:
         return open_path(path.parent)
     subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -269,6 +272,8 @@ def open_terminal(argv, title="Frame Control"):
     The window stays open after the command ends, so its output can be read.
     """
     argv = [str(a) for a in argv]
+    if any("\0" in a for a in argv):
+        raise HostError("Can't pass NUL bytes to a terminal")
     if MAC:
         if any(c in a for a in argv for c in "\r\n"):
             raise HostError("Can't pass newlines to Terminal")
@@ -276,7 +281,7 @@ def open_terminal(argv, title="Frame Control"):
         try:
             r = subprocess.run(["osascript", "-e", 'tell application "Terminal"',
                                 "-e", f'do script "{command}"', "-e", "activate", "-e", "end tell"],
-                               capture_output=True, text=True, timeout=15)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise HostError(f"Couldn't open Terminal: {exc}") from None
         if r.returncode != 0:
@@ -290,7 +295,7 @@ def open_terminal(argv, title="Frame Control"):
         # Every argument is quoted, so cmd treats & | < > ^ in them literally. cmd has
         # no escape for a quote inside quotes (and expands %VAR% regardless), so refuse those.
         title = str(title)
-        if any(c in a for a in (*argv, title) for c in '"%\r\n'):
+        if any(c in a for a in (*argv, title) for c in '"%\r\n\0'):
             raise HostError("Can't pass quotes or % to a Windows terminal")
         inner = " ".join(f'"{a}"' for a in argv)
         subprocess.Popen(f'cmd.exe /c start "{title}" cmd.exe /k "{inner}"', **DETACHED)
@@ -410,7 +415,8 @@ def make_private(path):
 def ssh_hostname(alias):
     """The real host name an ssh alias points at (`ssh -G`), for non-SSH clients like RDP."""
     try:
-        out = run_ssh(["ssh", "-G", alias], capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=10).stdout
+        out = run_ssh(["ssh", "-G", alias], capture_output=True, stdin=subprocess.DEVNULL, text=True,
+                      encoding="utf-8", errors="replace", timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
         return alias
     for line in out.splitlines():
@@ -474,10 +480,15 @@ def check_rdp(host, timeout=3):
                           "in Steam Settings > System.") from None
 
 
+def _valid_rdp_host(host):
+    return (isinstance(host, str) and bool(host)
+            and not any(ord(c) <= 32 or ord(c) == 127 for c in host))
+
+
 def rdp_file(host):
     """A Remote Desktop connection file for the Frame. mstsc /v: alone offers this
     computer's Windows account, which xrdp turns away; the file names steamos instead."""
-    if any(c in host for c in "\r\n"):
+    if not _valid_rdp_host(host):
         raise HostError("That headset address can't be used for remote desktop")
     # One file per address, so two launches close together can't swap headsets.
     path = cache_dir(f"frame-{hashlib.sha256(host.encode()).hexdigest()[:16]}.rdp")
@@ -489,8 +500,8 @@ def rdp_file(host):
 
 def open_rdp(alias, host=None):
     """Remote desktop to the Frame's xrdp (user steamos), at `host` or where the alias points."""
-    host = host or ssh_hostname(alias)
-    if not host or any(c in host for c in "\r\n\0"):
+    host = ssh_hostname(alias) if host is None else host
+    if not _valid_rdp_host(host):
         raise HostError("That headset address can't be used for remote desktop")
     # The client would open either way and then fail on its own, with nothing said here.
     check_rdp(host)
