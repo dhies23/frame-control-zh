@@ -290,6 +290,55 @@ class SensorTests(unittest.TestCase):
         with patch.object(status, 'run', return_value='[{"operation":"status","activity_level":3}]'):
             self.assertEqual(status.activity_level(), 3)
 
+    def test_status_read_run_utf8_replace_and_ascii_digits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / 'raw'
+            bad.write_bytes(b'ok\xff\xfe\n')
+            self.assertIn('ok', status.read(str(bad)))
+        with patch.object(status.subprocess, 'run',
+                          return_value=subprocess.CompletedProcess([], 0, 'ok', '')) as run:
+            self.assertEqual(status.run('echo', 'ok'), 'ok')
+        self.assertEqual(run.call_args.kwargs.get('encoding'), 'utf-8')
+        self.assertEqual(run.call_args.kwargs.get('errors'), 'replace')
+        with patch.object(status, 'run', return_value='yes:MyWifi:²'):
+            self.assertEqual(status.wifi(), {'ssid': 'MyWifi', 'signal': None})
+
+    def test_comfort_open_home_corrupt_state_save_cleanup_and_utf8(self):
+        # open_home must raise RuntimeError (not AttributeError) when CDP returns None.
+        fake_page = Mock()
+        fake_page.eval.return_value = None
+        with patch.object(comfort, 'Page', return_value=fake_page):
+            with self.assertRaisesRegex(RuntimeError, 'navigate Home'):
+                comfort.open_home()
+        fake_page.sock.close.assert_called_once()
+
+        # notify and home must specify UTF-8 replace I/O.
+        with patch.object(comfort.subprocess, 'run',
+                          return_value=subprocess.CompletedProcess([], 0, 'Notification succeeded', '')) as run:
+            comfort.notify('hi')
+            self.assertEqual((run.call_args.kwargs.get('encoding'), run.call_args.kwargs.get('errors')),
+                             ('utf-8', 'replace'))
+            comfort.home()
+            self.assertEqual((run.call_args.kwargs.get('encoding'), run.call_args.kwargs.get('errors')),
+                             ('utf-8', 'replace'))
+
+        # Hand-edited state with null/corrupt numeric fields or seq/events must not crash current() or event().
+        corrupt = {'id': 's1', 'active': True, 'boot': 'boot-one', 'deadline': None,
+                   'warned': 'bad', 'heartbeat': None, 'started': None, 'seq': 'bad', 'events': None}
+        with patch.object(comfort, 'boot', return_value='boot-one'):
+            view = comfort.current(corrupt, 100)
+        self.assertEqual(view['remaining'], 0)
+        comfort.event(corrupt, 'cancelled', 'stopped')
+        self.assertEqual(corrupt['seq'], 1)
+        self.assertEqual(len(corrupt['events']), 1)
+
+        # save() cleans up session.tmp if replace fails.
+        with tempfile.TemporaryDirectory() as tmp, patch.object(comfort, 'ROOT', Path(tmp)), \
+             patch.object(Path, 'replace', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                comfort.save({'active': False})
+            self.assertFalse((Path(tmp) / 'session.tmp').exists())
+
 
 class DesktopBundleTests(unittest.TestCase):
     """server.comfort runs the copy cached on the headset; the sources go only when it's missing."""
