@@ -11,6 +11,7 @@ Env:   FRAME_USER (default steamos), FRAME_ALIAS (default frame; --alias wins, f
        terminals that don't pass the environment on, like Windows' `start`)
 """
 import base64
+import http.client
 import json
 import os
 import platform
@@ -113,7 +114,9 @@ def devkit_error(status, raw):
 
 
 def devkit_url(host, port, path):
-    return f"http://[{host}]:{port}{path}" if ":" in host else f"http://{host}:{port}{path}"
+    if ":" in host:
+        return f"http://[{host.replace('%', '%25')}]:{port}{path}"
+    return f"http://{host}:{port}{path}"
 
 
 def why(e):
@@ -136,7 +139,7 @@ def register(host, body, port=DEVKIT_PORT, timeout=REGISTER_TIMEOUT):
     except urllib.error.HTTPError as e:
         with e:
             return False, devkit_error(e.code, e.read())
-    except OSError as e:
+    except (OSError, http.client.HTTPException) as e:
         return False, f"no answer ({why(e)})"
 
 
@@ -146,12 +149,15 @@ def devkit_pair(host, pub, comment, port=DEVKIT_PORT, on_login=None):
     with the login properties.json names, so the fallback uses that user too."""
     try:
         login = fetch_login(host, port)
-    except (OSError, ValueError) as e:
+    except (OSError, http.client.HTTPException, ValueError) as e:
         return f"devkit service not reachable on port {port}: {why(e)}"
     if login and on_login:
         on_login(login)
     say("    In the headset: Steam Settings > Developer > Pair new host, then approve the request")
-    body = register_body(pub, comment)
+    try:
+        body = register_body(pub, comment)
+    except ValueError as e:
+        return f"devkit pairing failed: {e}"
     ok, msg = register(host, body, port)
     # The headset refuses at once unless Steam is on its "Pair new host" screen
     # (verified on a Frame, 2026-09-26), so keep asking while the user opens it.
@@ -165,7 +171,7 @@ def devkit_pair(host, pub, comment, port=DEVKIT_PORT, on_login=None):
 def split_port(arg):
     """"host:2222" -> ("host", 2222); anything else (IPv6 too) keeps port 22."""
     host, sep, port = arg.rpartition(":")
-    if sep and port.isdigit() and ":" not in host:
+    if sep and host and port.isascii() and port.isdigit() and ":" not in host:
         num = int(port)
         if 1 <= num <= 65535:
             return host, num
@@ -293,7 +299,7 @@ def make_key(path, kind, comment):
 
 
 def config_block(host, port=22, user=FRAME_USER):
-    return [BEGIN, f"Host {FRAME_ALIAS}", f"  HostName {host}", *([f"  Port {port}"] if port != 22 else []),
+    return [BEGIN, f"Host {FRAME_ALIAS}", f"  HostName {host.replace('%', '%%')}", *([f"  Port {port}"] if port != 22 else []),
             f"  User {user}",
             "  IdentityFile ~/.ssh/id_ed25519_frame", "  IdentityFile ~/.ssh/id_rsa_frame_devkit",
             "  IdentitiesOnly yes", "  ServerAliveInterval 30", "Host *", END]
@@ -305,19 +311,23 @@ class config_lock:
 
     def __enter__(self):
         self.fh = open(SSH_DIR / "config.frame-control.lock", "a+")
-        for _ in range(300):
-            try:
-                if os.name == "nt":
-                    import msvcrt
-                    self.fh.seek(0)
-                    msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.lockf(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return self
-            except OSError:
-                time.sleep(0.1)
-        return self  # 30 s: go ahead rather than fail the setup
+        try:
+            for _ in range(300):
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+                        self.fh.seek(0)
+                        msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.lockf(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return self
+                except OSError:
+                    time.sleep(0.1)
+            return self  # 30 s: go ahead rather than fail the setup
+        except BaseException:
+            self.fh.close()
+            raise
 
     def __exit__(self, *exc):
         self.fh.close()  # closing releases the lock
@@ -368,9 +378,12 @@ def _write_config(host, port, user):
 
 def key_login_works():
     # accept-new: trust a first-seen host key (as the copy step does); a changed one still fails.
-    return frame_host.run_ssh(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-                               "-o", "StrictHostKeyChecking=accept-new", FRAME_ALIAS, "true"],
-                              capture_output=True).returncode == 0
+    try:
+        return frame_host.run_ssh(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                                   "-o", "StrictHostKeyChecking=accept-new", FRAME_ALIAS, "true"],
+                                  capture_output=True, timeout=15).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def configured_user():
@@ -404,12 +417,12 @@ def configured_host():
         if line in (BEGIN, END):
             inside = line == BEGIN
         elif inside and line.startswith("  HostName "):
-            cand = line[11:].strip()
+            cand = line[11:].strip().replace("%%", "%")
             if HOST_RE.fullmatch(cand):
                 host = cand
         elif inside and line.startswith("  Port "):
             cand = line[7:].strip()
-            if cand.isdigit() and 1 <= int(cand) <= 65535:
+            if cand.isascii() and cand.isdigit() and 1 <= int(cand) <= 65535:
                 port = int(cand)
     if not host:
         return None
@@ -501,7 +514,8 @@ def main(argv):
             say("    copying the key: enter the Developer Mode password when asked")
             pub = KEY.with_suffix(".pub").read_text(encoding="utf-8").strip()
             r = subprocess.run(["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "PubkeyAuthentication=no",
-                                "-p", str(port), f"{user}@{host}", ADD_KEY_CMD], input=pub + "\n", text=True)
+                                "-p", str(port), f"{user}@{host}", ADD_KEY_CMD],
+                               input=pub + "\n", text=True, encoding="utf-8", errors="replace")
             if r.returncode != 0 or not key_login_works():
                 say("Key login still isn't working. Check the password and run this again.")
                 return 1
