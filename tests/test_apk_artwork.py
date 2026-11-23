@@ -109,3 +109,43 @@ class ArtworkTests(unittest.TestCase):
                     self.assertEqual(r.getheader('Content-Type'),'image/png')
         finally:
             httpd.shutdown();httpd.server_close()
+
+    def test_valid_url_rejects_non_string_and_control_chars(self):
+        for bad in (123, None, ['https://example.com/a.png'],
+                    'https://example.com/a.png\r\nX-Inject: 1',
+                    'https://example.com/\x00.png',
+                    'https://example.com/\x7f.png'):
+            self.assertFalse(_images.valid_url(bad), repr(bad))
+
+    def test_artwork_guards_non_dict_entry_and_string_screenshots(self):
+        self.assertEqual(_images.artwork(None), {'icon': None, 'banner': None, 'screenshots': []})
+        art = _images.artwork({'images': {'screenshots': 'https://example.com/shot.png'}})
+        self.assertEqual(art['screenshots'], [])
+
+    def test_get_wraps_connect_timeout_closes_socket_on_timer_error_and_rejects_empty_redirect(self):
+        public = [(2, 1, 6, '', ('93.184.216.34', 80))]
+        with patch.object(socket, 'getaddrinfo', return_value=public), \
+             patch.object(socket, 'create_connection', side_effect=TimeoutError('timed out')):
+            with self.assertRaisesRegex(SourceError, 'took too long'):
+                _images.get('http://example.com/slow.png')
+
+        fake_sock = Mock()
+        fake_timer = Mock()
+        fake_timer.start.side_effect = RuntimeError('cannot start timer')
+        with patch.object(socket, 'getaddrinfo', return_value=public), \
+             patch.object(socket, 'create_connection', return_value=fake_sock), \
+             patch.object(threading, 'Timer', return_value=fake_timer):
+            with self.assertRaisesRegex(RuntimeError, 'cannot start timer'):
+                _images.get('http://example.com/timer-fail.png')
+        fake_sock.close.assert_called_once()
+
+        response = Mock(status=302)
+        response.getheader.return_value = ''
+        conn = Mock()
+        conn.getresponse.return_value = response
+        with patch.object(socket, 'getaddrinfo', return_value=public), \
+             patch.object(socket, 'create_connection', return_value=Mock()) as connect, \
+             patch.object(http.client, 'HTTPConnection', return_value=conn):
+            with self.assertRaisesRegex(SourceError, 'unavailable'):
+                _images.get('http://example.com/empty-redirect.png')
+            connect.assert_called_once()

@@ -298,6 +298,45 @@ class PublisherSources(unittest.TestCase):
         self.assertIsNone(info['versions'][0]['sha256'])
         self.assertEqual(info['versions'][1]['sha256'], 'a' * 64)
 
+    def test_itch_parse_and_search_guard_malformed_urls_covers_dates_and_query(self):
+        xml = b'''<rss><channel>
+            <item>
+                <link>https://[::1/broken</link>
+                <price>$0.00</price>
+                <platforms><android>yes</android></platforms>
+                <title>Broken IPv6</title>
+            </item>
+            <item>
+                <link>https://.itch.io/empty-sub</link>
+                <price>$0.00</price>
+                <platforms><android>yes</android></platforms>
+                <title>Empty Subdomain</title>
+            </item>
+            <item>
+                <link>https://dev.itch.io/ctrl\npage</link>
+                <price>$0.00</price>
+                <platforms><android>yes</android></platforms>
+                <title>Ctrl Page</title>
+            </item>
+            <item>
+                <link>https://dev.itch.io/good-game</link>
+                <price>$0.00</price>
+                <platforms><android>yes</android></platforms>
+                <plainTitle>Good Game</plainTitle>
+                <imageurl>https://img.itch.zone/a\nb.png</imageurl>
+                <updateDate>Thu, 01 Jan 99999 00:00:00 GMT</updateDate>
+                <description>Playable VR</description>
+            </item>
+        </channel></rss>'''
+        src = itch.sources()[0]
+        entries = itch._parse(src, xml)
+        self.assertEqual([e['name'] for e in entries], ['Good Game'])
+        self.assertIsNone(entries[0]['icon'])
+        self.assertIsNone(entries[0]['updated'])
+        with patch.object(_web, 'read', return_value=xml):
+            found = itch.search(src, None)
+        self.assertEqual([e['name'] for e in found], ['Good Game'])
+
 
 if __name__ == '__main__':
     unittest.main()
