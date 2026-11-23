@@ -25,15 +25,19 @@ def private_file(path):
 
 
 def load_config(path):
-    config = json.loads(private_file(path).read_text())
-    if set(config) != {'repository', 'checkout', 'database', 'lock', 'webhook_url', 'key_file'}:
+    config = json.loads(private_file(path).read_text(encoding='utf-8'))
+    if not isinstance(config, dict) or set(config) != {'repository', 'checkout', 'database', 'lock', 'webhook_url', 'key_file'}:
         raise ValueError('invalid configuration fields')
     if config['repository'] != REPO:
         raise ValueError('wrong repository')
     for field in ('checkout', 'database', 'lock', 'key_file'):
-        if not Path(config[field]).is_absolute():
+        value = config[field]
+        if not isinstance(value, str) or not Path(value).is_absolute():
             raise ValueError('paths must be absolute')
-    url = urlsplit(config['webhook_url'])
+    webhook = config['webhook_url']
+    if not isinstance(webhook, str) or any(ord(c) < 32 or ord(c) == 127 for c in webhook):
+        raise ValueError('webhook must be a fixed HTTPS URL')
+    url = urlsplit(webhook)
     if url.scheme != 'https' or not url.hostname or url.username or url.password or url.fragment:
         raise ValueError('webhook must be a fixed HTTPS URL')
     return config
@@ -42,7 +46,7 @@ def load_config(path):
 def verify_checkout(path):
     def git(*args):
         return subprocess.check_output(['git', '-C', path, *args], stderr=subprocess.DEVNULL,
-                                       timeout=10, text=True).strip()
+                                       timeout=10, text=True, encoding='utf-8', errors='replace').strip()
     if git('remote', 'get-url', 'origin') not in (
             'https://github.com/saphid/frame-control.git', 'https://github.com/saphid/frame-control',
             'git@github.com:saphid/frame-control.git'):
@@ -55,7 +59,8 @@ def send(url, body, key):
     target = urlsplit(url)
     connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=15)
     try:
-        connection.request('POST', target.path + ('?' + target.query if target.query else ''), body,
+        request_target = (target.path or '/') + ('?' + target.query if target.query else '')
+        connection.request('POST', request_target, body,
                            {'Content-Type': 'application/json',
                             'X-Hub-Signature-256': 'sha256=' + hmac.new(key, body, hashlib.sha256).hexdigest()})
         # Do not follow redirects or log/read a private response body.
@@ -76,8 +81,12 @@ def dispatch(queue, url, key, now=None, sender=send):
     body = json.dumps({'id': job['id'], 'lease': job['lease']}, separators=(',', ':')).encode()
     status = None
     try:
-        status = sender(url, body, key)
-        outcome = 'accepted' if 200 <= status < 300 else 'rejected'
+        raw_status = sender(url, body, key)
+        if type(raw_status) is int:
+            status = raw_status
+            outcome = 'accepted' if 200 <= status < 300 else 'rejected'
+        else:
+            outcome = 'uncertain'
     except (OSError, http.client.HTTPException, ValueError):
         outcome = 'uncertain'
     with queue.connect() as db:
