@@ -1,5 +1,5 @@
 """Small HTTPS cache and APK downloader for public publisher sources."""
-import hashlib, http.client, os, shutil, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, zipfile
+import hashlib, http.client, os, shutil, struct, tempfile, threading, time, urllib.error, urllib.parse, urllib.request, zipfile
 from email.utils import parsedate_to_datetime
 
 import frame_host
@@ -134,7 +134,7 @@ def prune():
 
 
 def checked_url(url, hosts):
-    if not isinstance(url, str):
+    if not isinstance(url, str) or any(ord(c) < 32 or ord(c) == 127 for c in url):
         raise SourceError('Source returned an invalid URL')
     try:
         p = urllib.parse.urlsplit(url)
@@ -169,17 +169,24 @@ def open_url(url, hosts, headers=None, auth=None):
 
 
 def read(url, hosts, headers=None, ttl=3600, name=None, hint='', auth=None):
+    checked_url(url, hosts)
     path = os.path.join(cache(), hashlib.sha256(url.encode()).hexdigest() + '.data')
     name = name or _host(url) or 'The source'
 
     def cached():
-        if os.path.isfile(path):  # throttled: an older copy beats no results
+        try:
             with open(path, 'rb') as f:
                 return f.read()
+        except OSError:
+            return None
     try:
-        if os.path.isfile(path) and time.time() - os.path.getmtime(path) < ttl:
-            with open(path, 'rb') as f:
-                return f.read()
+        try:
+            if time.time() - os.path.getmtime(path) < ttl:
+                data = cached()
+                if data is not None:
+                    return data
+        except OSError:
+            pass
         wait = wait_time(url, auth)
         if wait:
             data = cached()
@@ -197,7 +204,10 @@ def read(url, hosts, headers=None, ttl=3600, name=None, hint='', auth=None):
             os.replace(tmp, path)
         finally:
             if os.path.exists(tmp):
-                os.remove(tmp)
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
         return data
     except urllib.error.HTTPError as e:
         if e.code == 401:  # not 403: GitHub also uses that for rate limits, token or not
@@ -214,8 +224,9 @@ def read(url, hosts, headers=None, ttl=3600, name=None, hint='', auth=None):
 
 
 def apk(url, hosts, digest=None, name=None):
+    checked_url(url, hosts)
     tmp = None
-    name = name or _host(url)
+    name = name or _host(url) or 'The source'
     expected = digest.strip().lower() if isinstance(digest, str) and digest.strip() else None
     wait = wait_time(url)
     if wait:
@@ -247,7 +258,7 @@ def apk(url, hosts, digest=None, name=None):
         if e.code in (403, 429):
             raise limited_error(name, throttle(url, e.headers)) from e
         raise SourceError('Could not download APK: HTTP error ' + str(e.code)) from e
-    except (OSError, ValueError, zipfile.BadZipFile, http.client.HTTPException) as e:
+    except (OSError, ValueError, EOFError, struct.error, RuntimeError, zipfile.BadZipFile, http.client.HTTPException) as e:
         raise SourceError('Could not download APK: ' + str(e)) from e
     finally:
         if tmp and os.path.exists(tmp):

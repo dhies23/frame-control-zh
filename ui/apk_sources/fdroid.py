@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import re
+import struct
 import sys
 import tempfile
 import threading
@@ -49,6 +50,8 @@ _DIGESTS = {
 
 
 def _fingerprint(value):
+    if value is not None and not isinstance(value, str):
+        raise SourceError('fingerprint must be a SHA-256 certificate fingerprint (64 hex digits)')
     value = re.sub(r'[:\s]', '', value or '').lower()
     if not re.fullmatch('[0-9a-f]{64}', value):
         raise SourceError('fingerprint must be a SHA-256 certificate fingerprint (64 hex digits)')
@@ -56,9 +59,15 @@ def _fingerprint(value):
 
 
 def _url(url, fingerprint=None):
+    if not isinstance(url, str) or any(ord(c) < 32 or ord(c) == 127 for c in url):
+        raise SourceError('invalid repository URL')
     if url.startswith('fdroidrepos://'):
         url = 'https://' + url[len('fdroidrepos://'):]
-    p = urllib.parse.urlsplit(url)
+    try:
+        p = urllib.parse.urlsplit(url)
+        p.port
+    except ValueError as e:
+        raise SourceError('invalid repository URL') from e
     if p.scheme != 'https' or not p.hostname or p.username or p.password or p.fragment:
         raise SourceError('repository URL must use HTTPS without credentials or a fragment')
     params = urllib.parse.parse_qs(p.query)
@@ -77,6 +86,8 @@ def _url(url, fingerprint=None):
 def _split_login(url, username=None, password=None):
     """(url without user:pass, credential or None). The address may carry the login, as
     F-Droid's client accepts (https://user:pass@host/fdroid/repo), or it may be given apart."""
+    if not isinstance(url, str) or any(ord(c) < 32 or ord(c) == 127 for c in url):
+        raise SourceError('invalid repository URL')
     try:
         p = urllib.parse.urlsplit(url)
         p.port
@@ -125,7 +136,14 @@ def _child(base, name):
 
 class _HTTPSRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if urllib.parse.urlsplit(newurl).scheme != 'https':
+        if not isinstance(newurl, str) or any(ord(c) < 32 or ord(c) == 127 for c in newurl):
+            raise SourceError('refusing invalid redirect')
+        try:
+            p = urllib.parse.urlsplit(newurl)
+            p.port
+        except ValueError as e:
+            raise SourceError('refusing invalid redirect') from e
+        if p.scheme != 'https' or not p.hostname:
             raise SourceError('refusing non-HTTPS redirect')
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -277,7 +295,7 @@ def _jar(path, member, pin, strong=False):
             _digest_check(entries[0], '-digest', content, strong)
             return content, fingerprint
     except (ValueError, KeyError, IndexError, StopIteration, RuntimeError, NotImplementedError,
-            zipfile.BadZipFile, zlib.error) as e:
+            EOFError, struct.error, zipfile.BadZipFile, zlib.error) as e:
         raise SourceError('invalid signed repository: ' + str(e)) from e
 
 
@@ -306,7 +324,10 @@ def _write(path, value):
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
-            os.unlink(tmp)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _state_path():
@@ -561,7 +582,9 @@ def _cached(source, cache):
     """(apps, pin, expired) from a cache matching this source, or None."""
     try:
         saved = json.loads(cache.read_text(encoding='utf-8'))
-        if (saved.get('version') == CACHE_VERSION and saved.get('fingerprint') == source.get('fingerprint')
+        if (isinstance(saved, dict) and isinstance(saved.get('apps'), dict)
+                and saved.get('version') == CACHE_VERSION
+                and saved.get('fingerprint') == source.get('fingerprint')
                 and saved.get('url') == source['url']):
             return saved['apps'], saved['fingerprint'], time.time() - cache.stat().st_mtime >= MAX_AGE
     except (OSError, ValueError, KeyError, AttributeError):
@@ -604,7 +627,7 @@ def _source_lock(source_id):
 
 def _load(source, force=False, auth=None):
     """auth: a login to use instead of the saved one (while adding, before anything is saved)."""
-    if not re.fullmatch(r'[a-z0-9-]+', source['id']):
+    if not isinstance(source.get('id'), str) or not re.fullmatch(r'[a-z0-9-]+', source['id']):
         raise SourceError('invalid source id')
     _url(source['url'], source.get('fingerprint'))
     auth = auth or _login(source)
@@ -742,6 +765,7 @@ def search(source, query, limit=50, keep=None):
     if not source.get('enabled', True):
         return []
     apps, _ = _load(source)
+    query = query if isinstance(query, str) else ''
     words = query.casefold().split()
     found = [a for a in apps.values() if all(w in (a['id'] + ' ' + a['name'] + ' ' + a['summary']).casefold() for w in words)
              and (keep is None or keep(a))]
@@ -760,14 +784,14 @@ def lookup(source, packages):
     if not found:
         return {}
     apps = found[0]
-    return {p: {k: v for k, v in apps[p].items() if k != 'versions'} for p in packages if p in apps}
+    return {p: {k: v for k, v in apps[p].items() if k != 'versions'} for p in packages if isinstance(p, str) and p in apps}
 
 
 def details(source, entry_id):
     if not source.get('enabled', True):
         raise SourceError('repository is disabled')
     apps, _ = _load(source)
-    if entry_id not in apps:
+    if not isinstance(entry_id, str) or entry_id not in apps:
         raise SourceError('app has no Lepton-compatible version in this repository')
     return apps[entry_id]
 
@@ -797,7 +821,10 @@ def download(source, entry_id, version_code=None):
                 os.replace(tmp, path)
             finally:
                 if os.path.exists(tmp):
-                    os.unlink(tmp)
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
         return {'apk': str(path), 'obb': [], 'sha256': sha, 'verified': True}
     except SourceLimited as e:
         raise _limited(source, e) from e
@@ -825,7 +852,9 @@ def main():
     try:
         _cli(parser, args)
     finally:
-        for thread in list(_refreshing.values()):  # daemon refreshes would die with the CLI, even on errors
+        with _LOCK:
+            threads = list(_refreshing.values())
+        for thread in threads:  # daemon refreshes would die with the CLI, even on errors
             thread.join()
 
 

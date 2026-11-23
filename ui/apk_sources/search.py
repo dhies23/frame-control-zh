@@ -43,7 +43,10 @@ class ReportCache:
             snapshot = self._snapshot
             if not self._running and (self._at is None or time.monotonic() - self._at >= self.ttl):
                 self._running = True
-                threading.Thread(target=self._refresh, daemon=True).start()
+                try:
+                    threading.Thread(target=self._refresh, daemon=True).start()
+                except Exception:
+                    self._running = False
             return snapshot
 
     def _refresh(self):
@@ -101,12 +104,13 @@ def registry():
     mods, errors = modules()
     with _lock:
         enabled = overrides()
+        statuses = dict(_status)
     for module in mods:
         try:
             for source in module.sources():
                 source = dict(source)
                 source['enabled'] = enabled.get(source['id'], source.get('enabled', True))
-                source.update(_status.get(source['id'], {'status': 'not searched'}))
+                source.update(statuses.get(source['id'], {'status': 'not searched'}))
                 result.append((module, source))
         except Exception as e:
             errors.append({'id': module.KIND, 'name': module.KIND, 'enabled': False,
@@ -127,6 +131,8 @@ def resolve(source_id):
 
 
 def set_enabled(source_id, enabled):
+    if not isinstance(enabled, bool):
+        raise SourceError('enabled must be a boolean')
     module, source = resolve(source_id)
     if hasattr(module, 'set_enabled'):
         module.set_enabled(source_id, enabled)  # never call into a source while holding _lock
@@ -171,7 +177,7 @@ def set_token(source_id, token):
 
 
 def normalise(name):
-    return ' '.join(re.findall(r'\w+', unicodedata.normalize('NFKC', name or '').casefold()))
+    return ' '.join(re.findall(r'\w+', unicodedata.normalize('NFKC', name if isinstance(name, str) else '').casefold()))
 
 
 def _sdk_int(value):
@@ -233,7 +239,8 @@ def verdict(entry, report=None):
 def decorate(entry, shots=12, reports=None):
     """shots: screenshots to offer; a listing card shows three, the detail page all of them."""
     from apk_sources import _images
-    report = (reports if reports is not None else _reports()).get(entry.get('package'))
+    pkg = entry.get('package')
+    report = (reports if reports is not None else _reports()).get(pkg) if isinstance(pkg, str) else None
     evidence = {'verdict': report[0], 'lines': list(report[1])} if report else None
     return dict(entry, fit=fit(entry), verdict=verdict(entry, report), compat_report=evidence,
                 artwork=_images.artwork(entry, shots),
@@ -268,9 +275,10 @@ def group(entries, query='', vr=None, installable=False, category=None, phone=Fa
             continue
         if installable and entry['fit']['installable'] is not True:
             continue
-        key = ('package', entry['package']) if entry.get('package') else ('name', normalise(entry.get('name')))
+        pkg = entry.get('package')
+        key = ('package', pkg) if isinstance(pkg, str) and pkg else ('name', normalise(entry.get('name')))
         if not key[1]:
-            key = ('id', entry['source'], entry['id'])
+            key = ('id', str(entry.get('source', '')), str(entry.get('id', '')))
         groups.setdefault(key, []).append(entry)
     result = []
     for offers in groups.values():
@@ -358,8 +366,9 @@ def search(query='', vr=None, source=None, installable=False, timeout=TIMEOUT, l
     items, errors = registry()
     if source and source not in [s['id'] for _, s in items]:
         raise SourceError('Unknown source')
-    if category and category not in categories.IDS:
+    if category and (not isinstance(category, str) or category not in categories.IDS):
         raise SourceError('Unknown category')
+    query = query if isinstance(query, str) else ''
     if not query.strip():
         limit = max(limit, BROWSE_LIMIT)
     else:
@@ -470,6 +479,8 @@ def install(source_id, entry_id, version_code=None, progress=None):
 
 def add_game_data(package):
     import frame_android
+    if not isinstance(package, str) or not package:
+        raise SourceError('No downloaded game data is waiting for this app; install it again from the store')
     with _lock:
         paths = _game_data.get(package)
     if not paths:

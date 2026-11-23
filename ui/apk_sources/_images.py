@@ -54,9 +54,10 @@ def artwork(entry, shots=12):
         images = {}
     raw_shots = images.get('screenshots')
     shot_list = raw_shots if isinstance(raw_shots, (list, tuple)) else []
+    cap = max(0, min(shots, 12)) if isinstance(shots, int) and not isinstance(shots, bool) else 0
     return {'icon': register(images.get('icon') or entry.get('icon')),
             'banner': register(images.get('banner')),
-            'screenshots': [path for path in (register(u) for u in shot_list[:min(shots, 12)]) if path]}
+            'screenshots': [path for path in (register(u) for u in shot_list[:cap]) if path]}
 
 
 def image_type(data):
@@ -235,6 +236,8 @@ def remember(url, data):
 
 
 def image(token):
+    if not isinstance(token, str) or not token:
+        raise SourceError('Unknown artwork')
     with _lock:
         url = _urls.get(token)
         if not url:
