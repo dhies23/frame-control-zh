@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zlib
 
 # FRAME_BACKUP_HOME: the tests point this at a folder laid out like the Frame's home.
 HOME = Path(os.environ.get('FRAME_BACKUP_HOME') or Path.home())
@@ -70,6 +71,8 @@ EXCLUDED = [
 
 
 def is_secret(rel):
+    if not isinstance(rel, str):
+        return False
     parts = PurePosixPath(rel).parts
     name = parts[-1].lower() if parts else ''
     return (name in SECRET_NAMES or name.startswith('ssfn') or name.startswith('id_rsa') or
@@ -78,8 +81,9 @@ def is_secret(rel):
 
 
 def safe_rel(rel):
-    """A relative '/' path with no '..', '.', empty or absolute parts."""
-    if not isinstance(rel, str) or not rel or '\\' in rel or '\0' in rel or rel.startswith('/'):
+    """A relative '/' path with no '..', '.', empty, control-char or absolute parts."""
+    if (not isinstance(rel, str) or not rel or '\\' in rel or rel.startswith('/') or
+            any(ord(c) < 32 or ord(c) == 127 for c in rel)):
         return False
     parts = rel.split('/')
     return all(p not in ('', '.', '..') for p in parts) and not re.match(r'^[A-Za-z]:', rel)
@@ -159,7 +163,7 @@ def game_name(appid):
     if st is None or not stat.S_ISREG(st.st_mode):
         return None
     try:
-        text = (HOME / rel).read_text(errors='replace')
+        text = (HOME / rel).read_text(encoding='utf-8', errors='replace')
     except OSError:
         return None
     return _manifest_field(text, 'name')
@@ -188,6 +192,8 @@ def _prefixes():
 
 def part_roots(part):
     """(roots to save, roots that a restore may write) for a part id, or None if unknown."""
+    if not isinstance(part, str):
+        return None
     if part.startswith('saves:') and part[6:].isdigit():
         user = '%s/%s/%s' % (COMPAT, part[6:], PREFIX_USER)
         roots = tuple(user + '/' + d for d in SAVE_DIRS)
@@ -267,7 +273,8 @@ def plan():
 def os_release():
     out = {}
     try:
-        for line in Path(os.environ.get('FRAME_BACKUP_OS_RELEASE') or '/etc/os-release').read_text().splitlines():
+        for line in Path(os.environ.get('FRAME_BACKUP_OS_RELEASE') or '/etc/os-release').read_text(
+                encoding='utf-8', errors='replace').splitlines():
             k, _, v = line.partition('=')
             out[k.strip()] = v.strip().strip('"')
     except OSError:
@@ -299,7 +306,7 @@ def pack(part, output):
 
 def target_status(part, rel):
     """None if rel may be restored now, else why not (a short code)."""
-    if is_secret(rel) or not safe_rel(rel):
+    if not safe_rel(rel) or is_secret(rel):
         return 'refused'
     if not any(_under(rel, r) for r in restore_roots(part, rel)):
         return 'reference'
@@ -327,8 +334,13 @@ def target_status(part, rel):
 
 def check(request):
     out = []
-    for item in request.get('parts', []):
-        part, files = item.get('id'), item.get('files') or []
+    raw_parts = request.get('parts') if isinstance(request, dict) else []
+    for item in (raw_parts if isinstance(raw_parts, list) else []):
+        if not isinstance(item, dict):
+            continue
+        part = item.get('id')
+        raw_files = item.get('files')
+        files = raw_files if isinstance(raw_files, list) else []
         if not isinstance(part, str) or part_roots(part) is None:
             out.append({'id': part, 'status': 'unknown'})
             continue
@@ -359,7 +371,7 @@ def _sha256(path):
 def restore(part, stamp, source):
     if part_roots(part) is None:
         raise ValueError('unknown backup part %r' % part)
-    if not re.fullmatch(r'\d{8}-\d{6}', stamp):
+    if not isinstance(stamp, str) or not re.fullmatch(r'\d{8}-\d{6}', stamp):
         raise ValueError('bad restore stamp')
     # Spool first: everything is checked before anything is written.
     spool_dir = HOME / '.cache/frame-control'
@@ -396,7 +408,10 @@ def restore(part, stamp, source):
                 part_file = target.parent / ('.frame-restore-%d.part' % os.getpid())
                 moved = False
                 try:
-                    with archive.extractfile(member) as src, open(str(part_file), 'wb') as dst:
+                    extracted = archive.extractfile(member)
+                    if extracted is None:
+                        raise ValueError('could not read archive entry: %r' % member.name[:200])
+                    with extracted as src, open(str(part_file), 'wb') as dst:
                         shutil.copyfileobj(src, dst, 1024 * 1024)
                     os.chmod(str(part_file), (member.mode & 0o755) | 0o600)
                     os.utime(str(part_file), (member.mtime, member.mtime))
@@ -440,7 +455,8 @@ def _session_target(unit):
     try:
         result = subprocess.run(['systemctl', '--user', 'show', unit,
                                  '--property=LoadState', '--property=ActiveState'],
-                                capture_output=True, text=True, timeout=5, env=env)
+                                capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                timeout=5, env=env)
     except (OSError, subprocess.TimeoutExpired):
         return 'unknown'
     if result.returncode:
@@ -469,7 +485,7 @@ def session():
     configured, conf = None, None
     for path in SDDM_CONFS:
         try:
-            text = Path(path).read_text(errors='replace')
+            text = Path(path).read_text(encoding='utf-8', errors='replace')
         except OSError:
             continue
         if conf is None:
@@ -525,7 +541,7 @@ def main(argv):
         else:
             sys.stderr.write('usage: plan | pack PART | check | restore PART STAMP | session\n')
             return 2
-    except (OSError, ValueError, tarfile.TarError) as error:
+    except (OSError, ValueError, EOFError, tarfile.TarError, zlib.error) as error:
         sys.stderr.write(str(error) + '\n')
         return 1
     return 0
