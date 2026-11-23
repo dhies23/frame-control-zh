@@ -48,6 +48,41 @@ class VerifiedDownload(unittest.TestCase):
         self.assertEqual(open_url.call_count, 3)
         self.assertEqual(sleep.call_count, 2)
 
+    def test_hardening_rejects_non_https_and_traversal_and_cleans_stale_dirs(self):
+        import tempfile
+        with self.assertRaises(ValueError):
+            fetch.download_verified('http://example.invalid/package', '0' * 64)
+
+        class DowngradeResponse(io.BytesIO):
+            def geturl(self):
+                return 'http://example.invalid/downgrade'
+
+        with patch.object(fetch.urllib.request, 'urlopen', return_value=DowngradeResponse(b'x')):
+            with self.assertRaises(ValueError):
+                fetch.download_verified('https://example.invalid/package', hashlib.sha256(b'x').hexdigest())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg_dir = Path(tmp) / 'packages'
+            pkg_dir.mkdir()
+            stale_dir = pkg_dir / 'stale-subdir'
+            stale_dir.mkdir()
+            data = b'good'
+            good_sha = hashlib.sha256(data).hexdigest()
+            (pkg_dir / 'pkg.tar.zst').write_bytes(data)
+
+            # Traversal filename must be rejected
+            with patch.object(fetch, 'PACKAGES', pkg_dir), \
+                    patch.object(fetch, 'manifest', return_value={'release': 'https://example.invalid/', 'packages': [{'file': '../evil', 'sha256': good_sha}]}):
+                with self.assertRaises(ValueError):
+                    fetch.fetch()
+
+            # Unexpected directory inside PACKAGES must be cleaned up without IsADirectoryError
+            with patch.object(fetch, 'PACKAGES', pkg_dir), \
+                    patch.object(fetch, 'manifest', return_value={'release': 'https://example.invalid/', 'packages': [{'file': 'pkg.tar.zst', 'sha256': good_sha}]}):
+                kept = fetch.fetch()
+            self.assertEqual(kept, [pkg_dir / 'pkg.tar.zst'])
+            self.assertFalse(stale_dir.exists())
+
 
 if __name__ == '__main__':
     unittest.main()
