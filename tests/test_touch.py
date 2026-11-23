@@ -564,5 +564,100 @@ class Script(unittest.TestCase):
         self.assertNotIn("import requests", src)
 
 
+class Hardening(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import frame_touch
+        cls.t = frame_touch
+
+    def test_x_tools_and_proc_reads_use_utf8_replace(self):
+        t = self.t
+        seen = []
+        saved_run = t.subprocess.run
+
+        def fake_run(cmd, *a, **kw):
+            seen.append((cmd[0], kw.get("encoding"), kw.get("errors")))
+            if cmd[0] == "xwininfo":
+                out = 'xwininfo: Window id: 0x1 "App"\n  Width: 1280\n  Height: 720\n  Map State: IsViewable\n'
+            else:
+                out = ""
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+
+        t.subprocess.run = fake_run
+        try:
+            t.read_props(":0")
+            t.window_info(":0", 1)
+            t.window_pid(":0", 1)
+        finally:
+            t.subprocess.run = saved_run
+        self.assertEqual(seen, [
+            ("xprop", "utf-8", "replace"),
+            ("xwininfo", "utf-8", "replace"),
+            ("xprop", "utf-8", "replace"),
+        ])
+
+    def test_window_info_guards_bad_ints_and_missing_height(self):
+        t = self.t
+        saved_run = t.subprocess.run
+        self.addCleanup(setattr, t.subprocess, "run", saved_run)
+        for bad_out in (
+            'xwininfo: Window id: 0x1 "App"\n  Width: notanint\n  Height: 720\n  Map State: IsViewable\n',
+            'xwininfo: Window id: 0x1 "App"\n  Width: 1280\n  Map State: IsViewable\n',
+            'xwininfo: Window id: 0x1 "App"\n  Width: 0\n  Height: 720\n  Map State: IsViewable\n',
+        ):
+            t.subprocess.run = lambda *a, _o=bad_out, **kw: subprocess.CompletedProcess(a[0], 0, _o, "")
+            self.assertIsNone(t.window_info(":0", 1), bad_out)
+
+    def test_to_root_number_and_apply_guard_zero_geometry_inf_and_unhashable_button(self):
+        t = self.t
+        for bad_panel in (
+            {"root": [1280, 720], "width": 0, "height": 720},
+            {"root": [1280, 720], "width": 1280, "height": 0},
+            {"root": [0, 720], "width": 1280, "height": 720},
+        ):
+            with self.assertRaises(ValueError):
+                t.to_root(bad_panel, 0.5, 0.5)
+
+        for non_finite in (float("inf"), float("-inf"), float("nan")):
+            with self.assertRaises(ValueError):
+                t.number(non_finite)
+
+        gs = FakeGamescope()
+        t.apply(gs, {"button": ["left"], "dx": 2}, None)
+        self.assertEqual(gs.calls, [("move_by", 2.0, 0.0)])
+
+    def test_gamescope_init_unrefs_ei_when_socket_setup_fails(self):
+        t = self.t
+        unreffed = []
+
+        class FakeLib:
+            def ei_new_sender(self, _):
+                return 0x1234
+
+            def ei_configure_name(self, ei, name):
+                pass
+
+            def ei_setup_backend_socket(self, ei, path):
+                return -1
+
+            def ei_unref(self, ei):
+                unreffed.append(ei)
+
+        saved_libei = t.libei
+        saved_getuid = getattr(t.os, "getuid", None)
+        t.libei = lambda: FakeLib()
+        t.os.getuid = lambda: 1000
+        try:
+            with self.assertRaises(RuntimeError):
+                t.Gamescope()
+        finally:
+            t.libei = saved_libei
+            if saved_getuid is None:
+                delattr(t.os, "getuid")
+            else:
+                t.os.getuid = saved_getuid
+        self.assertEqual(unreffed, [0x1234])
+
+
 if __name__ == "__main__":
     unittest.main()

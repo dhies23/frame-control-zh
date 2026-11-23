@@ -24,6 +24,7 @@ Standard library only (ctypes for libei), like the rest of what runs on the Fram
 """
 import ctypes
 import json
+import math
 import os
 import re
 import select
@@ -80,7 +81,8 @@ def read_props(display, limit=TOOL_TIMEOUT):
     those the display has, {} if none (or xprop didn't answer)."""
     try:
         out = subprocess.run(["xprop", "-root", *PROPS], env=dict(os.environ, DISPLAY=display),
-                             capture_output=True, text=True, timeout=budget(limit)).stdout
+                             capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=budget(limit)).stdout
     except (OSError, subprocess.SubprocessError):
         return {}
     props = {}
@@ -97,7 +99,8 @@ def window_info(display, window):
     try:
         which = ["-root"] if window == "root" else ["-id", str(window)]
         out = subprocess.run(["xwininfo", *which], env=dict(os.environ, DISPLAY=display),
-                             capture_output=True, text=True, timeout=budget()).stdout
+                             capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=budget()).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     if "IsViewable" not in out:
@@ -110,8 +113,11 @@ def window_info(display, window):
         for key, field in (("Absolute upper-left X:", "x"), ("Absolute upper-left Y:", "y"),
                            ("Width:", "width"), ("Height:", "height")):
             if line.startswith(key):
-                info[field] = int(line.split(":", 1)[1])
-    return info if "width" in info else None
+                try:
+                    info[field] = int(line.split(":", 1)[1])
+                except ValueError:
+                    return None
+    return info if info.get("width", 0) > 0 and info.get("height", 0) > 0 else None
 
 
 def displays():
@@ -124,7 +130,7 @@ def displays():
     except OSError:
         pass
     try:
-        with open("/proc/net/unix") as f:
+        with open("/proc/net/unix", encoding="utf-8", errors="replace") as f:
             found.update(int(n) for n in re.findall(r"@/tmp/\.X11-unix/X(\d+)", f.read()))
     except OSError:
         pass
@@ -166,7 +172,8 @@ def gamescope():
 def window_pid(display, window):
     try:
         out = subprocess.run(["xprop", "-id", str(window), "_NET_WM_PID"], env=dict(os.environ, DISPLAY=display),
-                             capture_output=True, text=True, timeout=budget()).stdout
+                             capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=budget()).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     value = out.rsplit("=", 1)[-1].strip() if "=" in out else ""
@@ -288,7 +295,7 @@ def desktop_running():
         return False
     for pid in pids:
         try:
-            with open(f"/proc/{pid}/comm") as f:
+            with open(f"/proc/{pid}/comm", encoding="utf-8", errors="replace") as f:
                 if f.read().strip() in DESKTOP:
                     return True
         except OSError:
@@ -329,6 +336,8 @@ def to_root(panel, fx, fy):
     """
     rw, rh = panel["root"]
     w, h = panel["width"], panel["height"]
+    if w <= 0 or h <= 0 or rw <= 0 or rh <= 0:
+        raise ValueError("invalid panel geometry")
     s = min(rw / w, rh / h)
     ox, oy = (rw - w * s) / 2, (rh - h * s) / 2
     fx, fy = min(max(fx, 0.0), 1.0), min(max(fy, 0.0), 1.0)
@@ -367,8 +376,12 @@ class Gamescope:
     def __init__(self):
         self.L = L = libei()
         self.ei = L.ei_new_sender(None)
+        if not self.ei:
+            raise RuntimeError("Couldn't initialize gamescope input sender")
         L.ei_configure_name(self.ei, b"Frame Control")
         if L.ei_setup_backend_socket(self.ei, SOCKET.format(uid=os.getuid()).encode()) != 0:
+            L.ei_unref(self.ei)
+            self.ei = None
             raise RuntimeError("Couldn't reach gamescope's input socket. Is the headset on?")
         self.fd = L.ei_get_fd(self.ei)
         self.device, self.sequence, self.held, self.keys, self.alive = None, 0, set(), set(), True
@@ -477,7 +490,7 @@ def events(line):
 
 
 def number(value, limit=100000.0):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError("not a number")
     return max(-limit, min(limit, float(value)))
 
@@ -522,7 +535,7 @@ def apply(gs, event, panel):
         gs.move_to(*to_root(panel, number(event["fx"], 1), number(event["fy"], 1)))
     if "dx" in event or "dy" in event:
         gs.move_by(number(event.get("dx", 0), 2000), number(event.get("dy", 0), 2000))
-    if event.get("button") in BUTTONS:
+    if isinstance(event.get("button"), str) and event["button"] in BUTTONS:
         gs.button(event["button"], event.get("down") is not False)
     if isinstance(event.get("scroll"), list) and len(event["scroll"]) == 2:
         gs.scroll(number(event["scroll"][0], 5000), number(event["scroll"][1], 5000))
