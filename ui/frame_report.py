@@ -108,7 +108,9 @@ LIBRARY_RE = re.compile(r",?\s*(LibreSSL|OpenSSL) (\d+\.\d+\.\d+[a-z]?)(?=[,\s]|
 
 def parse_ssh_version(said):
     """"OpenSSH 9.9p1, LibreSSL 3.3.6"-style text from `ssh -V`'s output, or "unknown"."""
-    said = (said or "").lstrip()
+    if not isinstance(said, str):
+        return "unknown"
+    said = said.lstrip()
     m = BANNER_RE.match(said)
     if not m:
         return "unknown"
@@ -121,7 +123,7 @@ def ssh_version(path):
     """The version from `ssh -V` (it prints to stderr), nothing else it says."""
     try:
         r = frame_host.run_ssh([path, "-V"], capture_output=True, stdin=subprocess.DEVNULL, text=True,
-                               errors="replace", timeout=5)
+                               encoding="utf-8", errors="replace", timeout=5)
     except (OSError, subprocess.SubprocessError) as e:
         return f"couldn't run it ({type(e).__name__})"
     return parse_ssh_version(r.stderr or r.stdout)
@@ -153,8 +155,9 @@ def start_ssh_check():
         _ssh["line"] = line
     with _ssh_lock:
         if _ssh["thread"] is None:
-            _ssh["thread"] = threading.Thread(target=run, name="report-ssh-check", daemon=True)
-            _ssh["thread"].start()
+            t = threading.Thread(target=run, name="report-ssh-check", daemon=True)
+            t.start()
+            _ssh["thread"] = t
         return _ssh["thread"]
 
 
@@ -204,7 +207,8 @@ def connection_lines():
     head = f"Connection: {phase}"
     if phase == "connected" and via:
         rtt = via.get("rtt_ms")
-        head += f" via {frame_link.address_kind(via.get('host'), via.get('ip'))}" + (f" ({rtt:g} ms)" if rtt is not None else "")
+        rtt_text = f" ({rtt:g} ms)" if isinstance(rtt, (int, float)) and not isinstance(rtt, bool) else ""
+        head += f" via {frame_link.address_kind(via.get('host'), via.get('ip'))}{rtt_text}"
     elif err:
         head += f" at {err.get('stage')}"
     head += f", attempt {snap.get('attempt') or 0}" + (f" ({snap['reason']})" if snap.get("reason") else "")
@@ -215,8 +219,10 @@ def connection_lines():
     if err:
         lines.append(f"Error: {err.get('stage')}, {frame_link.failure_category(err.get('message'), err.get('raw'))}")
     last = link.last_failure
-    if last:
-        ago = max(0, int(frame_link.now() - last.get("at", 0)))
+    if isinstance(last, dict) and last:
+        at = last.get("at")
+        at = at if isinstance(at, (int, float)) and not isinstance(at, bool) else 0
+        ago = max(0, int(frame_link.now() - at))
         lines.append(f"Last failure: {last.get('stage')}, {last.get('category')}, {ago // 60} min {ago % 60} s ago")
     lines.append(f"Addresses tried: {frame_link.probes_summary(snap.get('probes')) or 'none yet'}")
     net = snap.get("network")
@@ -346,6 +352,8 @@ def inbox(days=30):
     frame_compat_db.sync uses). Column 10 is whether the person may be asked follow-up
     questions now: 'withdrawn' when a later choice from the same copy took it back."""
     import frame_compat_db
+    if isinstance(days, bool):
+        raise ValueError('days must be at least 1')
     days = int(days)
     if days < 1:
         raise ValueError('days must be at least 1')
@@ -373,6 +381,8 @@ def mark_withdrawn(reports, consents):
         if not isinstance(c, list) or len(c) != 4:
             continue
         cid, email, followup, rev = c
+        if isinstance(rev, bool):
+            continue
         try:
             rev = int(rev or 0)
         except (TypeError, ValueError):
@@ -380,12 +390,15 @@ def mark_withdrawn(reports, consents):
         if rev > newest.get(str(cid), (-1,))[0]:
             newest[str(cid)] = (rev, str(email or ''), followup)
     for r in reports:
-        if not (r[11] and _yes(r[10])):
+        if not isinstance(r, list) or len(r) < 13 or not (r[11] and _yes(r[10])):
             continue
-        try:
-            sent_at = int(r[12] or 0)
-        except (TypeError, ValueError):
+        if isinstance(r[12], bool):
             sent_at = 0
+        else:
+            try:
+                sent_at = int(r[12] or 0)
+            except (TypeError, ValueError):
+                sent_at = 0
         rev, email, followup = newest.get(str(r[11]), (-1, '', None))
         if rev > sent_at and not (_yes(followup) and email.strip().lower() == str(r[5] or '').strip().lower()):
             r[10] = 'withdrawn'
