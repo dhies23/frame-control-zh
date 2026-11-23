@@ -27,9 +27,14 @@ class NoRedirect(HTTPRedirectHandler):
 
 class Client:
     def __init__(self, url, key='1'):
+        if not isinstance(url, str) or any(ord(c) < 32 or ord(c) == 127 for c in url):
+            raise ValueError('Frame Control URL must be HTTP loopback with no path or credentials')
         parsed = urlsplit(url)
+        _ = parsed.port  # validates numeric port in range 0..65535
         if parsed.scheme != 'http' or parsed.hostname not in ('localhost', '127.0.0.1') or parsed.path not in ('', '/') or parsed.query or parsed.fragment or parsed.username or parsed.password:
             raise ValueError('Frame Control URL must be HTTP loopback with no path or credentials')
+        if not isinstance(key, str) or any(ord(c) < 32 or ord(c) == 127 for c in key):
+            raise ValueError('Invalid Frame Control UI key')
         self.url, self.key = url.rstrip('/'), key
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
 
@@ -110,7 +115,7 @@ def call(client, name, args):
         args = dict(args)
         confirmation = args.pop('confirmation', None)
         result = client.request('/api/agent/call', {'name': name, 'arguments': args, 'confirmation': confirmation})
-        if 'approvalPath' in result:
+        if isinstance(result, dict) and isinstance(result.get('approvalPath'), str):
             result['approvalUrl'] = client.url + result['approvalPath']
     return {'content': [{'type': 'text', 'text': json.dumps(result)}]}
 
@@ -153,11 +158,14 @@ def backend(url=None):
     proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name('server.py')),
                              '--port', '0', '--exit-on-eof'],
                             env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=sys.stderr, text=True)
+                            stderr=sys.stderr, text=True, encoding='utf-8', errors='replace')
     lines = queue.Queue()
 
     def read_banner():
-        lines.put(proc.stdout.readline())
+        try:
+            lines.put(proc.stdout.readline())
+        except Exception:
+            lines.put('')
 
     try:
         threading.Thread(target=read_banner, daemon=True).start()
@@ -211,7 +219,7 @@ def main():
             return serve(client)
     except KeyboardInterrupt:
         return 0
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
