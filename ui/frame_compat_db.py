@@ -16,7 +16,7 @@ reporter per day, marked via=community[-probe|-install].
 CLI: python3 ui/frame_compat_db.py {count|export FILE|import FILE|flush|sync}
 (import restores a backup; reports already in the database are skipped.)
 """
-import json, os, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
+import http.client, json, os, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 
 import frame_host
 import frame_telemetry
@@ -39,13 +39,16 @@ class DBError(RuntimeError):
 
 
 def key():
-    k = os.environ.get('FRAME_CONTROL_KEY')
+    k = (os.environ.get('FRAME_CONTROL_KEY') or '').strip()
     if k:
         return k
     p = None
     if frame_host.MAC:
-        p = subprocess.run(['security', 'find-generic-password', '-s', KEYCHAIN[0], '-a', KEYCHAIN[1], '-w'],
-                           capture_output=True, text=True)
+        try:
+            p = subprocess.run(['security', 'find-generic-password', '-s', KEYCHAIN[0], '-a', KEYCHAIN[1], '-w'],
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            p = None
     if p is None or p.returncode != 0 or not p.stdout.strip():
         raise DBError('No compatibility-database key (set FRAME_CONTROL_KEY, or on macOS the Keychain '
                       f'item service {KEYCHAIN[0]}, account {KEYCHAIN[1]})')
@@ -81,7 +84,7 @@ def _request(path, body=None, timeout=20):
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         raise DBError(f'compatibility database said HTTP {e.code}')
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as e:
         raise DBError(f"can't reach the compatibility database: {e}")
 
 
@@ -103,8 +106,9 @@ def fetch_all():
         if not isinstance(rows, list):
             raise DBError('unexpected compatibility database response')
         for row in rows:
-            if isinstance(row, dict) and row.get('id') and row['id'] not in seen:
-                seen.add(row['id'])
+            rid = row.get('id') if isinstance(row, dict) else None
+            if isinstance(rid, str) and rid and rid not in seen:
+                seen.add(rid)
                 out.append(_from_row(row))
         nxt = page.get('next')
         if nxt is not None and not isinstance(nxt, str):
@@ -193,7 +197,7 @@ def flush():
             raw_rejected = res.get('rejected')
             if raw_rejected is not None and not isinstance(raw_rejected, list):
                 raise DBError('unexpected compatibility database response')
-            rejected = set(raw_rejected or [])
+            rejected = {x for x in (raw_rejected or []) if isinstance(x, str)}
             if rejected:
                 _quarantine([json.dumps(r) for r in batch if r['id'] in rejected], 'rejected by the server')
             pending = pending[100:]
@@ -248,12 +252,14 @@ def load():
                 reports, source = _read_mirror(), 'mirror'
             _mem.update(at=now, reports=reports, source=source)
         cached = list(_mem['reports'])
-    sent = {r.get('id') for r in cached}
+    sent = {r.get('id') for r in cached if isinstance(r.get('id'), str)}
     return cached + [r for r in _outbox() if r['id'] not in sent]
 
 
 def add(report):
     """Validate, queue, then try to send. Never raises once the report is queued."""
+    if not isinstance(report, dict):
+        raise ValueError('report not saved: not an object')
     r = {k: report.get(k) for k in FIELDS}
     r['id'] = report.get('id') or str(uuid.uuid4())
     why = problem(r)
@@ -282,13 +288,17 @@ COMMUNITY_VIA = {'user': 'community', 'probe': 'community-probe', 'install': 'co
 
 
 def posthog_personal_key():
-    k = os.environ.get('POSTHOG_PERSONAL_API_KEY')
+    k = (os.environ.get('POSTHOG_PERSONAL_API_KEY') or '').strip()
     if k:
         return k
     if frame_host.MAC:
-        p = subprocess.run(['security', 'find-generic-password', '-s', POSTHOG_KEYCHAIN[0], '-a',
-                            POSTHOG_KEYCHAIN[1], '-w'], capture_output=True, text=True)
-        if p.returncode == 0 and p.stdout.strip():
+        try:
+            p = subprocess.run(['security', 'find-generic-password', '-s', POSTHOG_KEYCHAIN[0], '-a',
+                                POSTHOG_KEYCHAIN[1], '-w'], capture_output=True, text=True,
+                               encoding='utf-8', errors='replace', timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            p = None
+        if p is not None and p.returncode == 0 and p.stdout.strip():
             return p.stdout.strip()
     raise DBError('No PostHog personal API key (set POSTHOG_PERSONAL_API_KEY, or on macOS the Keychain '
                   f'item service {POSTHOG_KEYCHAIN[0]}, account {POSTHOG_KEYCHAIN[1]})')
@@ -309,8 +319,9 @@ def _posthog_query(sql):
         with _opener.open(req, timeout=60) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
-        raise DBError(f'PostHog said HTTP {e.code}: {e.read()[:300]!r}')
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+        with e:
+            raise DBError(f'PostHog said HTTP {e.code}: {e.read()[:300]!r}')
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as e:
         raise DBError(f"can't reach PostHog: {e}")
 
 
@@ -355,10 +366,12 @@ def community_rows(events, state, cap=SYNC_DAILY_CAP):
         day = str(ts)[:10]
         seen[r['id']] = day
         key_ = f'{reporter}|{day}'
-        if counts.get(key_, 0) >= cap:
+        cur = counts.get(key_)
+        cur = cur if type(cur) is int else 0
+        if cur >= cap:
             skipped.append((r['id'], 'over the daily limit for one reporter'))
             continue
-        counts[key_] = counts.get(key_, 0) + 1
+        counts[key_] = cur + 1
         out.append(r)
     return out, skipped
 
@@ -409,11 +422,23 @@ def sync(dry_run=False):
                              "formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S.%f', 'UTC') FROM events "
                              f"WHERE event = 'compat_report' AND {after} "
                              f"ORDER BY timestamp, toString(uuid) LIMIT {SYNC_PAGE}")
-        rows = res.get('results') or []
-        events += [row[:3] for row in rows]
+        if not isinstance(res, dict):
+            raise DBError('unexpected PostHog response')
+        rows = res.get('results')
+        if rows is None:
+            rows = []
+        if not isinstance(rows, list):
+            raise DBError('unexpected PostHog response')
+        events += [row[:3] for row in rows if isinstance(row, (list, tuple)) and len(row) >= 3]
         if len(rows) < SYNC_PAGE:
             break
-        last_uuid, last_ts = rows[-1][3], rows[-1][4]
+        last = rows[-1]
+        if not isinstance(last, (list, tuple)) or len(last) < 5:
+            raise DBError('unexpected PostHog response')
+        last_uuid, last_ts = last[3], last[4]
+        if (not isinstance(last_uuid, str) or not isinstance(last_ts, str)
+                or "'" in last_uuid or "'" in last_ts):
+            raise DBError('unexpected PostHog pagination cursor')
         after = (f"(timestamp > toDateTime64('{last_ts}', 6, 'UTC') OR "
                  f"(timestamp = toDateTime64('{last_ts}', 6, 'UTC') AND toString(uuid) > '{last_uuid}'))")
     rows, skipped = community_rows(events, state)
@@ -436,19 +461,30 @@ def main():
         if cmd == 'count':
             print(len(fetch_all()))
         elif cmd == 'export':
+            if not args:
+                sys.exit(__doc__)
             reports = fetch_all()
             with open(args[0], 'w', encoding='utf-8') as f:
                 json.dump({'exported': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'source': URL,
                            'count': len(reports), 'reports': reports}, f, indent=1)
             print(f'{len(reports)} reports -> {args[0]}')
         elif cmd == 'import':
-            with open(args[0], encoding='utf-8') as f:
-                backup = json.load(f)
-            rows = [{**{k: r.get(k) for k in FIELDS}, 'id': r.get('id')} for r in backup['reports']]
+            if not args:
+                sys.exit(__doc__)
+            try:
+                with open(args[0], encoding='utf-8') as f:
+                    backup = json.load(f)
+            except (OSError, ValueError) as e:
+                raise DBError(f"can't read {args[0]}: {e}")
+            if not isinstance(backup, dict) or not isinstance(backup.get('reports'), list):
+                raise DBError('backup file must be a JSON object with a "reports" list')
+            rows = [({**{k: r.get(k) for k in FIELDS}, 'id': r.get('id')} if isinstance(r, dict) else r)
+                    for r in backup['reports']]
             bad = [(r, problem(r)) for r in rows if problem(r)]
             ok = [r for r in rows if not problem(r)]
             for r, why in bad:
-                print(f"skipped {r.get('package')!r}: {why}", file=sys.stderr)
+                pkg = r.get('package') if isinstance(r, dict) else None
+                print(f"skipped {pkg!r}: {why}", file=sys.stderr)
             os.makedirs(STATE, exist_ok=True)
             with _lock, open(OUTBOX, 'a', encoding='utf-8') as f:
                 f.writelines(json.dumps(r, ensure_ascii=False) + '\n' for r in ok)
