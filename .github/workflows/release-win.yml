@@ -98,15 +98,17 @@ jobs:
           set -e
           # tag 还没有 Release 就先建一个（已经存在就直接往上加文件）
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" \
-              --title "简体中文版 $VERSION" \
-              --notes "Frame Control 简体中文版 $VERSION（Windows x64）。
+            NOTES=$(cat <<EOF
+          Frame Control 简体中文版 $VERSION（Windows x64）。
 
           - 安装包：Frame-Control-Setup-x64.exe（未签名，SmartScreen 会提示，选「更多信息 → 仍要运行」）
           - 便携版：Frame-Control-win-x64.zip（解压后运行 Frame Control.exe）
           - 校验：SHA256SUMS
 
-          汉化范围与跟进上游的办法见 [LOCALIZATION.md](https://github.com/$GH_REPO/blob/main/LOCALIZATION.md)。"
+          汉化范围与跟进上游的办法见 LOCALIZATION.md。
+          EOF
+            )
+            gh release create "$TAG" --title "简体中文版 $VERSION" --notes "$NOTES"
           fi
           gh release upload "$TAG" \
             app/dist/Frame-Control-Setup-x64.exe \
