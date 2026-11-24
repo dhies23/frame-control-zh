@@ -5,6 +5,9 @@ name: release-win
 # 「PC 进头显」的串流辅助库；本分支只出 Windows x64，够用而且快得多。
 # 注意：这里不编译 desktop/（Windows PC 串流辅助库），那个功能在上游仍是实验性的、
 # 默认关闭；缺了它只会让「PC 进头显」那一项不可用，其余功能不受影响。
+#
+# 打包方式与本地 `cd app && npm run dist:win` 完全一致，区别只是跑在 windows-latest 上。
+run-name: release-win · ${{ inputs.tag || github.ref_name }}
 on:
   push:
     tags:
