@@ -53,6 +53,13 @@ jobs:
         shell: bash
         run: npm ci --no-audit --no-fund
 
+      # 汉化最容易出事的地方：把「看起来是界面文字、其实是代码在用」的字符串翻掉。
+      # 曾经就因此把 `for (const action of ['Install','Update','Remove'])` 翻成中文，
+      # 导致 `$(decky+action)` 取到 null，整页脚本死在第一行，按钮全部失灵。
+      - name: 检查文案没有破坏代码语义
+        shell: bash
+        run: python tools/zh-hans/check_code_positions.py ui/*.html ui/*.js app/*.js
+
       # 自带 Python（python-build-standalone）、adb（platform-tools）、CA 证书包，
       # 以及给 Frame 用的 KDE Connect arm64 包。全部按版本 + SHA-256 固定。
       - name: 下载随包运行时

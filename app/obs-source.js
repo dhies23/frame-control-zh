@@ -33,7 +33,7 @@ function createObsSource({ prepare, spawn, onState = () => {}, supported = true 
       let output = '';
       proc.stderr.on('data', chunk => {
         output = (output + chunk.toString('utf8')).slice(-2048);
-        if (child === proc && state.state === 'starting' && output.includes('Frame Control OBS 流已就绪'))
+        if (child === proc && state.state === 'starting' && output.includes('Frame Control OBS stream is ready'))
           set('running', alias, port);
       });
       proc.once('error', error => {

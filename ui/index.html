@@ -2583,7 +2583,8 @@ $('deckyStoreNext').onclick = () => { deckyStorePage++; showDeckyStore(); };
 $('deckyStoreSearch').oninput = () => { deckyStorePage = 0; showDeckyStore(); };
 $('deckyRefresh').onclick = () => loadDecky(true);
 $('deckyStoreRefresh').onclick = loadDeckyStore;
-for (const action of ['安装', '更新', '移除']) {
+const DECKY_ACTION_ZH = {Install: '安装', Update: '更新', Remove: '移除'};
+for (const action of ['Install', 'Update', 'Remove']) {
   $(`decky${action}`).onclick = async () => {
     if (deckyPluginBusy || deckyPluginRequest || !$('deckyAck').checked || !deckyInfo) return;
     const verb = action.toLowerCase();
@@ -2594,7 +2595,7 @@ for (const action of ['安装', '更新', '移除']) {
     if (verb === 'remove' && !confirm('移除由 Frame Control 托管的 Decky 服务和二进制文件？插件文件会保留。')) return;
     deckyPluginBusy = true; deckyButtons(); showDeckyStore();
     try {
-      await runJob(`${action} Decky Loader`, 'decky', () => api('/api/decky', {action:verb, acknowledged:true}));
+      await runJob(`${DECKY_ACTION_ZH[action]} Decky Loader`, 'decky', () => api('/api/decky', {action:verb, acknowledged:true}));
     } finally {
       await loadDecky();
       deckyPluginBusy = false; deckyButtons(); showDeckyStore();
@@ -2633,7 +2634,8 @@ function headsetButtons() {
 }
 $('headsetAck').onchange = headsetButtons;
 $('headsetRefresh').onclick = loadHeadsetPanel;
-for (const action of ['安装', '更新', 'Open', 'Close', '移除']) {
+const HEADSET_ACTION_ZH = {Install: '安装', Update: '更新', Open: '打开', Close: '关闭', Remove: '移除'};
+for (const action of ['Install', 'Update', 'Open', 'Close', 'Remove']) {
   $(`headset${action}`).onclick = async () => {
     if (headsetBusy || !headsetInfo) return;
     const verb = action.toLowerCase();
@@ -2647,7 +2649,7 @@ for (const action of ['安装', '更新', 'Open', 'Close', '移除']) {
     if (verb === 'remove' && !confirm('移除 Frame Control 头显用户服务和应用程序包？你的扩展和浏览器配置会保留。')) return;
     headsetBusy = true; headsetButtons();
     try {
-      await runJob(`${action} Frame Control VR`, 'headset-panel',
+      await runJob(`${HEADSET_ACTION_ZH[action]} Frame Control VR`, 'headset-panel',
         () => api('/api/headset', {action:verb, acknowledged:ack}));
     } finally {
       await loadHeadsetPanel();
@@ -2745,7 +2747,7 @@ function applyHostWording(h) {
   $("syncLink").hidden = !!h.mobile;  // and so are automatic copies
   $("quest").hidden = !!h.mobile;
   $("metaLib").hidden = !!h.mobile;  // the Quest plugs into a computer; the phone app's server runs on the Frame
-  if (!h.mobile) $("shotsFolder").textContent = $("videosFolder").textContent = h.fileManager === "你的文件管理器" ? "打开文件夹" : `显示于 ${h.fileManager}`;
+  if (!h.mobile) $("shotsFolder").textContent = $("videosFolder").textContent = h.fileManager === "your file manager" ? "打开文件夹" : `显示于 ${h.fileManager}`;
   $("shotsSaveNew").textContent = h.mobile ? `全部保存到 ${h.computer}` : `新文件保存到 ${h.computer}`;
   $("clipMac").textContent = `发送 ${h.computer} clipboard`;
   $("clipFrom").textContent = `把头显的剪贴板复制到这台 ${h.computer}`;
@@ -3096,7 +3098,7 @@ class DesktopBatteryAlert {
     // Require actual drain as well as driver state: plugged-in idle can report Discharging.
     const valid = Number.isFinite(b?.percent) && b.percent >= 0 && b.percent <= 100 &&
       ["充电中", "放电中", "已充满", "未充电"].includes(b.status);
-    const low = valid && b.percent <= 15 && b.status === "放电中" &&
+    const low = valid && b.percent <= 15 && b.status === "Discharging" &&
       Number.isFinite(b.watts) && b.watts < -0.5;
     const recovered = valid && b.percent >= 20;
     const condition = low ? "low" : recovered ? "recovered" : null;
@@ -3141,8 +3143,8 @@ document.addEventListener("visibilitychange", () => desktopBattery.invalidate())
 // ---- battery ----
 function battery(b, power) {
   const pct = b?.percent;
-  const full = b?.status === "已充满";
-  const charging = !full && b?.status === "充电中";
+  const full = b?.status === "Full";
+  const charging = !full && b?.status === "Charging";
   // A weak charger can lose to the load: plugged in but still draining.
   // Topped up on a charger it reports Discharging at ~0 W: that's idle, not draining.
   const idle = !!power && b?.watts != null && Math.abs(b.watts) < 0.5;
@@ -3155,8 +3157,8 @@ function battery(b, power) {
   else if (charging) {
     label = b.watts > 0 ? `充电中 · ${b.watts.toFixed(1)} W` : "充电中"; cls = "charging";
     if (b.timeToFull > 0) detail.push(`充满还需 ${dur(b.timeToFull)}`);
-  } else if (b.status === "未充电" || idle) { label = "未充电"; cls = "draining"; }
-  else if (b.status !== "放电中") { label = "充电状态不可用"; cls = "draining"; }
+  } else if (b.status === "Not charging" || idle) { label = "未充电"; cls = "draining"; }
+  else if (b.status !== "Discharging") { label = "充电状态不可用"; cls = "draining"; }
   else {
     label = low ? "电量低" : power ? "已接电源，仍在放电" : "使用电池";
     cls = low ? "low" : "draining";
@@ -6260,7 +6262,7 @@ $("shotGrid").oncontextmenu = e => {
   else {
     const sep = shots.folder.includes("\\") ? "\\" : "/";
     items.push(null);
-    items.push([`在以下位置显示 ${!HOST.fileManager || HOST.fileManager === "你的文件管理器" ? "folder" : HOST.fileManager}`,
+    items.push([`在以下位置显示 ${!HOST.fileManager || HOST.fileManager === "your file manager" ? "folder" : HOST.fileManager}`,
                 () => act("打开截图", () => api("/api/open", { what: "shot", id: s.id }))]);
     items.push(["复制文件路径", () => act("复制文件路径", async () => {
       await copyText(shots.folder + sep + s.file);
@@ -6496,7 +6498,7 @@ function renderPower(s) {
   $('powerProgress').hidden = !s.id;
   const identity = s.headset ? `头显： ${s.headset.alias}. ` : '';
   $('powerStatus').textContent = s.id ? identity + `${s.received} of ${s.requested} 个采样已收到。 ` +
-    (s.running ? (s.stopped?.startsWith('已停止') ? '正在停止…' : '正在观测…') : s.stopped ? `未完成： ${s.stopped}` : '已完成。') : '还没有观测数据。';
+    (s.running ? (s.stopped?.startsWith('Stopped') ? '正在停止…' : '正在观测…') : s.stopped ? `未完成： ${s.stopped}` : '已完成。') : '还没有观测数据。';
   document.querySelectorAll('[data-power-format]').forEach(b => b.disabled = !s.id);
 }
 async function loadPower() {

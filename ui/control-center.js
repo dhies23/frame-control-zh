@@ -143,10 +143,10 @@
     const s = sample || {}, b = s.battery || {}, p = s.performance || {}, h = s.disk?.home, m = s.memory;
     const capacity = b.percent;
     const idle = !!s.power && Number.isFinite(b.watts) && Math.abs(b.watts) < .5;
-    const charging = b.status === '充电中';
-    const full = b.status === '已充满';
+    const charging = b.status === 'Charging';
+    const full = b.status === 'Full';
     const batteryState = !sample ? '连接后可读取电量和功率' : !s.battery ? '电池传感器不可用' :
-      full ? '已充满' : charging ? '充电中' : b.status === '未充电' || idle ? (s.power ? '已插电 · 未充电' : '未充电') : b.status === '放电中' ? (s.power ? '已插电 · 电池供电' : '电池供电') : '充电状态不可用';
+      full ? '已充满' : charging ? '充电中' : b.status === 'Not charging' || idle ? (s.power ? '已插电 · 未充电' : '未充电') : b.status === 'Discharging' ? (s.power ? '已插电 · 电池供电' : '电池供电') : '充电状态不可用';
     return {
       battery:number(capacity, '%'), batteryDetail:batteryState,
       storage:h ? gib(h.free) : '不可用', storageDetail:h ? `${gib(h.total)} 总容量 · 用户存储` : '用户存储不可用',
@@ -155,11 +155,11 @@
       rootFree:gib(s.disk?.root?.free), rootTotal:gib(s.disk?.root?.total), memoryAvailable:gib(m?.available),
       fps:number(p.compositorFps, '', 1), fpsDetail:'合成器 FPS · 非游戏 FPS',
       power:number(b.watts, ' W', 1), charger:s.power ? `${s.power.type || '已连接'} · ${number(s.power.watts, ' W', 1)}` : sample ? '未报告充电器' : '不可用',
-      batteryTemp:number(b.tempC, ' °C', 1), batteryHealth:b.health && b.health !== '未知' ? b.health : '不可用',
+      batteryTemp:number(b.tempC, ' °C', 1), batteryHealth:b.health && b.health !== 'Unknown' ? b.health : '不可用',
       batterySource:b.source || '不可用', cycles:number(b.cycleCount),
       fullCapacity:number(b.fullMah, ' mAh', 1), designCapacity:number(b.designMah, ' mAh', 1),
       capacityHealth:number(b.capacityHealthPercent, '%', 1),
-      estimate:charging ? (b.timeToFull > 0 ? `${duration(b.timeToFull)} 后充满` : '不可用') : b.status === '放电中' && !idle && b.timeToEmpty > 0 && b.timeToEmpty < 86400 ? `${duration(b.timeToEmpty)} remaining` : '不可用',
+      estimate:charging ? (b.timeToFull > 0 ? `${duration(b.timeToFull)} 后充满` : '不可用') : b.status === 'Discharging' && !idle && b.timeToEmpty > 0 && b.timeToEmpty < 86400 ? `${duration(b.timeToEmpty)} remaining` : '不可用',
       wifi:s.wifi?.ssid || '不可用', signal:number(s.wifi?.signal, '%'), ip:s.ip || '不可用',
       uptime:duration(s.uptime), os:s.os?.version || '不可用', build:s.os?.build || '不可用',
       temperature:number(s.temp, ' °C', 1), cpu:number(p.cpuPercent, '%', 1), gpu:number(p.gpuMHz, ' MHz', 1),
