@@ -86,3 +86,9 @@ python merge.py --units /tmp/chunks/all_units.jsonl --out /tmp/out --write
 - 术语统一靠 `glossary.md`（头显、佩戴者、侧载、面板、库、商店、诊断……），但界面很长，同一句英文在不同位置可能翻了两种说法，属于可接受的差异。
 - 翻译是按界面片段做的，个别句子缺少上下文，可能读起来略生硬；发现别扭或错译欢迎开 issue 指出来，带上界面位置和原文。
 - 汉化不改任何行为：网络请求、SSH 命令、写入头显的文件名、IPC 频道名、CSS 类名、用来做比较的字符串都保持原样。
+
+## 发行包与自更新
+
+Windows 安装包和便携 zip 由 `.github/workflows/release-win.yml` 在 GitHub Actions 上编译（`npm ci` → `fetch-deps` → `electron-builder` → `SHA256SUMS` → 传到 Release），推送 `zh-*` / `v*` tag 或手动 dispatch 触发。工作流不编译 `desktop/`（Windows「PC 进头显」串流辅助库，上游仍属实验性、默认关闭），所以那一项在这个包里不可用。
+
+**自更新仍然指向上游**：`app/updater.js` 里 `REPO = "saphid/frame-control"`，检查的是上游的 release 与 `update.json`。所以点了「更新并重启」会装成**英文原版**，中文界面随之消失。要更新中文版，只能回到本仓库的 Release 页面手动下新包。要彻底关掉提示，可以在应用设置里关闭自动更新检查，或者干脆不改。

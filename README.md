@@ -135,7 +135,17 @@ SSH、SFTP、Steam Link、远程桌面、音量、睡眠、重启和关机。
 
 **0. 直接下 Windows 包（最省事）**
 
-到本仓库的 [Releases](https://github.com/dhies23/frame-control-zh/releases) 下最新的 `Frame-Control-Setup-x64.exe`（安装包）或 `Frame-Control-win-x64.zip`（便携版，解压即用）。这两个是 GitHub Actions 用本仓库源码现编的，界面是中文。安装包没有代码签名，SmartScreen 会提示，选「更多信息 → 仍要运行」；校验值见 Release 里的 `SHA256SUMS`。
+到本仓库的 [最新 Release](https://github.com/dhies23/frame-control-zh/releases/latest) 下载：
+
+| 文件 | 说明 |
+|---|---|
+| [`Frame-Control-Setup-x64.exe`](https://github.com/dhies23/frame-control-zh/releases/latest/download/Frame-Control-Setup-x64.exe) | 安装包。没有代码签名，SmartScreen 会拦，选「更多信息 → 仍要运行」 |
+| [`Frame-Control-win-x64.zip`](https://github.com/dhies23/frame-control-zh/releases/latest/download/Frame-Control-win-x64.zip) | 便携版，解压后运行 `Frame Control.exe` |
+| [`SHA256SUMS`](https://github.com/dhies23/frame-control-zh/releases/latest/download/SHA256SUMS) | 校验值，`Get-FileHash .\Frame-Control-Setup-x64.exe -Algorithm SHA256` 后逐字比对 |
+
+这两个包由本仓库的 [`.github/workflows/release-win.yml`](.github/workflows/release-win.yml) 在 `windows-latest` 上现编，自带 Python 和 adb，装完不用另配环境。
+
+> **注意**：应用里的「更新并重启」检查的是**上游**仓库，点了会装成英文原版，中文界面就没了。要更新中文版，回到上面的 Release 页面下新包。
 
 **1. 从源码跑本地 Web 界面（Windows / macOS / Linux 通用）**
 
