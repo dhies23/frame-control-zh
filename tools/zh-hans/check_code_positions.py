@@ -16,6 +16,13 @@ Exit status 1 when something needs a human look.
 import re
 import sys
 
+# Windows 控制台默认是 cp1252/gbk，直接 print 中文会 UnicodeEncodeError。
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 CJK = re.compile(r"[\u4e00-\u9fff]")
 LIT = re.compile(r"'((?:[^'\\\n]|\\.)*)'|\"((?:[^\"\\\n]|\\.)*)\"|`((?:[^`\\\n]|\\.)*)`")
 

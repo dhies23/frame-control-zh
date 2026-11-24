@@ -58,6 +58,8 @@ jobs:
       # 导致 `$(decky+action)` 取到 null，整页脚本死在第一行，按钮全部失灵。
       - name: 检查文案没有破坏代码语义
         shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
         run: python tools/zh-hans/check_code_positions.py ui/*.html ui/*.js app/*.js
 
       # 自带 Python（python-build-standalone）、adb（platform-tools）、CA 证书包，
